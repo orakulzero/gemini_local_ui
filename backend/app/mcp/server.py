@@ -368,6 +368,50 @@ class MCPServer:
             "handler": self._call_notebooklm_sync_repo,
         }
 
+        self._tools["gemini_background_batch"] = {
+            "name": "gemini_background_batch",
+            "description": "Dispatch or inspect multi-stage background Gemini synthesis jobs (Argon Task Mode + Flash) for overnight document/codebase generation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "list", "status"],
+                        "default": "create",
+                        "description": "Action to perform: 'create' a new background job, 'list' jobs, or get 'status' of a job_id.",
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Target background job ID (for action='status').",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Job title (for action='create').",
+                    },
+                    "workspace_dir": {
+                        "type": "string",
+                        "description": "Optional working directory for the job.",
+                    },
+                    "stages": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of synthesis stages [{name, prompt, subagent, model, output_file}].",
+                    },
+                    "script_command": {
+                        "type": "string",
+                        "description": "Optional shell/Python pipeline command to run after synthesis stages.",
+                    },
+                    "run_async": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "If true, runs asynchronously in the background daemon.",
+                    },
+                },
+            },
+            "handler": self._call_gemini_background_batch,
+        }
+
+
     async def handle_message(
         self,
         msg: Union[Dict[str, Any], List[Dict[str, Any]]],
@@ -1261,4 +1305,50 @@ class MCPServer:
             return ([{"type": "text", "text": json.dumps(result_data, indent=2, ensure_ascii=False)}], False)
         except Exception as e:
             return ([{"type": "text", "text": f"Error initializing Claude workspace: {str(e)}"}], True)
+
+    async def _call_gemini_background_batch(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Dispatches or queries multi-stage background Gemini synthesis jobs."""
+        from backend.app.api.claude_plugins import (
+            BackgroundJobRequest,
+            BackgroundStageSpec,
+            create_background_job,
+            get_background_job_endpoint,
+            list_background_jobs_endpoint,
+        )
+
+        action = str(params.get("action") or "create").strip().lower()
+        try:
+            if action == "list":
+                res = await list_background_jobs_endpoint(limit=int(params.get("limit", 20)))
+                return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+            elif action == "status":
+                job_id = str(params.get("job_id") or "").strip()
+                if not job_id:
+                    return ([{"type": "text", "text": "'job_id' is required for action='status'"}], True)
+                res = await get_background_job_endpoint(job_id)
+                return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+            else:
+                title = str(params.get("title") or "").strip()
+                if not title:
+                    return ([{"type": "text", "text": "'title' is required for action='create'"}], True)
+                raw_stages = params.get("stages") or []
+                stages = [BackgroundStageSpec(**s) for s in raw_stages if isinstance(s, dict)]
+                req = BackgroundJobRequest(
+                    title=title,
+                    workspace_dir=params.get("workspace_dir"),
+                    stages=stages,
+                    script_command=params.get("script_command"),
+                    artifacts=list(params.get("artifacts") or []),
+                    run_async=bool(params.get("run_async", True)),
+                )
+                res = await create_background_job(req)
+                return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as e:
+            return ([{"type": "text", "text": f"Error in gemini_background_batch: {str(e)}"}], True)
+
 
