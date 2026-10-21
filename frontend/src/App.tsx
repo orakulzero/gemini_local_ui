@@ -10,12 +10,14 @@ import { AddAccountModal } from './components/AddAccountModal';
 import { CanvasPanel } from './components/CanvasPanel';
 import { GemsManagerModal } from './components/GemsManagerModal';
 import { NotebookLMDrawer } from './components/NotebookLMDrawer';
+import { ClaudePluginsPanel } from './components/ClaudePluginsPanel';
 import { useChatStore } from './store/chatStore';
 import { useSessionStore } from './store/sessionStore';
 import { useCanvasStore } from './store/canvasStore';
 
 export const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [claudeSwarmOpen, setClaudeSwarmOpen] = useState(false);
 
   const activeThread = useChatStore((s) => s.activeThread);
   const isGenerating = useChatStore((s) => s.isGenerating);
@@ -57,7 +59,11 @@ export const App: React.FC = () => {
           isCanvasOpen ? 'w-full md:w-[60%]' : 'flex-1'
         }`}
       >
-        <Header onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
+        <Header
+          onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+          onToggleClaudeSwarm={() => setClaudeSwarmOpen((prev) => !prev)}
+          isClaudeSwarmOpen={claudeSwarmOpen}
+        />
 
         <main className="flex-1 min-h-0 relative">
           <VirtualChatList
@@ -86,6 +92,10 @@ export const App: React.FC = () => {
       <AddAccountModal />
       <GemsManagerModal />
       <NotebookLMDrawer />
+      <ClaudePluginsPanel
+        isOpen={claudeSwarmOpen}
+        onClose={() => setClaudeSwarmOpen(false)}
+      />
     </div>
   );
 

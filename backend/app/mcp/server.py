@@ -306,6 +306,37 @@ class MCPServer:
             "handler": self._call_claude_sync_plugin_gems,
         }
 
+        self._tools["claude_init_workspace"] = {
+            "name": "claude_init_workspace",
+            "description": "Install the complete .claude/{agents,skills,commands,hooks,settings.json} and .mcp.json pack into a target project directory in 1 call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target_dir": {
+                        "type": "string",
+                        "description": "Target directory path where the .claude workspace pack will be installed.",
+                    },
+                    "include_mcp_config": {
+                        "type": "boolean",
+                        "description": "Also create/update .mcp.json pointing to the local Gemini gateway.",
+                        "default": True,
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Overwrite existing plugin files in target_dir.",
+                        "default": True,
+                    },
+                    "gateway_url": {
+                        "type": "string",
+                        "description": "Base URL of the local Gemini gateway.",
+                        "default": "http://127.0.0.1:8000",
+                    },
+                },
+                "required": ["target_dir"],
+            },
+            "handler": self._call_claude_init_workspace,
+        }
+
         self._tools["notebooklm_sync_repo"] = {
             "name": "notebooklm_sync_repo",
             "description": "Incrementally sync repository docs and .claude architecture files into a NotebookLM notebook with SHA-256 deduplication.",
@@ -1200,3 +1231,32 @@ class MCPServer:
             return ([{"type": "text", "text": json.dumps(result_data, indent=2, ensure_ascii=False)}], False)
         except Exception as e:
             return ([{"type": "text", "text": f"Error syncing repository to NotebookLM: {str(e)}"}], True)
+
+    async def _call_claude_init_workspace(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Installs the .claude/{agents,skills,commands,hooks,settings.json} pack into a target directory."""
+        from backend.app.api.claude_plugins import init_claude_workspace
+
+        target_dir = (params.get("target_dir") or "").strip()
+        if not target_dir:
+            return ([{"type": "text", "text": "'target_dir' is required"}], True)
+
+        include_mcp_config = bool(params.get("include_mcp_config", True))
+        overwrite = bool(params.get("overwrite", True))
+        gateway_url = str(params.get("gateway_url") or "http://127.0.0.1:8000")
+
+        try:
+            result_data = init_claude_workspace(
+                target_dir=target_dir,
+                include_mcp_config=include_mcp_config,
+                overwrite=overwrite,
+                gateway_url=gateway_url,
+            )
+            return ([{"type": "text", "text": json.dumps(result_data, indent=2, ensure_ascii=False)}], False)
+        except Exception as e:
+            return ([{"type": "text", "text": f"Error initializing Claude workspace: {str(e)}"}], True)
+

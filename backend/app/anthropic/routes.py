@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.app.anthropic.adapter import AnthropicAdapter
-from backend.app.api.claude_plugins import detect_subagent_profile
+from backend.app.api.claude_plugins import detect_subagent_profile, record_swarm_event
 from backend.app.anthropic.schemas import (
     ContentBlock,
     CountTokensRequest,
@@ -318,6 +318,7 @@ async def create_anthropic_message(
                         yield line
 
                     final_streamed_text = "".join(accumulated_chunks)
+                    emitted_tool_names: List[str] = []
                     if has_tools:
                         clean_text, tool_calls = AnthropicAdapter.parse_tool_calls(final_streamed_text)
                         response_blocks = []
@@ -326,11 +327,28 @@ async def create_anthropic_message(
                         if tool_calls:
                             for tc in tool_calls:
                                 response_blocks.append(tc.model_dump())
+                                emitted_tool_names.append(tc.name)
                         if not response_blocks and final_streamed_text:
                             response_blocks.append({"type": "text", "text": final_streamed_text})
                         _remember_turn({"role": "assistant", "content": response_blocks})
                     else:
                         _remember_turn(final_streamed_text)
+
+                    record_swarm_event(
+                        message_id=message_id,
+                        requested_model=req.model,
+                        resolved_model=canonical_model,
+                        subagent=subagent_profile["name"] if subagent_profile else None,
+                        gem_id=gem_id,
+                        cache_hit=bool(cached_chat and matched_n > 0),
+                        matched_turns=matched_n,
+                        total_turns=len(req.messages),
+                        tool_calls=emitted_tool_names,
+                        latency_ms=int((time.time() - start_time) * 1000),
+                        input_tokens=input_tokens,
+                        output_tokens=max(1, len(final_streamed_text) // 3),
+                        stream=True,
+                    )
                 finally:
                     if client and hasattr(client, "close"):
                         try:
@@ -400,6 +418,7 @@ async def create_anthropic_message(
                 content_blocks.append(ThinkingBlock(thinking=thought_text))
 
             # Parse tool calls if tools were provided
+            emitted_tool_names: List[str] = []
             if has_tools:
                 clean_text, tool_calls = AnthropicAdapter.parse_tool_calls(raw_reply_text)
                 if clean_text:
@@ -407,6 +426,7 @@ async def create_anthropic_message(
                 if tool_calls:
                     for tc in tool_calls:
                         content_blocks.append(tc)
+                        emitted_tool_names.append(tc.name)
                     if stop_reason == "end_turn":
                         stop_reason = "tool_use"
                 elif not clean_text and raw_reply_text:
@@ -419,6 +439,22 @@ async def create_anthropic_message(
             # Store in conversation cache
             stored_content = [b.model_dump() if hasattr(b, "model_dump") else b for b in content_blocks]
             _remember_turn({"role": "assistant", "content": stored_content})
+
+            record_swarm_event(
+                message_id=message_id,
+                requested_model=req.model,
+                resolved_model=canonical_model,
+                subagent=subagent_profile["name"] if subagent_profile else None,
+                gem_id=gem_id,
+                cache_hit=bool(cached_chat and matched_n > 0),
+                matched_turns=matched_n,
+                total_turns=len(req.messages),
+                tool_calls=emitted_tool_names,
+                latency_ms=int((time.time() - start_time) * 1000),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                stream=False,
+            )
 
             response.headers["X-Gemini-Model-Resolved"] = canonical_model
             if subagent_profile:
