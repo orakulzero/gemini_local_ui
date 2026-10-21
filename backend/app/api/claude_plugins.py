@@ -97,6 +97,13 @@ def parse_markdown_plugin(path: Path) -> dict:
             prompt = "---".join(parts[2:]).strip()
             if isinstance(frontmatter, dict):
                 frontmatter.setdefault("name", path.stem)
+                raw_tools = frontmatter.get("tools")
+                if isinstance(raw_tools, str):
+                    frontmatter["tools"] = [t.strip() for t in raw_tools.split(",") if t.strip()]
+                elif isinstance(raw_tools, list):
+                    frontmatter["tools"] = [str(t).strip() for t in raw_tools if str(t).strip()]
+                elif raw_tools is None and "tools" in frontmatter:
+                    frontmatter["tools"] = []
                 frontmatter["prompt"] = prompt
                 return frontmatter
     except Exception as e:
