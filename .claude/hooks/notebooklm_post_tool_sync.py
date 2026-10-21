@@ -23,7 +23,7 @@ def should_sync_path(rel_posix: str) -> bool:
     low = rel_posix.lower()
     if low in ("claude.md", "readme.md", "project.md"):
         return True
-    if low.endswith(SYNCABLE_SUFFIXES) and any(low.startswith(p) for p in (".claude/", "docs/")):
+    if low.endswith(SYNCABLE_SUFFIXES) and any(low.startswith(p) for p in (".claude/", "docs/", "blueprints/")):
         return True
     if any(low.startswith(p) for p in SYNCABLE_SUBPATHS) and low.endswith(("routes.py", "claude_plugins.py", "notebooklm.py")):
         return True

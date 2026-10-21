@@ -178,7 +178,13 @@ def detect_subagent_profile(system_payload: Any) -> Optional[Dict[str, Any]]:
         if not name or not prompt_body:
             continue
         first_line = next((ln.strip() for ln in prompt_body.splitlines() if ln.strip()), "")
-        matched = (prompt_body in sys_text) or (len(first_line) >= 16 and first_line in sys_text)
+        first_prefix = first_line[:64] if len(first_line) >= 32 else first_line
+        matched = (
+            (prompt_body in sys_text)
+            or (len(first_line) >= 16 and first_line in sys_text)
+            or (len(first_prefix) >= 32 and first_prefix in sys_text)
+            or (f"**{name}**" in sys_text)
+        )
         if matched:
             raw_tier = str(ag.get("model", "sonnet")).strip().lower()
             canonical_model = SUBAGENT_TIER_MAP.get(raw_tier, "95a4c0abcba24364")

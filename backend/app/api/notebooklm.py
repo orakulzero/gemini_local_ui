@@ -140,6 +140,7 @@ DEFAULT_REPO_SYNC_PATTERNS: List[str] = [
     "README.md",
     ".claude/agents/*.md",
     ".claude/skills/*/SKILL.md",
+    "blueprints/*.md",
 ]
 
 # Maps "{notebook_id}:{rel_posix_path}" -> sha256 hex digest of last synced content
