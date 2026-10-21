@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.app.anthropic.adapter import AnthropicAdapter
+from backend.app.api.claude_plugins import detect_subagent_profile
 from backend.app.anthropic.schemas import (
     ContentBlock,
     CountTokensRequest,
@@ -93,6 +94,7 @@ def get_gemini_uploader(request: Request) -> Optional[GeminiUploader]:
 async def create_anthropic_message(
     req: MessageRequest,
     request: Request,
+    response: Response,
     client: Optional[GeminiWebClient] = Depends(get_gemini_client),
     uploader: Optional[GeminiUploader] = Depends(get_gemini_uploader),
     x_gemini_account: Optional[str] = Header(None),
@@ -106,11 +108,18 @@ async def create_anthropic_message(
     if not req.messages:
         return make_anthropic_error("messages: array must not be empty", error_type="invalid_request_error", status_code=400)
 
-    # 2. Model Resolution
+    # 2. Model Resolution & Per-Subagent Tier / Custom Gem Routing
+    subagent_profile = detect_subagent_profile(req.system)
+    subagent_feature_mode: Optional[int] = None
     try:
         canonical_model, gem_id = AnthropicAdapter.resolve_model(req.model)
         if not gem_id and getattr(req, "gem_id", None):
             gem_id = req.gem_id
+        if subagent_profile:
+            canonical_model = subagent_profile["canonical_model"]
+            if not gem_id and subagent_profile.get("gem_id"):
+                gem_id = subagent_profile["gem_id"]
+            subagent_feature_mode = subagent_profile.get("feature_mode")
     except ModelNotFoundError as e:
         return make_anthropic_error(str(e), error_type="not_found_error", status_code=404)
 
@@ -213,6 +222,8 @@ async def create_anthropic_message(
             kw["cid"] = resume_cid
             kw["rid"] = resume_rid
             kw["rcid"] = resume_rcid
+        if subagent_feature_mode is not None:
+            kw["feature_mode"] = subagent_feature_mode
         return kw
 
     def _remember_turn(reply_content: Any) -> None:
@@ -327,14 +338,21 @@ async def create_anthropic_message(
                         except Exception:
                             pass
 
+            sse_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Gemini-Model-Resolved": canonical_model,
+            }
+            if subagent_profile:
+                sse_headers["X-Gemini-Subagent"] = str(subagent_profile["name"])
+            if gem_id:
+                sse_headers["X-Gemini-Gem-Id"] = str(gem_id)
+
             return StreamingResponse(
                 tracked_sse_response(),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
+                headers=sse_headers,
             )
         else:
             # Non-streaming execution
@@ -401,6 +419,12 @@ async def create_anthropic_message(
             # Store in conversation cache
             stored_content = [b.model_dump() if hasattr(b, "model_dump") else b for b in content_blocks]
             _remember_turn({"role": "assistant", "content": stored_content})
+
+            response.headers["X-Gemini-Model-Resolved"] = canonical_model
+            if subagent_profile:
+                response.headers["X-Gemini-Subagent"] = str(subagent_profile["name"])
+            if gem_id:
+                response.headers["X-Gemini-Gem-Id"] = str(gem_id)
 
             return MessageResponse(
                 id=message_id,

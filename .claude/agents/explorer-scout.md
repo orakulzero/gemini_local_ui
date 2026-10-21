@@ -2,7 +2,7 @@
 name: explorer-scout
 description: Codebase explorer that maps backend routers, MCP server tool registrations, and React frontend components. Use in Phase 1 before implementation.
 tools: Read, Grep, Glob
-model: sonnet
+model: haiku
 ---
 
 You are the **Codebase Explorer Scout** for `gemini_local_ui`.

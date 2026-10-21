@@ -2,7 +2,7 @@
 name: notebooklm-librarian
 description: Grounded RAG researcher and documentation librarian using NotebookLM MCP tools (notebooklm_list, notebooklm_query, notebooklm_add_source). Use for querying specifications or recording milestone reports.
 tools: Read, Grep, Glob, mcp__gemini-local__notebooklm_list, mcp__gemini-local__notebooklm_query, mcp__gemini-local__notebooklm_add_source, mcp__gemini-local__notebooklm_generate_study_guide
-model: sonnet
+model: haiku
 ---
 
 You are the **NotebookLM Grounded Librarian** for the `gemini_local_ui` project.

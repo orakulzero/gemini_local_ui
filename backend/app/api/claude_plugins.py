@@ -41,6 +41,65 @@ def scan_plugins(folder_name: str) -> List[dict]:
                 plugins.append(parsed)
     return plugins
 
+
+SUBAGENT_TIER_MAP: Dict[str, str] = {
+    "haiku": "56fdd199312815e2",
+    "flash": "56fdd199312815e2",
+    "flash-lite": "8c46e95b1a07cecc",
+    "sonnet": "95a4c0abcba24364",
+    "opus": "95a4c0abcba24364",
+    "argon": "95a4c0abcba24364",
+}
+
+
+def detect_subagent_profile(system_payload: Any) -> Optional[Dict[str, Any]]:
+    """
+    Inspects an incoming Anthropic `system` payload (str or list of text blocks)
+    and matches it against `.claude/agents/*.md` prompts to resolve per-subagent
+    model tier (`haiku` -> Flash, `opus` -> Argon), `gem_id`, and `feature_mode`.
+    """
+    if not system_payload:
+        return None
+    if isinstance(system_payload, str):
+        sys_text = system_payload
+    elif isinstance(system_payload, list):
+        parts: List[str] = []
+        for item in system_payload:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("text"):
+                parts.append(str(item["text"]))
+            elif hasattr(item, "text") and getattr(item, "text"):
+                parts.append(str(getattr(item, "text")))
+        sys_text = "\n".join(parts)
+    else:
+        sys_text = str(system_payload)
+
+    if not sys_text.strip():
+        return None
+
+    agents = scan_plugins("agents")
+    for ag in agents:
+        name = str(ag.get("name", "")).strip()
+        prompt_body = str(ag.get("prompt", "")).strip()
+        if not name or not prompt_body:
+            continue
+        first_line = next((ln.strip() for ln in prompt_body.splitlines() if ln.strip()), "")
+        matched = (prompt_body in sys_text) or (len(first_line) >= 16 and first_line in sys_text)
+        if matched:
+            raw_tier = str(ag.get("model", "sonnet")).strip().lower()
+            canonical_model = SUBAGENT_TIER_MAP.get(raw_tier, "95a4c0abcba24364")
+            gem_id = f"gem_cc_{name.replace(' ', '_').lower()}"
+            feature_mode = ag.get("feature_mode")
+            return {
+                "name": name,
+                "model_alias": raw_tier,
+                "canonical_model": canonical_model,
+                "gem_id": gem_id,
+                "feature_mode": int(feature_mode) if feature_mode is not None else None,
+            }
+    return None
+
 @router.get("")
 async def list_plugins():
     agents = scan_plugins("agents")
