@@ -38,11 +38,15 @@ def _normalize_content(content: Any) -> Any:
         norm_parts = []
         for part in content:
             if hasattr(part, "model_dump"):
-                norm_parts.append(part.model_dump(exclude_none=True))
+                d = part.model_dump(exclude_none=True)
             elif isinstance(part, dict):
-                norm_parts.append({k: v for k, v in part.items() if v is not None})
+                d = {k: v for k, v in part.items() if v is not None}
             else:
                 norm_parts.append(str(part))
+                continue
+            if d.get("type") == "thinking":
+                continue
+            norm_parts.append(d)
         return norm_parts
     if hasattr(content, "model_dump"):
         return content.model_dump(exclude_none=True)

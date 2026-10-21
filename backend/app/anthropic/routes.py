@@ -166,7 +166,7 @@ async def create_anthropic_message(
             delta_messages = req.messages[matched_n:]
             delta_sys = AnthropicAdapter.extract_system_instruction(None, tools=req.tools, tool_choice=req.tool_choice) if has_tools else None
             prompt, delta_history, image_descriptors = await AnthropicAdapter.extract_turns_and_attachments(
-                delta_messages, system_instruction=delta_sys
+                delta_messages, system_instruction=delta_sys, context_messages=req.messages
             )
             if delta_history:
                 hist_lines = [f"[{h['role']}]: {h['content']}" for h in delta_history if h.get("content")]

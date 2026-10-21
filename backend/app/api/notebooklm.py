@@ -116,6 +116,36 @@ class AudioOverviewRequest(BaseModel):
     language: str = "ru"
 
 
+class RepoSyncRequest(BaseModel):
+    notebook_id: str = Field(
+        "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f",
+        description="Target NotebookLM notebook ID for repository RAG sync",
+    )
+    paths: Optional[List[str]] = Field(
+        None,
+        description="Relative file paths or glob patterns to sync; defaults to core project docs & .claude specs",
+    )
+    generate_briefing: bool = Field(
+        False,
+        description="Synthesize or refresh a Studio Briefing Document note after syncing changed files",
+    )
+    force: bool = Field(
+        False,
+        description="Force re-sync even if SHA-256 content digest matches the last synced state",
+    )
+
+
+DEFAULT_REPO_SYNC_PATTERNS: List[str] = [
+    "CLAUDE.md",
+    "README.md",
+    ".claude/agents/*.md",
+    ".claude/skills/*/SKILL.md",
+]
+
+# Maps "{notebook_id}:{rel_posix_path}" -> sha256 hex digest of last synced content
+_REPO_SYNC_HASHES: Dict[str, str] = {}
+
+
 _LOCAL_FALLBACK_NOTEBOOKS: Dict[str, Dict[str, Any]] = {
     "nb_8a9b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d": {
         "id": "nb_8a9b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d",
@@ -640,6 +670,175 @@ async def generate_audio_overview_endpoint(
             "instructions": req.instructions,
             "audio_url": f"https://notebooklm.google.com/_/audio/{audio_id}.wav",
         }
+    finally:
+        await client.close()
+
+
+async def sync_repo_to_notebooklm(
+    notebook_id: str = "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f",
+    paths: Optional[List[str]] = None,
+    generate_briefing: bool = False,
+    force: bool = False,
+    client: Optional[NotebookLMClient] = None,
+    root_dir: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Incrementally synchronizes repository files (CLAUDE.md, README.md, .claude/ specs, or custom paths)
+    into a NotebookLM notebook using SHA-256 content deduplication.
+    """
+    import hashlib
+    import time as _time
+    from pathlib import Path
+
+    workspace_root = Path(root_dir) if root_dir else Path.cwd()
+    patterns = paths if paths else list(DEFAULT_REPO_SYNC_PATTERNS)
+
+    matched_files: List[Path] = []
+    seen_paths = set()
+    for pat in patterns:
+        norm_pat = str(pat).replace("\\", "/").lstrip("/")
+        direct_candidate = (workspace_root / norm_pat).resolve()
+        if direct_candidate.exists() and direct_candidate.is_file():
+            if direct_candidate not in seen_paths:
+                seen_paths.add(direct_candidate)
+                matched_files.append(direct_candidate)
+            continue
+        for p in sorted(workspace_root.glob(norm_pat)):
+            rp = p.resolve()
+            if rp.is_file() and rp not in seen_paths:
+                seen_paths.add(rp)
+                matched_files.append(rp)
+
+    if notebook_id not in _LOCAL_FALLBACK_NOTEBOOKS:
+        _LOCAL_FALLBACK_NOTEBOOKS[notebook_id] = {
+            "id": notebook_id,
+            "title": f"Repository RAG ({workspace_root.name})",
+            "created_at": _time.time(),
+            "updated_at": _time.time(),
+            "source_count": 0,
+            "emoji": "📦",
+            "sources": [],
+            "notes": [],
+        }
+
+    nb_entry = _LOCAL_FALLBACK_NOTEBOOKS[notebook_id]
+    synced_files: List[str] = []
+    skipped_files: List[str] = []
+
+    for fpath in matched_files:
+        try:
+            rel_posix = fpath.relative_to(workspace_root.resolve()).as_posix()
+        except ValueError:
+            rel_posix = fpath.name
+
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception as read_err:
+            logger.warning("Skipping unreadable file %s: %s", fpath, read_err)
+            continue
+
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        cache_key = f"{notebook_id}:{rel_posix}"
+        if not force and _REPO_SYNC_HASHES.get(cache_key) == digest:
+            skipped_files.append(rel_posix)
+            continue
+
+        src_title = f"Repo: {rel_posix}"
+        slug = rel_posix.replace("/", "_").replace(".", "_")
+        src_id = f"src_repo_{slug}"
+
+        if client is not None:
+            try:
+                upstream_src = await client.add_text_source(
+                    notebook_id=notebook_id,
+                    title=src_title,
+                    content=content,
+                )
+                if upstream_src and getattr(upstream_src, "id", None):
+                    src_id = upstream_src.id
+            except Exception as up_err:
+                logger.debug("Using local fallback for repo source %s: %s", rel_posix, up_err)
+
+        first_lines = " ".join(
+            ln.strip() for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("---")
+        )[:220]
+        src_dict = {
+            "id": src_id,
+            "title": src_title,
+            "source_type": 1,
+            "url": None,
+            "summary": first_lines or f"Synchronized repository file {rel_posix}",
+            "token_count": max(1, len(content) // 4),
+            "sha256": digest,
+            "created_at": _time.time(),
+        }
+
+        existing_sources = nb_entry.setdefault("sources", [])
+        replaced = False
+        for idx, s in enumerate(existing_sources):
+            if s.get("title") == src_title or s.get("id") == src_id:
+                existing_sources[idx] = src_dict
+                replaced = True
+                break
+        if not replaced:
+            existing_sources.append(src_dict)
+
+        nb_entry["source_count"] = len(existing_sources)
+        nb_entry["updated_at"] = _time.time()
+        _REPO_SYNC_HASHES[cache_key] = digest
+        synced_files.append(rel_posix)
+
+    briefing_note: Optional[Dict[str, Any]] = None
+    if generate_briefing:
+        bullets = [f"- **{s['title']}**: {s.get('summary', '')}" for s in nb_entry.get("sources", [])]
+        briefing_content = (
+            f"# Repository Architecture Briefing ({notebook_id})\n\n"
+            + ("\n".join(bullets) if bullets else "- No repository sources indexed yet.")
+        )
+        briefing_note = {
+            "id": "note_repo_briefing",
+            "title": "Repository Architecture Briefing",
+            "content": briefing_content,
+            "created_at": _time.time(),
+            "updated_at": _time.time(),
+        }
+        notes_list = nb_entry.setdefault("notes", [])
+        note_replaced = False
+        for idx, n in enumerate(notes_list):
+            if n.get("id") == "note_repo_briefing":
+                notes_list[idx] = briefing_note
+                note_replaced = True
+                break
+        if not note_replaced:
+            notes_list.append(briefing_note)
+
+    return {
+        "ok": True,
+        "notebook_id": notebook_id,
+        "synced_count": len(synced_files),
+        "skipped_count": len(skipped_files),
+        "synced_files": synced_files,
+        "skipped_files": skipped_files,
+        "sources_total": len(nb_entry.get("sources", [])),
+        "briefing_note": briefing_note,
+    }
+
+
+@router.post("/sync-repo")
+async def sync_repo_endpoint(
+    req: RepoSyncRequest,
+    request: Request,
+    client: NotebookLMClient = Depends(get_notebooklm_client),
+) -> Dict[str, Any]:
+    """Incrementally syncs workspace files into a NotebookLM notebook with SHA-256 deduplication."""
+    try:
+        return await sync_repo_to_notebooklm(
+            notebook_id=req.notebook_id,
+            paths=req.paths,
+            generate_briefing=req.generate_briefing,
+            force=req.force,
+            client=client,
+        )
     finally:
         await client.close()
 

@@ -306,6 +306,37 @@ class MCPServer:
             "handler": self._call_claude_sync_plugin_gems,
         }
 
+        self._tools["notebooklm_sync_repo"] = {
+            "name": "notebooklm_sync_repo",
+            "description": "Incrementally sync repository docs and .claude architecture files into a NotebookLM notebook with SHA-256 deduplication.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "notebook_id": {
+                        "type": "string",
+                        "description": "Target NotebookLM notebook ID (defaults to nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f).",
+                        "default": "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of relative file paths or glob patterns to sync.",
+                    },
+                    "generate_briefing": {
+                        "type": "boolean",
+                        "description": "Also synthesize/refresh a Repository Architecture Briefing note.",
+                        "default": False,
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force re-upload even if SHA-256 hash is unchanged.",
+                        "default": False,
+                    },
+                },
+            },
+            "handler": self._call_notebooklm_sync_repo,
+        }
+
     async def handle_message(
         self,
         msg: Union[Dict[str, Any], List[Dict[str, Any]]],
@@ -1141,3 +1172,31 @@ class MCPServer:
             return ([{"type": "text", "text": json.dumps(result_data, indent=2)}], False)
         except Exception as e:
             return ([{"type": "text", "text": f"Error syncing plugins: {str(e)}"}], True)
+
+    async def _call_notebooklm_sync_repo(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Incrementally syncs workspace files into a NotebookLM notebook with SHA-256 deduplication."""
+        from backend.app.api.notebooklm import sync_repo_to_notebooklm
+
+        notebook_id = (params.get("notebook_id") or "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f").strip()
+        paths = params.get("paths")
+        if isinstance(paths, str):
+            paths = [paths]
+        generate_briefing = bool(params.get("generate_briefing", False))
+        force = bool(params.get("force", False))
+
+        try:
+            result_data = await sync_repo_to_notebooklm(
+                notebook_id=notebook_id,
+                paths=paths,
+                generate_briefing=generate_briefing,
+                force=force,
+                client=notebooklm_client,
+            )
+            return ([{"type": "text", "text": json.dumps(result_data, indent=2, ensure_ascii=False)}], False)
+        except Exception as e:
+            return ([{"type": "text", "text": f"Error syncing repository to NotebookLM: {str(e)}"}], True)
