@@ -376,6 +376,8 @@ class MCPServer:
     ) -> Union[Dict[str, Any], List[Dict[str, Any]], None]:
         """Dispatches single or batch JSON-RPC 2.0 messages."""
         if isinstance(msg, list):
+            if len(msg) == 0:
+                return self._make_error(None, -32600, "Invalid Request: empty batch")
             responses = []
             for item in msg:
                 resp = await self._handle_single_message(item, client, notebooklm_client)

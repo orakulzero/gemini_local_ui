@@ -39,3 +39,5 @@ audit_task_context/
 auth_audit_context/
 curated_argon_audit_context/
 .claude/settings.local.json
+
+.agents/teamwork/

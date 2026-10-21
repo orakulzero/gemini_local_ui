@@ -2,6 +2,7 @@ from collections import deque
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import time
@@ -13,6 +14,8 @@ from typing import Deque, Dict, Any, List, Optional
 from backend.app.api.gems import _LOCAL_CUSTOM_GEMS, Gem
 
 router = APIRouter(prefix="/api/claude-plugins", tags=["claude-plugins"])
+
+SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SWARM_EVENTS_PATH = _REPO_ROOT / "backend" / "data" / "swarm_events.jsonl"
@@ -39,7 +42,10 @@ def _load_persisted_swarm_events() -> None:
         for line in lines[-100:]:
             line = line.strip()
             if line:
-                _SWARM_EVENTS.append(json.loads(line))
+                try:
+                    _SWARM_EVENTS.append(json.loads(line))
+                except Exception:
+                    continue
     except Exception:
         pass
 
@@ -111,8 +117,9 @@ def parse_markdown_plugin(path: Path) -> dict:
     return {}
 
 def scan_plugins(folder_name: str) -> List[dict]:
-    root_dir = Path.cwd()
-    target_dir = root_dir / ".claude" / folder_name
+    target_dir = _REPO_ROOT / ".claude" / folder_name
+    if not target_dir.exists():
+        target_dir = Path.cwd() / ".claude" / folder_name
     plugins = []
     if target_dir.exists() and target_dir.is_dir():
         if folder_name == "skills":
@@ -179,6 +186,8 @@ def detect_subagent_profile(system_payload: Any) -> Optional[Dict[str, Any]]:
             feature_mode = ag.get("feature_mode")
             return {
                 "name": name,
+                "subagent": name,
+                "model": canonical_model,
                 "model_alias": raw_tier,
                 "canonical_model": canonical_model,
                 "gem_id": gem_id,
@@ -256,11 +265,18 @@ class AgentCreateRequest(BaseModel):
 
 @router.post("/agents")
 async def create_agent(req: AgentCreateRequest):
-    root_dir = Path.cwd()
-    target_dir = root_dir / ".claude" / "agents"
+    slug = (req.id or req.name).strip()
+    if not SAFE_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid agent slug/name '{slug}': must be alphanumeric with dashes or underscores",
+        )
+
+    target_dir = _REPO_ROOT / ".claude" / "agents"
+    if not target_dir.exists():
+        target_dir = Path.cwd() / ".claude" / "agents"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    slug = (req.id or req.name).strip()
     file_path = target_dir / f"{slug}.md"
     body_prompt = (req.prompt if req.prompt is not None else (req.system_prompt or "")).strip()
 
@@ -278,11 +294,19 @@ async def create_agent(req: AgentCreateRequest):
 
 @router.delete("/agents/{name}")
 async def delete_agent(name: str):
-    root_dir = Path.cwd()
-    file_path = root_dir / ".claude" / "agents" / f"{name}.md"
+    slug = name.strip()
+    if not SAFE_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid agent slug/name '{slug}': must be alphanumeric with dashes or underscores",
+        )
+    target_dir = _REPO_ROOT / ".claude" / "agents"
+    if not target_dir.exists():
+        target_dir = Path.cwd() / ".claude" / "agents"
+    file_path = target_dir / f"{slug}.md"
     if file_path.exists():
         file_path.unlink()
-        return {"ok": True, "deleted": name}
+        return {"ok": True, "deleted": slug}
     raise HTTPException(status_code=404, detail="Agent not found")
 
 
@@ -335,10 +359,14 @@ def _scan_recent_claude_sessions(limit: int = 8) -> List[Dict[str, Any]]:
                     entry = json.loads(raw_ln)
                 except Exception:
                     continue
+                if not isinstance(entry, dict):
+                    continue
                 etype = entry.get("type")
                 if etype in ("user", "assistant"):
                     turn_count += 1
-                msg = entry.get("message") or {}
+                msg = entry.get("message")
+                if not isinstance(msg, dict):
+                    msg = {}
                 content = msg.get("content")
                 if etype == "user" and isinstance(content, str) and content.strip():
                     last_prompt_preview = content.strip()[:140]
@@ -382,7 +410,9 @@ async def get_swarm_telemetry(limit: int = 30) -> Dict[str, Any]:
     commands = scan_plugins("commands")
     skills = scan_plugins("skills")
 
-    hooks_dir = Path.cwd() / ".claude" / "hooks"
+    hooks_dir = _REPO_ROOT / ".claude" / "hooks"
+    if not hooks_dir.exists():
+        hooks_dir = Path.cwd() / ".claude" / "hooks"
     hooks_list = [p.name for p in sorted(hooks_dir.glob("*.py"))] if hooks_dir.exists() else []
 
     events_list = list(_SWARM_EVENTS)[-max(1, min(limit, 100)):]
@@ -445,6 +475,8 @@ def init_claude_workspace(
         raise ValueError("target_dir is required")
 
     dest_root = Path(target_dir).expanduser().resolve()
+    if dest_root.exists() and not dest_root.is_dir():
+        raise ValueError(f"target_dir exists and is not a directory: {dest_root}")
     dest_root.mkdir(parents=True, exist_ok=True)
     dest_claude = dest_root / ".claude"
     dest_claude.mkdir(parents=True, exist_ok=True)
@@ -517,25 +549,59 @@ def init_claude_workspace(
         },
     }
     settings_path = dest_claude / "settings.json"
-    if overwrite or not settings_path.exists():
-        settings_path.write_text(json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        installed_files.append(".claude/settings.json")
-        counts["configs"] += 1
+    existing_settings: Dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            existing_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_settings = {}
+    if not isinstance(existing_settings, dict):
+        existing_settings = {}
+
+    existing_env = existing_settings.setdefault("env", {})
+    if isinstance(existing_env, dict):
+        for k, v in settings_payload["env"].items():
+            if overwrite or k not in existing_env:
+                existing_env[k] = v
+
+    existing_hooks = existing_settings.setdefault("hooks", {})
+    if isinstance(existing_hooks, dict):
+        post_tool_use = existing_hooks.setdefault("PostToolUse", [])
+        if isinstance(post_tool_use, list):
+            has_hook = any(
+                isinstance(h, dict) and any(
+                    isinstance(hk, dict) and "notebooklm_post_tool_sync" in str(hk.get("command", ""))
+                    for hk in h.get("hooks", [])
+                )
+                for h in post_tool_use
+            )
+            if not has_hook:
+                post_tool_use.extend(settings_payload["hooks"]["PostToolUse"])
+
+    settings_path.write_text(json.dumps(existing_settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    installed_files.append(".claude/settings.json")
+    counts["configs"] += 1
 
     if include_mcp_config:
         mcp_path = dest_root / ".mcp.json"
-        mcp_payload = {
-            "mcpServers": {
-                "gemini-local": {
+        existing_mcp: Dict[str, Any] = {}
+        if mcp_path.exists():
+            try:
+                existing_mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing_mcp = {}
+        if not isinstance(existing_mcp, dict):
+            existing_mcp = {}
+        servers = existing_mcp.setdefault("mcpServers", {})
+        if isinstance(servers, dict):
+            if overwrite or "gemini-local" not in servers:
+                servers["gemini-local"] = {
                     "type": "http",
                     "url": f"{gateway_url.rstrip('/')}/mcp",
                 }
-            }
-        }
-        if overwrite or not mcp_path.exists():
-            mcp_path.write_text(json.dumps(mcp_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            installed_files.append(".mcp.json")
-            counts["configs"] += 1
+        mcp_path.write_text(json.dumps(existing_mcp, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        installed_files.append(".mcp.json")
+        counts["configs"] += 1
 
     return {
         "ok": True,
@@ -557,6 +623,8 @@ async def init_workspace_endpoint(req: WorkspaceInitRequest) -> Dict[str, Any]:
         )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except (OSError, RuntimeError) as oe:
+        raise HTTPException(status_code=400, detail=f"Invalid target directory: {oe}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed initializing workspace: {e}")
 

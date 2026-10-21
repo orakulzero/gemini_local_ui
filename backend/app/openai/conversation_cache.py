@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 logger = logging.getLogger("gemini_openai.conversation_cache")
 
 MAX_CONVERSATIONS = 2000
+DEFAULT_CACHE_TTL = 86400.0  # 24 hours
 DEFAULT_CACHE_DB_PATH = Path("backend/data/conversation_cache.db")
 
 
@@ -47,6 +48,8 @@ def _normalize_content(content: Any) -> Any:
             if d.get("type") == "thinking":
                 continue
             norm_parts.append(d)
+        if len(norm_parts) == 1 and isinstance(norm_parts[0], dict) and norm_parts[0].get("type") == "text":
+            return str(norm_parts[0].get("text", ""))
         return norm_parts
     if hasattr(content, "model_dump"):
         return content.model_dump(exclude_none=True)
@@ -86,10 +89,22 @@ def _normalize_message(msg: Any) -> Dict[str, Any]:
     return norm
 
 
-def history_key(messages: Sequence[Any]) -> str:
-    """Computes a deterministic SHA-256 hex digest for a sequence of OpenAI/Anthropic messages."""
+def history_key(
+    messages: Sequence[Any],
+    model: Optional[str] = None,
+    account: Optional[str] = None,
+) -> str:
+    """Computes a deterministic SHA-256 hex digest for a sequence of OpenAI/Anthropic messages, optionally scoped by model/account."""
     normalized = [_normalize_message(m) for m in messages]
-    raw_json = json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    if model or account:
+        envelope: Dict[str, Any] = {
+            "messages": normalized,
+            "model": str(model or ""),
+            "account": str(account or ""),
+        }
+        raw_json = json.dumps(envelope, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    else:
+        raw_json = json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
 
 
@@ -103,9 +118,11 @@ class ConversationCache:
         self,
         max_size: int = MAX_CONVERSATIONS,
         db_path: Optional[Union[str, Path]] = None,
+        ttl: float = DEFAULT_CACHE_TTL,
     ) -> None:
         self.max_size = max_size
-        self._cache: OrderedDict[str, Dict[str, str]] = OrderedDict()
+        self.ttl = ttl
+        self._cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._lock = threading.Lock()
         self.db_path: Optional[Path] = Path(db_path) if db_path else None
         if self.db_path is not None:
@@ -116,9 +133,10 @@ class ConversationCache:
             return
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(str(self.db_path), timeout=5.0) as conn:
+            with sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=5000;")
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS conversation_prefix_cache (
@@ -130,22 +148,29 @@ class ConversationCache:
                     )
                     """
                 )
-                conn.commit()
         except Exception as e:
             logger.warning("Failed initializing SQLite conversation cache at %s: %s", self.db_path, e)
 
-    def _db_lookup(self, candidate_keys: List[str]) -> Dict[str, Dict[str, str]]:
+    def _db_lookup(self, candidate_keys: List[str]) -> Dict[str, Dict[str, Any]]:
         if self.db_path is None or not candidate_keys:
             return {}
         try:
+            now = time.time()
+            cutoff = now - self.ttl if self.ttl > 0 else 0.0
             placeholders = ",".join("?" for _ in candidate_keys)
-            with sqlite3.connect(str(self.db_path), timeout=5.0) as conn:
+            params = list(candidate_keys) + [cutoff]
+            with sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None) as conn:
                 rows = conn.execute(
-                    f"SELECT prefix_hash, cid, rid, rcid FROM conversation_prefix_cache WHERE prefix_hash IN ({placeholders})",
-                    candidate_keys,
+                    f"SELECT prefix_hash, cid, rid, rcid, updated_at FROM conversation_prefix_cache WHERE prefix_hash IN ({placeholders}) AND updated_at >= ?",
+                    params,
                 ).fetchall()
             return {
-                str(r[0]): {"cid": str(r[1]), "rid": str(r[2]), "rcid": str(r[3])}
+                str(r[0]): {
+                    "cid": str(r[1]),
+                    "rid": str(r[2]),
+                    "rcid": str(r[3]),
+                    "updated_at": float(r[4]),
+                }
                 for r in rows
                 if r and r[1]
             }
@@ -153,35 +178,43 @@ class ConversationCache:
             logger.debug("SQLite conversation cache lookup error: %s", e)
             return {}
 
-    def _db_upsert(self, key: str, entry: Dict[str, str]) -> None:
+    def _db_upsert(self, key: str, entry: Dict[str, Any]) -> None:
         if self.db_path is None:
             return
         try:
-            now = time.time()
-            with sqlite3.connect(str(self.db_path), timeout=5.0) as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO conversation_prefix_cache (prefix_hash, cid, rid, rcid, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (key, entry["cid"], entry["rid"], entry["rcid"], now),
-                )
-                count_row = conn.execute("SELECT COUNT(*) FROM conversation_prefix_cache").fetchone()
-                total_rows = int(count_row[0]) if count_row else 0
-                if total_rows > self.max_size:
-                    excess = total_rows - self.max_size
+            now = float(entry.get("updated_at", time.time()))
+            with sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None) as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE;")
                     conn.execute(
                         """
-                        DELETE FROM conversation_prefix_cache
-                        WHERE prefix_hash IN (
-                            SELECT prefix_hash FROM conversation_prefix_cache
-                            ORDER BY updated_at ASC
-                            LIMIT ?
-                        )
+                        INSERT OR REPLACE INTO conversation_prefix_cache (prefix_hash, cid, rid, rcid, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (excess,),
+                        (key, str(entry["cid"]), str(entry["rid"]), str(entry["rcid"]), now),
                     )
-                conn.commit()
+                    count_row = conn.execute("SELECT COUNT(*) FROM conversation_prefix_cache").fetchone()
+                    total_rows = int(count_row[0]) if count_row else 0
+                    if total_rows > self.max_size:
+                        excess = total_rows - self.max_size
+                        conn.execute(
+                            """
+                            DELETE FROM conversation_prefix_cache
+                            WHERE prefix_hash IN (
+                                SELECT prefix_hash FROM conversation_prefix_cache
+                                ORDER BY updated_at ASC
+                                LIMIT ?
+                            )
+                            """,
+                            (excess,),
+                        )
+                    conn.execute("COMMIT;")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+                    raise
         except Exception as e:
             logger.debug("SQLite conversation cache upsert error: %s", e)
 
@@ -189,13 +222,34 @@ class ConversationCache:
         if self.db_path is None or not self.db_path.exists():
             return
         try:
-            with sqlite3.connect(str(self.db_path), timeout=5.0) as conn:
-                conn.execute("DELETE FROM conversation_prefix_cache")
-                conn.commit()
+            with sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None) as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE;")
+                    conn.execute("DELETE FROM conversation_prefix_cache")
+                    conn.execute("COMMIT;")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+                    raise
         except Exception as e:
             logger.debug("SQLite conversation cache clear error: %s", e)
 
-    def find(self, messages: Sequence[Any]) -> Tuple[int, Optional[Dict[str, str]]]:
+    @staticmethod
+    def _clean_entry(entry: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "cid": str(entry.get("cid", "")),
+            "rid": str(entry.get("rid", "")),
+            "rcid": str(entry.get("rcid", "")),
+        }
+
+    def find(
+        self,
+        messages: Sequence[Any],
+        model: Optional[str] = None,
+        account: Optional[str] = None,
+    ) -> Tuple[int, Optional[Dict[str, str]]]:
         """
         Searches for the longest prefix `messages[:n]` (for n from len(messages)-1 down to 1)
         that matches a cached Gemini conversation state in RAM or SQLite.
@@ -208,15 +262,20 @@ class ConversationCache:
             return 0, None
 
         prefix_keys: List[Tuple[int, str]] = [
-            (n, history_key(messages[:n])) for n in range(total - 1, 0, -1)
+            (n, history_key(messages[:n], model=model, account=account))
+            for n in range(total - 1, 0, -1)
         ]
 
+        now = time.time()
         with self._lock:
             for n, key in prefix_keys:
                 chat = self._cache.get(key)
                 if chat is not None:
+                    if self.ttl > 0 and (now - float(chat.get("updated_at", now)) > self.ttl):
+                        del self._cache[key]
+                        continue
                     self._cache.move_to_end(key)
-                    return n, dict(chat)
+                    return n, self._clean_entry(chat)
 
             if self.db_path is not None:
                 db_matches = self._db_lookup([k for _, k in prefix_keys])
@@ -228,7 +287,7 @@ class ConversationCache:
                             self._cache.move_to_end(key)
                             while len(self._cache) > self.max_size:
                                 self._cache.popitem(last=False)
-                            return n, dict(entry)
+                            return n, self._clean_entry(entry)
 
         return 0, None
 
@@ -237,6 +296,8 @@ class ConversationCache:
         messages: Sequence[Any],
         reply: Union[str, Dict[str, Any], Any],
         chat: Optional[Dict[str, Any]],
+        model: Optional[str] = None,
+        account: Optional[str] = None,
     ) -> Optional[str]:
         """
         Records `messages + [assistant_reply]` mapped to `chat` (`{"cid": ..., "rid": ..., "rcid": ...}`).
@@ -255,11 +316,13 @@ class ConversationCache:
             reply_msg = {"role": "assistant", "content": str(reply)}
 
         full_transcript = list(messages) + [reply_msg]
-        key = history_key(full_transcript)
+        key = history_key(full_transcript, model=model, account=account)
+        now = time.time()
         entry = {
             "cid": str(chat.get("cid") or ""),
             "rid": str(chat.get("rid") or ""),
             "rcid": str(chat.get("rcid") or ""),
+            "updated_at": now,
         }
 
         with self._lock:
@@ -286,16 +349,22 @@ class ConversationCache:
 default_cache = ConversationCache(max_size=MAX_CONVERSATIONS, db_path=DEFAULT_CACHE_DB_PATH)
 
 
-def find(messages: Sequence[Any]) -> Tuple[int, Optional[Dict[str, str]]]:
-    return default_cache.find(messages)
+def find(
+    messages: Sequence[Any],
+    model: Optional[str] = None,
+    account: Optional[str] = None,
+) -> Tuple[int, Optional[Dict[str, str]]]:
+    return default_cache.find(messages, model=model, account=account)
 
 
 def remember(
     messages: Sequence[Any],
     reply: Union[str, Dict[str, Any], Any],
     chat: Optional[Dict[str, Any]],
+    model: Optional[str] = None,
+    account: Optional[str] = None,
 ) -> Optional[str]:
-    return default_cache.remember(messages, reply, chat)
+    return default_cache.remember(messages, reply, chat, model=model, account=account)
 
 
 def clear() -> None:

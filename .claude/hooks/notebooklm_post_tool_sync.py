@@ -33,7 +33,7 @@ def should_sync_path(rel_posix: str) -> bool:
 def run_hook(payload: dict) -> dict:
     tool_name = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
-    if tool_name not in ("Write", "Edit", "MultiEdit") and not isinstance(tool_input, dict):
+    if tool_name not in ("Write", "Edit", "MultiEdit") or not isinstance(tool_input, dict):
         return {}
 
     raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip()

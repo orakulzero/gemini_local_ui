@@ -440,7 +440,7 @@ export const NotebookLMDrawer: React.FC = () => {
                     <button
                       onClick={() => {
                         const block = `<notebooklm_reference title="${activeNotebook.title}: ${n.title}">\n${n.content}\n</notebooklm_reference>`;
-                        useChatStore.getState().setDraftPrompt(block);
+                        useChatStore.getState().injectContext(block);
                         setAttachNotice(`Attached note "${n.title}" to chat!`);
                         setTimeout(() => setAttachNotice(null), 2500);
                       }}

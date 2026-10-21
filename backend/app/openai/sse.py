@@ -10,7 +10,7 @@ import logging
 from typing import Any, AsyncIterator, List, Optional
 import uuid
 
-from backend.app.bridge.streaming_parser import StreamChunk
+from backend.app.bridge.streaming_parser import StreamChunk, sanitize_surrogate_text
 from backend.app.openai.adapter import OpenAIAdapter
 from backend.app.openai.schemas import (
     ChatCompletionChoice,
@@ -72,7 +72,7 @@ async def stream_openai_sse(
     try:
         async for chunk in stream_generator:
             if chunk.type == "text" and chunk.delta:
-                delta_text = chunk.delta
+                delta_text = sanitize_surrogate_text(chunk.delta)
                 accumulated_text += delta_text
 
                 # Check stop sequences

@@ -690,14 +690,25 @@ async def sync_repo_to_notebooklm(
     import time as _time
     from pathlib import Path
 
-    workspace_root = Path(root_dir) if root_dir else Path.cwd()
+    if not notebook_id or not str(notebook_id).strip():
+        raise ValueError("notebook_id cannot be empty or whitespace")
+    notebook_id = str(notebook_id).strip()
+
+    workspace_root = (Path(root_dir) if root_dir else Path.cwd()).resolve()
     patterns = paths if paths else list(DEFAULT_REPO_SYNC_PATTERNS)
 
     matched_files: List[Path] = []
     seen_paths = set()
     for pat in patterns:
         norm_pat = str(pat).replace("\\", "/").lstrip("/")
+        # Path traversal guard: reject patterns containing ".." components
+        if ".." in norm_pat.split("/"):
+            raise ValueError(f"Path traversal detected in pattern: {pat}")
+
         direct_candidate = (workspace_root / norm_pat).resolve()
+        if not direct_candidate.is_relative_to(workspace_root):
+            raise ValueError(f"Path escapes workspace root: {pat}")
+
         if direct_candidate.exists() and direct_candidate.is_file():
             if direct_candidate not in seen_paths:
                 seen_paths.add(direct_candidate)
@@ -705,6 +716,8 @@ async def sync_repo_to_notebooklm(
             continue
         for p in sorted(workspace_root.glob(norm_pat)):
             rp = p.resolve()
+            if not rp.is_relative_to(workspace_root):
+                continue
             if rp.is_file() and rp not in seen_paths:
                 seen_paths.add(rp)
                 matched_files.append(rp)
@@ -726,10 +739,10 @@ async def sync_repo_to_notebooklm(
     skipped_files: List[str] = []
 
     for fpath in matched_files:
-        try:
-            rel_posix = fpath.relative_to(workspace_root.resolve()).as_posix()
-        except ValueError:
-            rel_posix = fpath.name
+        rf = fpath.resolve()
+        if not rf.is_relative_to(workspace_root):
+            raise ValueError(f"File escapes workspace root: {fpath}")
+        rel_posix = rf.relative_to(workspace_root).as_posix()
 
         try:
             content = fpath.read_text(encoding="utf-8", errors="replace")
@@ -839,6 +852,10 @@ async def sync_repo_endpoint(
             force=req.force,
             client=client,
         )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except (OSError, RuntimeError) as oe:
+        raise HTTPException(status_code=400, detail=f"Filesystem error during sync: {oe}")
     finally:
         await client.close()
 

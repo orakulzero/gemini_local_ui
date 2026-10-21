@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import uuid
 
 from backend.app.anthropic.adapter import AnthropicAdapter
-from backend.app.bridge.streaming_parser import StreamChunk
+from backend.app.bridge.streaming_parser import StreamChunk, sanitize_surrogate_text
 
 logger = logging.getLogger("gemini_anthropic.sse")
 
@@ -76,6 +76,14 @@ async def stream_anthropic_sse(
         async for chunk in stream_generator:
             # Handle Thinking / Reasoning Chunks
             if chunk.type == "thought" and chunk.delta and thinking_enabled:
+                if text_block_open:
+                    yield format_anthropic_event(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": block_index},
+                    )
+                    block_index += 1
+                    text_block_open = False
+
                 if not thought_block_open:
                     yield format_anthropic_event(
                         "content_block_start",
@@ -87,13 +95,14 @@ async def stream_anthropic_sse(
                     )
                     thought_block_open = True
 
-                accumulated_thoughts.append(chunk.delta)
+                delta_thought = sanitize_surrogate_text(chunk.delta)
+                accumulated_thoughts.append(delta_thought)
                 yield format_anthropic_event(
                     "content_block_delta",
                     {
                         "type": "content_block_delta",
                         "index": block_index,
-                        "delta": {"type": "thinking_delta", "thinking": chunk.delta},
+                        "delta": {"type": "thinking_delta", "thinking": delta_thought},
                     },
                 )
 
@@ -108,7 +117,7 @@ async def stream_anthropic_sse(
                     block_index += 1
                     thought_block_open = False
 
-                delta_text = chunk.delta
+                delta_text = sanitize_surrogate_text(chunk.delta)
                 accumulated_text_chunks.append(delta_text)
                 accumulated_full_text += delta_text
 
