@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Cookie Sync",
+  "version": "1.5",
+  "description": "Sends the signed-in Gemini session to your gemini-web2api gateway and keeps it fresh.",
+  "permissions": [
+    "cookies",
+    "downloads",
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://google.com/*",
+    "https://*.google.com/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Gemini Cookie Sync",
+    "default_popup": "popup.html"
+  }
+}

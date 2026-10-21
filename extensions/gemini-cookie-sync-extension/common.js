@@ -1,0 +1,368 @@
+// Shared by popup.js and background.js: read the Gemini session and send it to a gateway.
+
+const CORE_REQUIRED = ["SAPISID"];
+const SESSION_ALTERNATIVES = ["__Secure-1PSID", "__Secure-3PSID", "SID"];
+const LEGACY_COOKIES = ["SID", "HSID", "SSID", "APISID", "SAPISID"];
+
+const EXPORT_ORDER = [
+  "SID",
+  "HSID",
+  "SSID",
+  "APISID",
+  "SAPISID",
+  "LSID",
+  "OSID",
+  "SIDCC",
+  "AEC",
+  "NID",
+  "COMPASS",
+  "__Secure-1PAPISID",
+  "__Secure-1PSID",
+  "__Secure-1PSIDTS",
+  "__Secure-1PSIDCC",
+  "__Secure-1PSIDRTS",
+  "__Secure-3PAPISID",
+  "__Secure-3PSID",
+  "__Secure-3PSIDTS",
+  "__Secure-3PSIDCC",
+  "__Secure-3PSIDRTS",
+  "__Secure-OSID",
+  "__Host-1PLSID",
+  "__Host-3PLSID"
+];
+
+const LOOKUP_URLS = [
+  "https://gemini.google.com/app",
+  "https://accounts.google.com/",
+  "https://www.google.com/",
+  "https://google.com/"
+];
+
+const SYNC_ALARM = "gateway-sync";
+const SYNC_PERIOD_MINUTES = 15;
+// keepFresh is on by default: without it the gateway's copy of the session dies
+// minutes after the browser rotates its cookies. "configured" is set by the first
+// successful manual send, so nothing is sent before the gateway is set up.
+const DEFAULT_SETTINGS = { gatewayUrl: "http://localhost:8000", adminKey: "", keepFresh: true, configured: false, lastSync: null };
+
+function normalizeDomain(domain = "") {
+  return domain.replace(/^\./, "").toLowerCase();
+}
+
+function isGoogleCookie(cookie) {
+  const domain = normalizeDomain(cookie.domain);
+  return domain === "google.com" || domain.endsWith(".google.com");
+}
+
+function cookieKey(cookie) {
+  const partition = cookie.partitionKey ? JSON.stringify(cookie.partitionKey) : "";
+  return [
+    cookie.storeId || "",
+    cookie.name,
+    cookie.domain,
+    cookie.path,
+    partition
+  ].join("|");
+}
+
+function scoreCookie(cookie) {
+  const domain = (cookie.domain || "").toLowerCase();
+  let score = 0;
+
+  if (domain === ".google.com") score += 120;
+  else if (domain === "google.com") score += 110;
+  else if (domain === ".gemini.google.com") score += 100;
+  else if (domain === "gemini.google.com") score += 95;
+  else if (domain === ".accounts.google.com") score += 80;
+  else if (domain === "accounts.google.com") score += 75;
+  else if (domain.endsWith(".google.com")) score += 40;
+
+  if (cookie.path === "/") score += 10;
+  if (cookie.secure) score += 3;
+  if (cookie.httpOnly) score += 2;
+  if (!cookie.partitionKey) score += 2;
+  if (!cookie.session) score += 1;
+
+  return score;
+}
+
+async function readGoogleCookies() {
+  const stores = await chrome.cookies.getAllCookieStores();
+  const deduped = new Map();
+
+  for (const store of stores) {
+    const queries = [
+      chrome.cookies.getAll({ storeId: store.id }),
+      ...LOOKUP_URLS.map((url) => chrome.cookies.getAll({ storeId: store.id, url }))
+    ];
+
+    const results = await Promise.allSettled(queries);
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      for (const cookie of result.value) {
+        if (!isGoogleCookie(cookie) || !cookie.value) continue;
+        deduped.set(cookieKey(cookie), cookie);
+      }
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+// Only cookies the browser itself sends to gemini.google.com. Host-only cookies
+// of other services (Gmail's OSID, the sign-in page's LSID) make Google hand out
+// image links that end in HTTP 403.
+function appliesToGemini(cookie) {
+  const domain = normalizeDomain(cookie.domain);
+  if (cookie.hostOnly) return domain === "gemini.google.com";
+  return domain === "google.com" || domain === "gemini.google.com";
+}
+
+function selectBestCookies(cookies) {
+  const selected = new Map();
+
+  for (const name of EXPORT_ORDER) {
+    const candidates = cookies
+      .filter((cookie) => cookie.name === name && cookie.value && appliesToGemini(cookie))
+      .sort((a, b) => scoreCookie(b) - scoreCookie(a));
+
+    if (candidates.length > 0) selected.set(name, candidates[0]);
+  }
+
+  return selected;
+}
+
+function validateSelection(selected) {
+  const missingCore = CORE_REQUIRED.filter((name) => !selected.has(name));
+  const sessionCookie = SESSION_ALTERNATIVES.find((name) => selected.has(name));
+  return {
+    missingCore,
+    sessionCookie,
+    valid: missingCore.length === 0 && Boolean(sessionCookie)
+  };
+}
+
+function listPresent(selected, names) {
+  return names.filter((name) => selected.has(name));
+}
+
+function summarizeAvailable(cookies) {
+  return [...new Set(cookies
+    .map((cookie) => cookie.name)
+    .filter((name) => /SID|APISID|LSID|OSID|COMPASS/.test(name)))]
+    .sort();
+}
+
+function getActiveGeminiAccount(tabs) {
+  for (const tab of tabs) {
+    try {
+      const url = new URL(tab.url || "");
+      if (url.hostname !== "gemini.google.com") continue;
+      const match = url.pathname.match(/^\/u\/(\d+)(?:\/|$)/);
+      return match ? match[1] : null;
+    } catch {
+      // Ignore malformed or unavailable URLs.
+    }
+  }
+  return null;
+}
+
+function chooseGeminiTab(tabs) {
+  return tabs.find((tab) => tab.active) || tabs[0] || null;
+}
+
+async function readGeminiPageMetadata(tabs) {
+  const tab = chooseGeminiTab(tabs);
+  if (!tab?.id) {
+    return {
+      xsrfToken: null,
+      geminiBl: null,
+      source: null,
+      error: "No gemini.google.com tab is open: the gateway will fetch the token automatically."
+    };
+  }
+
+  try {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: () => {
+        const wiz = globalThis.WIZ_global_data || {};
+        const html = document.documentElement?.innerHTML || "";
+
+        const decode = (value) => {
+          if (!value) return null;
+          try {
+            return JSON.parse(`"${value.replace(/"/g, '\\"')}"`);
+          } catch {
+            return value
+              .replace(/\\u003d/gi, "=")
+              .replace(/\\u0026/gi, "&")
+              .replace(/\\u003c/gi, "<")
+              .replace(/\\u003e/gi, ">");
+          }
+        };
+
+        const regexValue = (name) => {
+          const patterns = [
+            new RegExp(`"${name}"\\s*:\\s*"([^"\\n]+)"`),
+            new RegExp(`\\\\"${name}\\\\"\\s*:\\s*\\\\"([^"\\n]+)\\\\"`)
+          ];
+          for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match?.[1]) return decode(match[1]);
+          }
+          return null;
+        };
+
+        let resourceBl = null;
+        try {
+          const resources = performance.getEntriesByType("resource");
+          for (const entry of resources) {
+            if (!entry?.name?.includes("gemini.google.com")) continue;
+            const url = new URL(entry.name);
+            const bl = url.searchParams.get("bl");
+            if (bl) {
+              resourceBl = bl;
+              break;
+            }
+          }
+        } catch {
+          // Ignore performance API failures.
+        }
+
+        const xsrfToken = wiz.SNlM0e || regexValue("SNlM0e");
+        const geminiBl = wiz.cfb2h || resourceBl || regexValue("cfb2h");
+
+        let source = null;
+        if (wiz.SNlM0e || wiz.cfb2h) source = "WIZ_global_data";
+        else if (resourceBl) source = "performance";
+        else if (xsrfToken || geminiBl) source = "page-html";
+
+        return {
+          xsrfToken: xsrfToken || null,
+          geminiBl: geminiBl || null,
+          source,
+          url: location.href
+        };
+      }
+    });
+
+    return result?.[0]?.result || {
+      xsrfToken: null,
+      geminiBl: null,
+      source: null,
+      error: "Failed to read Gemini page metadata."
+    };
+  } catch (error) {
+    return {
+      xsrfToken: null,
+      geminiBl: null,
+      source: null,
+      error: error?.message || String(error)
+    };
+  }
+}
+
+async function buildInspection() {
+  const [cookies, tabs] = await Promise.all([
+    readGoogleCookies(),
+    chrome.tabs.query({ url: "https://gemini.google.com/*" })
+  ]);
+
+  const selected = selectBestCookies(cookies);
+  const validation = validateSelection(selected);
+  const legacyPresent = listPresent(selected, LEGACY_COOKIES);
+  const legacyMissing = LEGACY_COOKIES.filter((name) => !selected.has(name));
+  const available = summarizeAvailable(cookies);
+  const authUser = getActiveGeminiAccount(tabs);
+  const pageMetadata = await readGeminiPageMetadata(tabs);
+
+  return {
+    cookies,
+    selected,
+    validation,
+    legacyPresent,
+    legacyMissing,
+    available,
+    authUser,
+    pageMetadata
+  };
+}
+
+function buildCookieString(info) {
+  return EXPORT_ORDER
+    .filter((name) => info.selected.has(name))
+    .map((name) => `${name}=${info.selected.get(name).value}`)
+    .join("; ");
+}
+
+function buildSessionPayload(info) {
+  return {
+    cookie: buildCookieString(info),
+    sapisid: info.selected.get("SAPISID")?.value || null,
+    auth_user: info.authUser,
+    xsrf_token: info.pageMetadata.xsrfToken,
+    gemini_bl: info.pageMetadata.geminiBl
+  };
+}
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(Object.keys(DEFAULT_SETTINGS));
+  return { ...DEFAULT_SETTINGS, ...stored };
+}
+
+function gatewayEndpoint(gatewayUrl) {
+  const url = new URL(gatewayUrl.trim());
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Gateway URL must start with http:// or https://");
+  }
+  return `${url.origin}/admin/session`;
+}
+
+// Reads the current session and POSTs it to the gateway. Returns the gateway reply.
+async function syncToGateway(settings) {
+  const info = await buildInspection();
+  if (!info.validation.valid) {
+    throw new Error("Not signed in to Google in this browser: open Gemini and sign in.");
+  }
+  const headers = { "Content-Type": "application/json" };
+  if (settings.adminKey) headers["X-Admin-Key"] = settings.adminKey;
+
+  let response;
+  try {
+    response = await fetch(gatewayEndpoint(settings.gatewayUrl), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(buildSessionPayload(info)),
+      signal: AbortSignal.timeout(90000)
+    });
+  } catch (error) {
+    throw new Error(`Gateway is unreachable (${settings.gatewayUrl}). Is it running? ${error?.message || error}`);
+  }
+  let reply = {};
+  try {
+    reply = await response.json();
+  } catch {
+    // Non-JSON reply: handled below by status.
+  }
+  if (response.status === 401) {
+    throw new Error("Gateway rejected admin key (admin_key).");
+  }
+  if (!response.ok || !reply.ok) {
+    throw new Error(`Gateway rejected session: ${reply.error || `HTTP ${response.status}`}`);
+  }
+  return reply;
+}
+
+async function recordSync(ok, message) {
+  await chrome.storage.local.set({ lastSync: { at: Date.now(), ok, message } });
+}
+
+async function scheduleSync(enabled) {
+  await chrome.alarms.clear(SYNC_ALARM);
+  if (enabled) {
+    await chrome.alarms.create(SYNC_ALARM, { periodInMinutes: SYNC_PERIOD_MINUTES, delayInMinutes: 1 });
+  }
+}

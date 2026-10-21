@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+/* Code block line numbers via CSS counters - 0 DOM node overhead per line */
+.code-lines {
+  counter-reset: code-line-counter;
+}
+
+.code-line {
+  counter-increment: code-line-counter;
+}
+
+.code-line::before {
+  content: counter(code-line-counter);
+  display: inline-block;
+  width: 2.5rem;
+  margin-right: 1rem;
+  color: #71717a;
+  text-align: right;
+  user-select: none;
+}
+
+/* Syntax highlighting token theme (Tokyo Night / GitHub Dark inspired) */
+.hljs {
+  color: #c9d1d9;
+}
+.hljs-keyword, .hljs-selector-tag, .hljs-subst {
+  color: #ff7b72;
+}
+.hljs-string, .hljs-title, .hljs-section, .hljs-attribute, .hljs-literal, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-addition {
+  color: #a5d6ff;
+}
+.hljs-comment, .hljs-quote, .hljs-deletion, .hljs-meta {
+  color: #8b949e;
+  font-style: italic;
+}
+.hljs-number, .hljs-regexp, .hljs-link {
+  color: #79c0ff;
+}
+.hljs-variable, .hljs-symbol, .hljs-bullet {
+  color: #ffa657;
+}
+.hljs-function, .hljs-title.class_, .hljs-title.function_ {
+  color: #d2a8ff;
+}
+
+/* Lean custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 0.4);
+}

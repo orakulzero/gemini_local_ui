@@ -1,0 +1,41 @@
+# Python & Test Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+playwright-report/
+test-results/
+
+# Local Databases, Vault Keys & Logs
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.key
+backend/data/
+data/
+logs/
+overnight_runs/
+*.log
+
+# Scratch & Debug Artifacts
+scratch_*.py
+debug_*.json
+all_inner_objects.json
+last_candidate_dump.json
+test_out*.zip
+test_extract*/
+argon_audit_extracted/
+argon_extracted_materials/
+audit_task_context/
+auth_audit_context/
+curated_argon_audit_context/
+.claude/settings.local.json

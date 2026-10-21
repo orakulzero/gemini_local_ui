@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gemini Cookie Sync</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      width: 390px;
+      margin: 0;
+      padding: 16px;
+      background: Canvas;
+      color: CanvasText;
+    }
+    h1 { font-size: 17px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 16px 0 4px; }
+    p { font-size: 13px; line-height: 1.55; margin: 8px 0; }
+    label { display: block; font-size: 12px; margin-top: 8px; opacity: .85; }
+    input[type=text], input[type=password] {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px;
+      margin-top: 4px;
+      border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+      border-radius: 6px;
+      background: Canvas;
+      color: CanvasText;
+      font-size: 13px;
+    }
+    .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 10px; opacity: 1; }
+    button {
+      width: 100%;
+      padding: 10px 12px;
+      margin-top: 10px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:disabled { opacity: .55; cursor: wait; }
+    #sync { background: #1769e0; color: white; }
+    #export, #inspect, #open { background: color-mix(in srgb, CanvasText 10%, Canvas); color: CanvasText; }
+    #status {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border-radius: 8px;
+      padding: 10px;
+      background: color-mix(in srgb, CanvasText 7%, Canvas);
+      min-height: 44px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .warn { color: #b34800; }
+    .ok { color: #17823b; }
+    code { direction: ltr; unicode-bidi: embed; }
+    .note { opacity: .78; }
+    details { margin-top: 12px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Gemini Cookie Sync</h1>
+  <p>Forwards your Gemini session to the gemini-web2api gateway — on this machine, in Docker, or on a LAN server.</p>
+
+  <h2>Gateway</h2>
+  <label for="gateway">Gateway URL</label>
+  <input id="gateway" type="text" placeholder="http://localhost:8000" spellcheck="false">
+  <label for="key">Admin key (admin_key) — required for Docker and remote LAN servers</label>
+  <input id="key" type="password" placeholder="leave empty if gateway runs on this machine" spellcheck="false">
+  <label class="check"><input id="auto" type="checkbox"> Keep session fresh in gateway (on cookie rotation and every 15 minutes)</label>
+  <button id="sync" type="button">Send session to gateway</button>
+
+  <p id="status">Ready.</p>
+
+  <details>
+    <summary>More</summary>
+    <button id="open" type="button">Open Gemini</button>
+    <button id="inspect" type="button">Inspect session</button>
+    <button id="export" type="button">Save gemini-auth.json</button>
+  </details>
+
+  <p class="note">This session grants full access to your Google account. Send it only to your own gateway and never publish your admin key.</p>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
