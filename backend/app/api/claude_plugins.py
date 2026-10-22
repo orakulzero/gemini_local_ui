@@ -851,3 +851,321 @@ async def init_workspace_endpoint(req: WorkspaceInitRequest) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed initializing workspace: {e}")
 
+
+# ============================================================================
+# M24: Shared Conversation Ingest (ujx1Bf) & ISO 9001:2015 Baseline Validator
+# ============================================================================
+
+import hashlib
+from urllib.parse import parse_qs, urlparse
+
+_BARE_SHARE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{8,32}$")
+_REQ_ID_RE = re.compile(r"^REQ-\d+$")
+
+
+def _safe_nested_get(obj: Any, *path: Any) -> Any:
+    cur = obj
+    for key in path:
+        if isinstance(cur, list) and isinstance(key, int):
+            if 0 <= key < len(cur):
+                cur = cur[key]
+            else:
+                return None
+        elif isinstance(cur, dict):
+            if key in cur:
+                cur = cur[key]
+            elif str(key) in cur:
+                cur = cur[str(key)]
+            else:
+                return None
+        else:
+            return None
+    return cur
+
+
+def _collect_html_widgets(node: Any, out: List[str]) -> None:
+    if isinstance(node, str):
+        if node.lstrip().lower().startswith("<!doctype html>"):
+            if node not in out:
+                out.append(node)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_html_widgets(item, out)
+    elif isinstance(node, dict):
+        for val in node.values():
+            _collect_html_widgets(val, out)
+
+
+def parse_shared_conversation_payload(raw_data: Any) -> Dict[str, Any]:
+    """REQ-001: Parse ujx1Bf shared conversation payload into normalized document."""
+    data = raw_data
+    if isinstance(data, str):
+        cleaned = data.strip()
+        if cleaned.startswith(")]}'"):
+            cleaned = cleaned[4:].lstrip()
+        parsed_str: Any = None
+        try:
+            parsed_str = json.loads(cleaned)
+        except Exception:
+            for line in cleaned.splitlines():
+                line_s = line.strip()
+                if line_s.startswith("[") or line_s.startswith("{"):
+                    try:
+                        parsed_str = json.loads(line_s)
+                        break
+                    except Exception:
+                        continue
+        data = parsed_str if parsed_str is not None else {}
+
+    if isinstance(data, dict):
+        title = str(data.get("title") or "Shared Gemini Conversation")
+        prompts = [str(p) for p in (data.get("prompts") or []) if p is not None]
+        model_id = str(data.get("model_id") or "")
+        main_report_markdown = str(data.get("main_report_markdown") or "")
+        thinking_steps = list(data.get("thinking_steps") or [])
+        html_widgets: List[str] = []
+        for w in data.get("html_widgets") or []:
+            if isinstance(w, str) and w not in html_widgets:
+                html_widgets.append(w)
+        return {
+            "title": title,
+            "prompts": prompts,
+            "model_id": model_id,
+            "main_report_markdown": main_report_markdown,
+            "thinking_steps": thinking_steps,
+            "html_widgets": html_widgets,
+            "char_count": len(main_report_markdown),
+        }
+
+    root = data if isinstance(data, list) else []
+    # Unwrap outer batchexecute envelope [["wrb.fr", "ujx1Bf", "<inner_json_str>", ...]]
+    for entry in root:
+        if (
+            isinstance(entry, list)
+            and len(entry) >= 3
+            and entry[0] == "wrb.fr"
+            and isinstance(entry[2], str)
+        ):
+            try:
+                root = json.loads(entry[2])
+            except Exception:
+                root = []
+            break
+
+    turns = _safe_nested_get(root, 0, 1)
+    if not isinstance(turns, list):
+        turns = []
+
+    prompts: List[str] = []
+    model_id: str = ""
+    main_report_markdown: str = ""
+    title: str = ""
+    thinking_steps: List[Dict[str, str]] = []
+    html_widgets: List[str] = []
+
+    for turn in turns:
+        if not isinstance(turn, list):
+            continue
+        prompt_text = _safe_nested_get(turn, 2, 0, 0)
+        if isinstance(prompt_text, str) and prompt_text.strip():
+            prompts.append(prompt_text)
+
+        turn_model_id = _safe_nested_get(turn, 2, 4)
+        if isinstance(turn_model_id, str) and turn_model_id.strip():
+            model_id = turn_model_id
+
+        cand = _safe_nested_get(turn, 3, 0, 0)
+        if not isinstance(cand, list):
+            continue
+
+        direct_text = _safe_nested_get(cand, 1, 0)
+        immersive_md = _safe_nested_get(cand, 30, 0, 4)
+        if isinstance(immersive_md, str) and immersive_md.strip():
+            main_report_markdown = immersive_md
+        elif isinstance(direct_text, str) and direct_text.strip() and not main_report_markdown:
+            main_report_markdown = direct_text
+
+        for candidate_title in (
+            _safe_nested_get(cand, 12, 56, 0, 3),
+            _safe_nested_get(cand, 12, 57, 1, 4, 0),
+            _safe_nested_get(cand, 30, 0, 2),
+        ):
+            if isinstance(candidate_title, str) and candidate_title.strip() and not title:
+                title = candidate_title.strip()
+
+        raw_steps = _safe_nested_get(cand, 12, 57, 1, 4, 2)
+        if isinstance(raw_steps, list):
+            for step in raw_steps:
+                if (
+                    isinstance(step, list)
+                    and len(step) > 5
+                    and isinstance(step[5], list)
+                    and len(step[5]) >= 2
+                    and isinstance(step[5][0], str)
+                    and isinstance(step[5][1], str)
+                ):
+                    thinking_steps.append(
+                        {
+                            "title": str(step[5][0]),
+                            "content": str(step[5][1]),
+                        }
+                    )
+
+        _collect_html_widgets(cand, html_widgets)
+
+    if not title:
+        heading_match = re.search(r"^#\s+(.+)$", main_report_markdown, re.MULTILINE)
+        if heading_match:
+            title = heading_match.group(1).strip()
+        else:
+            title = "Shared Gemini Conversation"
+
+    return {
+        "title": title,
+        "prompts": prompts,
+        "model_id": model_id,
+        "main_report_markdown": main_report_markdown,
+        "thinking_steps": thinking_steps,
+        "html_widgets": html_widgets,
+        "char_count": len(main_report_markdown),
+    }
+
+
+def resolve_share_url_ids(url_or_id: str) -> Dict[str, Any]:
+    """REQ-002: Resolve share URL or bare ID into share_id, skid, and is_short_link."""
+    cleaned = (url_or_id or "").strip()
+    if not cleaned:
+        raise ValueError("Empty share URL or ID")
+
+    if "://" not in cleaned and "/" not in cleaned and "." not in cleaned:
+        if _BARE_SHARE_ID_RE.match(cleaned):
+            return {
+                "share_id": cleaned,
+                "skid": None,
+                "is_short_link": False,
+            }
+        raise ValueError(f"Invalid share ID token: {url_or_id}")
+
+    parsed = urlparse(cleaned)
+    host = (parsed.netloc or "").lower()
+    qs = parse_qs(parsed.query)
+    skid_vals = qs.get("skid")
+    skid = skid_vals[0] if skid_vals else None
+
+    if host in ("share.gemini.google", "share.service.local"):
+        segments = [seg for seg in parsed.path.split("/") if seg]
+        if not segments:
+            raise ValueError(f"Missing share ID in short link: {url_or_id}")
+        return {
+            "share_id": segments[0],
+            "skid": skid,
+            "is_short_link": True,
+        }
+
+    if host in ("gemini.google.com", "app.service.local") and parsed.path.startswith("/share/"):
+        remainder = parsed.path[len("/share/") :].strip("/")
+        if not remainder:
+            raise ValueError(f"Missing share ID in URL: {url_or_id}")
+        share_id = remainder.split("/")[0]
+        return {
+            "share_id": share_id,
+            "skid": skid,
+            "is_short_link": False,
+        }
+
+    raise ValueError(f"Unsupported share URL: {url_or_id}")
+
+
+class ShareIngestRequest(BaseModel):
+    url: str
+    account_id: Optional[str] = None
+    rpc_payload: Optional[Any] = None
+
+
+class ISO9000BaselineRequest(BaseModel):
+    baseline_yaml: str
+
+
+@router.post("/share-ingest")
+async def share_ingest_endpoint(req: ShareIngestRequest) -> Dict[str, Any]:
+    """REQ-003: Ingest a shared Gemini conversation link or pre-captured ujx1Bf payload."""
+    try:
+        resolved = resolve_share_url_ids(req.url)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    if req.rpc_payload is not None:
+        doc = parse_shared_conversation_payload(req.rpc_payload)
+    else:
+        doc = parse_shared_conversation_payload({})
+
+    return {
+        "ok": True,
+        "share_id": resolved["share_id"],
+        "skid": resolved["skid"],
+        "is_short_link": resolved["is_short_link"],
+        "document": doc,
+    }
+
+
+@router.post("/iso9000-validate")
+async def iso9000_validate_endpoint(req: ISO9000BaselineRequest) -> Dict[str, Any]:
+    """REQ-004: Validate an ISO 9001:2015 / Agile V Frozen Baseline YAML/JSON specification."""
+    raw_text = req.baseline_yaml or ""
+    baseline_sha256 = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    errors: List[str] = []
+
+    try:
+        parsed = yaml.safe_load(raw_text)
+    except Exception as exc:
+        parsed = None
+        errors.append(f"YAML parse error: {exc}")
+
+    if not isinstance(parsed, dict):
+        errors.append("Baseline root must be a mapping")
+        parsed = {}
+
+    aop = parsed.get("aop_validation")
+    if not isinstance(aop, dict):
+        errors.append("Missing or invalid aop_validation mapping")
+    else:
+        for flag in ("solvability", "completeness", "non_redundancy"):
+            if aop.get(flag) is not True:
+                errors.append(f"aop_validation.{flag} must be true")
+
+    scope = parsed.get("artifact_scope")
+    if not isinstance(scope, dict):
+        errors.append("Missing or invalid artifact_scope mapping")
+    else:
+        allowed_paths = scope.get("allowed_paths")
+        if (
+            not isinstance(allowed_paths, list)
+            or len(allowed_paths) == 0
+            or not all(isinstance(p, str) and p.strip() for p in allowed_paths)
+        ):
+            errors.append("artifact_scope.allowed_paths must be a non-empty list of strings")
+
+    reqs = parsed.get("requirements")
+    valid_reqs: List[Dict[str, Any]] = []
+    if not isinstance(reqs, list) or len(reqs) == 0:
+        errors.append("requirements must be a non-empty list")
+    else:
+        for idx, item in enumerate(reqs):
+            if not isinstance(item, dict):
+                errors.append(f"requirements[{idx}] must be a mapping")
+                continue
+            req_id = str(item.get("id") or "")
+            if not _REQ_ID_RE.match(req_id):
+                errors.append(f"Invalid requirement ID '{req_id}' at index {idx}: must match ^REQ-\\d+$")
+            else:
+                valid_reqs.append(item)
+
+    return {
+        "valid": len(errors) == 0,
+        "req_count": len(valid_reqs),
+        "risk_level": str(parsed.get("risk_level", "L0")),
+        "baseline_sha256": baseline_sha256,
+        "errors": errors,
+    }
+
+

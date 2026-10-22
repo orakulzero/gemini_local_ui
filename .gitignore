@@ -14,17 +14,30 @@ frontend/dist/
 playwright-report/
 test-results/
 
-# Local Databases, Vault Keys & Logs
+# Local Databases, Vault Keys, Secrets & Logs
 *.db
+*.sqlite
+*.sqlite3
 *.db-shm
 *.db-wal
 *.db-journal
 *.key
+*.pem
+.env
+.env.*
+*.env
+!.env.example
 backend/data/
 data/
 logs/
 overnight_runs/
 *.log
+
+# Ephemeral Agent & Pipeline State Directories
+.supergraph/
+.agents-learning/
+.monitor/
+.agents/teamwork/
 
 # Scratch & Debug Artifacts
 scratch_*.py
@@ -40,4 +53,12 @@ auth_audit_context/
 curated_argon_audit_context/
 .claude/settings.local.json
 
-.agents/teamwork/
+# Scratch & Audit Markdown Dumps
+OVERNIGHT_REPORT.md
+QA_AUDIT_REPORT_*.md
+argon_audit_*.md
+argon_task_audit_*.md
+gemini_argon_deep_audit_report.md
+test_file_prompt.md
+test_out*.md
+test_resp*.md
