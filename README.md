@@ -69,3 +69,7 @@ High-performance local web client, reverse-engineered `gemini.google.com` sessio
   cd frontend
   npx playwright test
   ```
+
+## Related Projects
+- [iso9000-agentops](https://github.com/orakulzero/iso9000-agentops) — ISO 9001:2015 / Agile V Multi-Agent Quality Pipeline & Benchmark Suite
+
