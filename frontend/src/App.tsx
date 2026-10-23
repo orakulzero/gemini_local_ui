@@ -11,6 +11,8 @@ import { CanvasPanel } from './components/CanvasPanel';
 import { GemsManagerModal } from './components/GemsManagerModal';
 import { NotebookLMDrawer } from './components/NotebookLMDrawer';
 import { ClaudePluginsPanel } from './components/ClaudePluginsPanel';
+import { FlowStudioDrawer } from './components/FlowStudioDrawer';
+import { MissionControlDrawer } from './components/MissionControlDrawer';
 import { useChatStore } from './store/chatStore';
 import { useSessionStore } from './store/sessionStore';
 import { useCanvasStore } from './store/canvasStore';
@@ -18,6 +20,8 @@ import { useCanvasStore } from './store/canvasStore';
 export const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [claudeSwarmOpen, setClaudeSwarmOpen] = useState(false);
+  const [flowStudioOpen, setFlowStudioOpen] = useState(false);
+  const [missionControlOpen, setMissionControlOpen] = useState(false);
 
   const activeThread = useChatStore((s) => s.activeThread);
   const isGenerating = useChatStore((s) => s.isGenerating);
@@ -63,6 +67,10 @@ export const App: React.FC = () => {
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
           onToggleClaudeSwarm={() => setClaudeSwarmOpen((prev) => !prev)}
           isClaudeSwarmOpen={claudeSwarmOpen}
+          onToggleFlowStudio={() => setFlowStudioOpen((prev) => !prev)}
+          isFlowStudioOpen={flowStudioOpen}
+          onToggleMissionControl={() => setMissionControlOpen((prev) => !prev)}
+          isMissionControlOpen={missionControlOpen}
         />
 
         <main className="flex-1 min-h-0 relative">
@@ -95,6 +103,14 @@ export const App: React.FC = () => {
       <ClaudePluginsPanel
         isOpen={claudeSwarmOpen}
         onClose={() => setClaudeSwarmOpen(false)}
+      />
+      <FlowStudioDrawer
+        isOpen={flowStudioOpen}
+        onClose={() => setFlowStudioOpen(false)}
+      />
+      <MissionControlDrawer
+        isOpen={missionControlOpen}
+        onClose={() => setMissionControlOpen(false)}
       />
     </div>
   );

@@ -28,11 +28,17 @@ const EXPORT_ORDER = [
   "__Secure-3PSIDRTS",
   "__Secure-OSID",
   "__Host-1PLSID",
-  "__Host-3PLSID"
+  "__Host-3PLSID",
+  "__Secure-next-auth.session-token",
+  "__Secure-next-auth.session-token.0",
+  "__Secure-next-auth.session-token.1",
+  "__Host-next-auth.csrf-token"
 ];
 
 const LOOKUP_URLS = [
   "https://gemini.google.com/app",
+  "https://flow.google.com/",
+  "https://labs.google/fx/tools/flow",
   "https://accounts.google.com/",
   "https://www.google.com/",
   "https://google.com/"
@@ -51,7 +57,12 @@ function normalizeDomain(domain = "") {
 
 function isGoogleCookie(cookie) {
   const domain = normalizeDomain(cookie.domain);
-  return domain === "google.com" || domain.endsWith(".google.com");
+  return (
+    domain === "google.com" ||
+    domain.endsWith(".google.com") ||
+    domain === "labs.google" ||
+    domain.endsWith(".labs.google")
+  );
 }
 
 function cookieKey(cookie) {
@@ -75,6 +86,7 @@ function scoreCookie(cookie) {
   else if (domain === "gemini.google.com") score += 95;
   else if (domain === ".accounts.google.com") score += 80;
   else if (domain === "accounts.google.com") score += 75;
+  else if (domain === "labs.google" || domain === ".labs.google") score += 90;
   else if (domain.endsWith(".google.com")) score += 40;
 
   if (cookie.path === "/") score += 10;
@@ -115,8 +127,15 @@ async function readGoogleCookies() {
 // image links that end in HTTP 403.
 function appliesToGemini(cookie) {
   const domain = normalizeDomain(cookie.domain);
-  if (cookie.hostOnly) return domain === "gemini.google.com";
-  return domain === "google.com" || domain === "gemini.google.com";
+  if (cookie.hostOnly) {
+    return domain === "gemini.google.com" || domain === "labs.google";
+  }
+  return (
+    domain === "google.com" ||
+    domain === "gemini.google.com" ||
+    domain === "labs.google" ||
+    domain.endsWith(".labs.google")
+  );
 }
 
 function selectBestCookies(cookies) {

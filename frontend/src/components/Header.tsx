@@ -10,12 +10,20 @@ export interface HeaderProps {
   onToggleSidebar?: () => void;
   onToggleClaudeSwarm?: () => void;
   isClaudeSwarmOpen?: boolean;
+  onToggleFlowStudio?: () => void;
+  isFlowStudioOpen?: boolean;
+  onToggleMissionControl?: () => void;
+  isMissionControlOpen?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onToggleSidebar,
   onToggleClaudeSwarm,
   isClaudeSwarmOpen = false,
+  onToggleFlowStudio,
+  isFlowStudioOpen = false,
+  onToggleMissionControl,
+  isMissionControlOpen = false,
 }) => {
   const backendStatus = useSessionStore((s) => s.backendStatus);
   const isAuthenticated = useSessionStore((s) => s.isAuthenticated);
@@ -30,7 +38,6 @@ export const Header: React.FC<HeaderProps> = ({
   const isNotebookLMOpen = useNotebookLMStore((s) => s.isOpen);
 
   const statusTextClass =
-
     backendStatus === 'online' && isAuthenticated
       ? 'text-emerald-400'
       : backendStatus === 'online'
@@ -107,6 +114,38 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="hidden sm:inline">NotebookLM</span>
         </button>
 
+        {/* Google Flow Educational Video Studio Button */}
+        <button
+          type="button"
+          data-testid="open-flow-studio-btn"
+          onClick={onToggleFlowStudio}
+          className={`px-2 py-1 rounded-lg transition-colors text-xs flex items-center gap-1.5 ${
+            isFlowStudioOpen
+              ? 'bg-pink-900/50 text-pink-300 border border-pink-500/50 font-medium'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+          }`}
+          title="Google Flow Educational Video Studio (Veo 3.1)"
+        >
+          <span>🎬</span>
+          <span className="hidden sm:inline">Flow Studio</span>
+        </button>
+
+        {/* AGY Mission Control Button */}
+        <button
+          type="button"
+          data-testid="open-mission-control-btn"
+          onClick={onToggleMissionControl}
+          className={`px-2 py-1 rounded-lg transition-colors text-xs flex items-center gap-1.5 ${
+            isMissionControlOpen
+              ? 'bg-cyan-900/50 text-cyan-300 border border-cyan-500/50 font-medium'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+          }`}
+          title="AGY Mission Control (L1-L4 Unified Bus & Plugin Hub)"
+        >
+          <span>🛰️</span>
+          <span className="hidden sm:inline">Mission Control</span>
+        </button>
+
         {/* Claude Code Swarm Monitor Button */}
         {onToggleClaudeSwarm && (
           <button
@@ -128,7 +167,6 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           type="button"
           data-testid="open-limits-btn"
-
           onClick={() => toggleLimitsModal(true)}
           className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 rounded-lg transition-colors text-xs flex items-center gap-1"
           aria-label="Account Limits & Telemetry"

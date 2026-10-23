@@ -21,8 +21,10 @@ from backend.app.api.accounts import router as accounts_router
 from backend.app.api.chat import router as chat_router
 from backend.app.api.claude_plugins import router as claude_plugins_router
 from backend.app.api.conversations import router as conversations_router
+from backend.app.api.flow import router as flow_router
 from backend.app.api.gems import extensions_router, router as gems_router
 from backend.app.api.limits import router as limits_router
+from backend.app.api.mission_control import router as mission_control_router
 from backend.app.api.notebooklm import router as notebooklm_router
 from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
@@ -600,6 +602,8 @@ app.include_router(claude_plugins_router)
 app.include_router(gems_router)
 app.include_router(extensions_router)
 app.include_router(notebooklm_router)
+app.include_router(flow_router)
+app.include_router(mission_control_router)
 app.include_router(openai_router)
 app.include_router(anthropic_router, prefix="/v1", tags=["anthropic"])
 app.include_router(mcp_router, prefix="/mcp", tags=["mcp"])

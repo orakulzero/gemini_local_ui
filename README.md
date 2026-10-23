@@ -21,6 +21,16 @@ High-performance local web client, reverse-engineered `gemini.google.com` sessio
 4. **OpenAI-Compatible Local API Proxy (`backend/app/openai/`)**
    - Exposes `GET /v1/models` and `POST /v1/chat/completions` (both `stream: true` SSE and `stream: false`, plus base64/URL vision attachments) routed through your authorized Gemini account.
 
+5. **Google Flow Educational Video Studio (`backend/app/bridge/flow.py`, `backend/app/api/flow.py`, `FlowStudioDrawer.tsx`)**
+   - Integrates with `https://labs.google/fx/tools/flow` (Veo 3.1) to synthesize multi-scene educational storyboards, per-scene visual prompts, voiceover narration scripts, camera motion directives, synchronized WebVTT (`.vtt`) / SubRip (`.srt`) subtitle tracks, and assembled `.mp4` video lessons.
+
+6. **AGY Mission Control — 4-Tier Golden Stack Hub (`backend/app/bridge/mission_control.py`, `backend/app/api/mission_control.py`, `MissionControlDrawer.tsx`)**
+   - Unites the 4-Tier (`L1 -> L2 -> L3 -> L4`) ecosystem inside a single real-time command center:
+     - **P10–P50 Golden Stack Bus**: Single-process priority hook multiplexer (`0.06ms` average 5-slot in-memory dispatch) with re-entrancy guard, `P30` Agile V Self-Grading Bias enforcement, and `P50` 5-Gate OSS pre-push auditing.
+     - **LSRPC Plugin Manager**: Context-safe plugin discovery and live `config.json` state toggling keyed by install directory (`dir`).
+     - **ISO 9001:2015 Gate Controller**: Finite-state progression (`SPEC -> TEST_DESIGN -> SYNTHESIS -> VERIFICATION -> RELEASE`) with locked test SHA-256 tamper detection.
+     - **Brain Memory & Child Testbench Telemetry**: Cross-session artifact search (`[label](conversation://<id>)`) and live ingestion of `child_session_reports.jsonl` handoffs.
+
 ---
 
 ## Quick Start
@@ -72,4 +82,6 @@ High-performance local web client, reverse-engineered `gemini.google.com` sessio
 
 ## Related Projects
 - [iso9000-agentops](https://github.com/orakulzero/iso9000-agentops) — ISO 9001:2015 / Agile V Multi-Agent Quality Pipeline & Benchmark Suite
+- [agy-lsrpc-bridge](https://github.com/orakulzero/agy-lsrpc-bridge) — Language Server ConnectRPC Bridge, Plugin Validator & Scaffolder
+- [agy-golden-stack](https://github.com/orakulzero/agy-golden-stack) — Unified In-Process P10..P50 AgentOps & Hook Multiplexer Bus
 
