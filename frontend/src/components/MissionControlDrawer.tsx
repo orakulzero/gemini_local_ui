@@ -6,10 +6,10 @@ export interface MissionControlDrawerProps {
 }
 
 interface TierInfo {
-  id: string;
-  name: string;
-  status: string;
-  description: string;
+  id?: string;
+  name?: string;
+  status?: string;
+  description?: string;
 }
 
 interface PluginInfo {
@@ -28,7 +28,7 @@ interface PluginInfo {
 
 interface OverviewPayload {
   ok: boolean;
-  tiers: Record<string, TierInfo>;
+  tiers: Record<string, TierInfo | string[]>;
   golden_bus: {
     slots: string[];
     slot_names: Record<string, string>;
@@ -51,7 +51,8 @@ interface OverviewPayload {
     }
   >;
   brain_summary: {
-    results_count: number;
+    indexed_sessions?: number;
+    results_count?: number;
     child_reports_count: number;
   };
 }
@@ -60,12 +61,14 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'bus' | 'plugins' | 'iso9000' | 'brain'>('bus');
+  const [activeTab, setActiveTab] = useState<
+    'bus' | 'plugins' | 'iso9000' | 'brain' | 'diff-tour' | 'federation'
+  >('bus');
   const [overview, setOverview] = useState<OverviewPayload | null>(null);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [brainQuery, setBrainQuery] = useState('');
   const [brainResults, setBrainResults] = useState<
-    Array<{ conversation_id: string; label: string; reference: string; snippet: string }>
+    Array<{ conversation_id: string; label?: string; reference: string; snippet: string }>
   >([]);
   const [childReports, setChildReports] = useState<Array<Record<string, unknown>>>([]);
   const [benchmarkResult, setBenchmarkResult] = useState<{
@@ -78,6 +81,18 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
   const [isoPhase, setIsoPhase] = useState('SPEC');
   const [isoStatusMsg, setIsoStatusMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Diff-Tour State
+  const [dropRevealingAsks, setDropRevealingAsks] = useState(false);
+  const [diffTourPreview, setDiffTourPreview] = useState<string>('');
+  const [diffTourLoading, setDiffTourLoading] = useState(false);
+
+  // Plugin Drift State
+  const [reconcileMsg, setReconcileMsg] = useState<string | null>(null);
+
+  // Federation Wave State
+  const [federationLoading, setFederationLoading] = useState(false);
+  const [federationResult, setFederationResult] = useState<Record<string, unknown> | null>(null);
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -157,6 +172,27 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
     }
   };
 
+  const handleReconcileDrift = async () => {
+    setReconcileMsg(null);
+    try {
+      const res = await fetch('/api/mission-control/plugins/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_version: '1.1.0' }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setReconcileMsg(`Reconciled ${data.reconciled_count} plugins to v1.1.0`);
+        fetchPlugins();
+        fetchOverview();
+      } else {
+        setReconcileMsg(`Error: ${data.detail || 'Reconciliation failed'}`);
+      }
+    } catch {
+      setReconcileMsg('Reconciliation request failed');
+    }
+  };
+
   const handleAdvanceIsoGate = async () => {
     setIsoStatusMsg(null);
     const res = await fetch('/api/mission-control/iso9000/gate', {
@@ -177,6 +213,68 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
     }
   };
 
+  const handleGenerateDiffTour = async () => {
+    setDiffTourLoading(true);
+    try {
+      const res = await fetch('/api/mission-control/diff-tour/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Senior Engineer Architecture Tour v1',
+          drop_revealing_asks: dropRevealingAsks,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDiffTourPreview(data.tui_preview || JSON.stringify(data.tour, null, 2));
+      }
+    } finally {
+      setDiffTourLoading(false);
+    }
+  };
+
+  const handleRunFederationWaves = async () => {
+    setFederationLoading(true);
+    try {
+      const res = await fetch('/api/mission-control/federation/waves/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflow_name: 'l4_l5_station_audit_dag',
+          tasks: [
+            {
+              task_id: 'sec_scan',
+              station_id: 'agy-secret-shield',
+              action: 'audit_secrets',
+              payload: { profile: 'clean_repo' },
+              depends_on: [],
+            },
+            {
+              task_id: 'pe_triage',
+              station_id: 'pe-reversing-lab',
+              action: 'triage_pe',
+              payload: { profile: 'clean' },
+              depends_on: [],
+            },
+            {
+              task_id: 'eskd_check',
+              station_id: 'eskd-vision-station',
+              action: 'inspect_geometry',
+              payload: { sheet_format: 'A4' },
+              depends_on: ['sec_scan', 'pe_triage'],
+            },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFederationResult(data);
+      }
+    } finally {
+      setFederationLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -188,10 +286,10 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
       <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/60">
         <div>
           <h2 className="text-sm font-semibold text-cyan-400 tracking-wide">
-            AGY Mission Control (L1-L4 Unified Command Center)
+            AGY Mission Control (L1-L5 Unified Command Center)
           </h2>
           <p className="text-xs text-zinc-400">
-            Golden Stack P10-P50 Bus • LSRPC Plugin Hub • ISO 9001 Agile V • Brain Memory
+            Golden Stack P10-P50 Bus • LSRPC Plugin Hub • ISO 9001 Agile V • Diff-Tour v1 • Federation DAG
           </p>
         </div>
         <button
@@ -203,23 +301,29 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
         </button>
       </div>
 
-      {/* 4-Tier Architecture Status Strip */}
-      <div className="grid grid-cols-4 gap-2 p-3 bg-zinc-900/30 border-b border-zinc-800 text-xs">
-        {['L1', 'L2', 'L3', 'L4'].map((tierKey) => {
-          const tier = overview?.tiers?.[tierKey];
+      {/* 5-Tier Architecture Status Strip (L1..L5) */}
+      <div className="grid grid-cols-5 gap-2 p-3 bg-zinc-900/30 border-b border-zinc-800 text-xs">
+        {['L1', 'L2', 'L3', 'L4', 'L5'].map((tierKey) => {
+          const rawTier = overview?.tiers?.[tierKey];
+          const isArr = Array.isArray(rawTier);
+          const tierObj = !isArr && rawTier ? (rawTier as TierInfo) : null;
+          const tierName = tierObj?.name || (tierKey === 'L5' ? 'Federation Mesh' : isArr && (rawTier as string[])[0] ? (rawTier as string[])[0] : tierKey);
+          const tierStatus = tierObj?.status || 'online';
+
           return (
             <div
               key={tierKey}
+              data-testid={`mc-tier-${tierKey}`}
               className="p-2 rounded border border-zinc-800 bg-zinc-900/70 flex flex-col justify-between"
             >
               <div className="flex items-center justify-between">
                 <span className="font-mono font-bold text-cyan-400">{tierKey}</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/40">
-                  {tier?.status || 'online'}
+                  {tierStatus}
                 </span>
               </div>
               <div className="mt-1 font-medium text-zinc-200 truncate">
-                {tier?.name || tierKey}
+                {tierName}
               </div>
             </div>
           );
@@ -227,12 +331,12 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex border-b border-zinc-800 bg-zinc-900/40 px-3 pt-2 gap-2 text-xs">
+      <div className="flex border-b border-zinc-800 bg-zinc-900/40 px-3 pt-2 gap-2 text-xs overflow-x-auto">
         <button
           type="button"
           data-testid="mc-tab-bus"
           onClick={() => setActiveTab('bus')}
-          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors ${
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'bus'
               ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
               : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -244,7 +348,7 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
           type="button"
           data-testid="mc-tab-plugins"
           onClick={() => setActiveTab('plugins')}
-          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors ${
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'plugins'
               ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
               : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -254,9 +358,33 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
         </button>
         <button
           type="button"
+          data-testid="mc-tab-diff-tour"
+          onClick={() => setActiveTab('diff-tour')}
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === 'diff-tour'
+              ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
+              : 'border-transparent text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Diff-Tour v1
+        </button>
+        <button
+          type="button"
+          data-testid="mc-tab-federation"
+          onClick={() => setActiveTab('federation')}
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeTab === 'federation'
+              ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
+              : 'border-transparent text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Federation DAG (L4-L5)
+        </button>
+        <button
+          type="button"
           data-testid="mc-tab-iso9000"
           onClick={() => setActiveTab('iso9000')}
-          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors ${
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'iso9000'
               ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
               : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -268,7 +396,7 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
           type="button"
           data-testid="mc-tab-brain"
           onClick={() => setActiveTab('brain')}
-          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors ${
+          className={`px-3 py-1.5 rounded-t font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'brain'
               ? 'border-cyan-400 text-cyan-300 bg-zinc-900'
               : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -345,31 +473,237 @@ export const MissionControlDrawer: React.FC<MissionControlDrawerProps> = ({
         )}
 
         {activeTab === 'plugins' && (
-          <div className="space-y-2">
-            {plugins.map((pl) => (
-              <div
-                key={pl.dir}
-                className="p-3 rounded border border-zinc-800 bg-zinc-900/40 flex items-center justify-between"
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-3 rounded border border-zinc-800 bg-zinc-900/50">
+              <div>
+                <div className="font-semibold text-zinc-200">Plugin Version Drift Reconciliation</div>
+                <div className="text-zinc-400">Reconcile installed plugin manifests to target baseline v1.1.0</div>
+              </div>
+              <button
+                type="button"
+                data-testid="mc-reconcile-drift-btn"
+                onClick={handleReconcileDrift}
+                className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-medium"
               >
+                Reconcile to v1.1.0
+              </button>
+            </div>
+            {reconcileMsg && (
+              <div className="p-2 rounded bg-emerald-950/40 border border-emerald-800/40 text-emerald-300 font-mono text-[11px]">
+                {reconcileMsg}
+              </div>
+            )}
+            <div className="space-y-2">
+              {plugins.map((pl) => (
+                <div
+                  key={pl.dir}
+                  className="p-3 rounded border border-zinc-800 bg-zinc-900/40 flex items-center justify-between"
+                >
+                  <div>
+                    <div className="font-semibold text-zinc-200">{pl.name}</div>
+                    <div className="text-zinc-400 font-mono text-[11px]">
+                      dir: {pl.dir} • skills: {pl.skills.length} • agents: {pl.agents.length}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTogglePlugin(pl.dir, pl.disabled)}
+                    className={`px-2.5 py-1 rounded font-medium ${
+                      pl.disabled
+                        ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                        : 'bg-emerald-900/50 text-emerald-300 border border-emerald-600/40'
+                    }`}
+                  >
+                    {pl.disabled ? 'Disabled' : 'Enabled'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'diff-tour' && (
+          <div className="space-y-4">
+            <div className="p-3 rounded border border-zinc-800 bg-zinc-900/50 space-y-3">
+              <div className="font-semibold text-zinc-200">
+                Senior Engineer Diff-Tour v1 Visualizer
+              </div>
+              <p className="text-zinc-400 text-xs">
+                Inspect architecture across 8 dimensions with epistemic basis classification and TUI preview.
+              </p>
+
+              {/* 8 Review Dimension Pills */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  'L1_PROMISES',
+                  'L2_FAILURE',
+                  'L3_OPERATIONS',
+                  'L4_TRUST',
+                  'L5_SCALE',
+                  'L6_DESIGN',
+                  'L7_TESTS',
+                  'L8_AI_TRAPS',
+                ].map((dim) => (
+                  <span
+                    key={dim}
+                    className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-cyan-950/60 text-cyan-300 border border-cyan-800/40"
+                  >
+                    {dim}
+                  </span>
+                ))}
+              </div>
+
+              {/* Epistemic Basis Badges */}
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-zinc-400 text-[11px]">Epistemic Basis:</span>
+                <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800/40 font-mono">
+                  fact
+                </span>
+                <span className="px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800/40 font-mono">
+                  inferred
+                </span>
+                <span className="px-2 py-0.5 rounded text-[10px] bg-purple-950 text-purple-300 border border-purple-800/40 font-mono">
+                  opinion
+                </span>
+              </div>
+
+              {/* Controls */}
+              <div className="flex items-center justify-between pt-2 border-t border-zinc-800">
+                <label className="flex items-center gap-2 cursor-pointer text-zinc-300">
+                  <input
+                    type="checkbox"
+                    data-testid="mc-diff-tour-drop-asks"
+                    checked={dropRevealingAsks}
+                    onChange={(e) => setDropRevealingAsks(e.target.checked)}
+                    className="rounded bg-zinc-900 border-zinc-700 text-cyan-500 focus:ring-0"
+                  />
+                  <span>Drop Revealing Asks</span>
+                </label>
+
+                <button
+                  type="button"
+                  data-testid="mc-generate-diff-tour-btn"
+                  onClick={handleGenerateDiffTour}
+                  disabled={diffTourLoading}
+                  className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-medium disabled:opacity-50"
+                >
+                  {diffTourLoading ? 'Generating...' : 'Generate Diff-Tour v1'}
+                </button>
+              </div>
+            </div>
+
+            {/* TUI Preview */}
+            <div className="space-y-1">
+              <span className="text-zinc-400 font-mono text-[11px]">TUI Preview Box Output</span>
+              <pre
+                data-testid="mc-diff-tour-preview"
+                className="p-3 rounded border border-zinc-800 bg-zinc-900/90 text-zinc-200 font-mono text-[11px] overflow-x-auto whitespace-pre leading-relaxed min-h-[140px]"
+              >
+                {diffTourPreview || 'Click "Generate Diff-Tour v1" to view deterministic TUI box preview...'}
+              </pre>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'federation' && (
+          <div className="space-y-4">
+            <div className="p-3 rounded border border-zinc-800 bg-zinc-900/50 space-y-3">
+              <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-zinc-200">{pl.name}</div>
-                  <div className="text-zinc-400 font-mono text-[11px]">
-                    dir: {pl.dir} • skills: {pl.skills.length} • agents: {pl.agents.length}
+                  <div className="font-semibold text-zinc-200">
+                    L4-L5 Stations & Topological Wave DAG Orchestrator
+                  </div>
+                  <div className="text-zinc-400 text-xs">
+                    Parallel execution waves across Secret Shield, PE Lab, and ESKD stations
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => handleTogglePlugin(pl.dir, pl.disabled)}
-                  className={`px-2.5 py-1 rounded font-medium ${
-                    pl.disabled
-                      ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
-                      : 'bg-emerald-900/50 text-emerald-300 border border-emerald-600/40'
-                  }`}
+                  data-testid="mc-run-federation-waves-btn"
+                  onClick={handleRunFederationWaves}
+                  disabled={federationLoading}
+                  className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-medium disabled:opacity-50"
                 >
-                  {pl.disabled ? 'Disabled' : 'Enabled'}
+                  {federationLoading ? 'Executing Waves...' : 'Run Federation Waves'}
                 </button>
               </div>
-            ))}
+
+              {/* Topological Wave Badges */}
+              <div className="flex gap-2 pt-1">
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800/40">
+                  Wave 0: Parallel Station Scanners
+                </span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800/40">
+                  Wave 1: Synthesis & Cross-Station Dossier
+                </span>
+              </div>
+            </div>
+
+            {/* Station Cards */}
+            <div className="grid grid-cols-3 gap-2">
+              <div
+                data-testid="mc-station-secret-shield"
+                className="p-3 rounded border border-zinc-800 bg-zinc-900/60 flex flex-col justify-between space-y-2"
+              >
+                <div>
+                  <div className="font-semibold text-zinc-200">Secret Shield v1.1.0</div>
+                  <div className="text-[11px] text-zinc-400 mt-1">
+                    OASIS SARIF 2.1.0 & Windows DPAPI quarantine envelope rotation
+                  </div>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/40 w-fit font-mono">
+                  READY
+                </span>
+              </div>
+
+              <div
+                data-testid="mc-station-pe-lab"
+                className="p-3 rounded border border-zinc-800 bg-zinc-900/60 flex flex-col justify-between space-y-2"
+              >
+                <div>
+                  <div className="font-semibold text-zinc-200">PE Reversing Lab v1.1.0</div>
+                  <div className="text-[11px] text-zinc-400 mt-1">
+                    Rich Header, EAT symbols, TLS callbacks, RWX anomalies & YARA
+                  </div>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/40 w-fit font-mono">
+                  READY
+                </span>
+              </div>
+
+              <div
+                data-testid="mc-station-eskd"
+                className="p-3 rounded border border-zinc-800 bg-zinc-900/60 flex flex-col justify-between space-y-2"
+              >
+                <div>
+                  <div className="font-semibold text-zinc-200">ESKD Vision Station v1.1.0</div>
+                  <div className="text-[11px] text-zinc-400 mt-1">
+                    GOST 2.104/2.301, 300 DPI geometry & 2D CCW line crossings
+                  </div>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/40 w-fit font-mono">
+                  READY
+                </span>
+              </div>
+            </div>
+
+            {/* Federation Execution Result */}
+            {federationResult && (
+              <div className="p-3 rounded border border-cyan-800/40 bg-zinc-900/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-cyan-300">Wave Execution Outcome</span>
+                  <span className="font-mono text-emerald-400 text-xs font-bold">
+                    {String(federationResult.status || 'COMPLETED')}
+                  </span>
+                </div>
+                <div className="font-mono text-[11px] text-zinc-400">
+                  Mesh Digest: {String(federationResult.mesh_digest || '').slice(0, 24)}...
+                </div>
+                <div className="font-mono text-[11px] text-zinc-400">
+                  Tasks Executed: {String(federationResult.tasks_executed || 0)}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

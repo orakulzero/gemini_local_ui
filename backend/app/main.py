@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Gemini Local UI API",
     description="Local client and backend bridge daemon for Google Gemini web accounts",
-    version="1.0.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
