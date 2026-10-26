@@ -26,6 +26,7 @@ from backend.app.api.gems import extensions_router, router as gems_router
 from backend.app.api.limits import router as limits_router
 from backend.app.api.mission_control import router as mission_control_router
 from backend.app.api.notebooklm import router as notebooklm_router
+from backend.routes.stations import legacy_router as stations_legacy_router, router as stations_router
 from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
 from backend.app.bridge.session import SessionHealthReport, SessionHealthStatus, SessionManager
@@ -121,7 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Gemini Local UI API",
     description="Local client and backend bridge daemon for Google Gemini web accounts",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -605,6 +606,8 @@ app.include_router(extensions_router)
 app.include_router(notebooklm_router)
 app.include_router(flow_router)
 app.include_router(mission_control_router)
+app.include_router(stations_router)
+app.include_router(stations_legacy_router)
 app.include_router(openai_router)
 app.include_router(anthropic_router, prefix="/v1", tags=["anthropic"])
 app.include_router(mcp_router, prefix="/mcp", tags=["mcp"])
