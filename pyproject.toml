@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gemini-local-ui"
-version = "1.3.0"
+version = "2.0.0"
 description = "Local client and backend bridge daemon for Google Gemini web accounts with AGY Mission Control"
 readme = "README.md"
 license = { text = "MIT" }

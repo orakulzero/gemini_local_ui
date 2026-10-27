@@ -17,229 +17,32 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-try:
-    from flow_audio_video import FemaleVoiceoverOptimizer, MultiSceneVideoAssembler
-except ImportError:
-    class FemaleVoiceoverOptimizer:
-        VOICE_PROFILE = "female_voiceover_default"
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
-
-        def optimize_script(
-            self, narration: str = "", voice_gender: str = "female", **kwargs: Any
-        ) -> Dict[str, Any]:
-            return {
-                "annotated_script": narration,
-                "voice_profile": self.VOICE_PROFILE,
-                "voice_gender": voice_gender,
-            }
-
-    class MultiSceneVideoAssembler:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
-
-        def concat_scene_mp4_clips(
-            self, scene_clips: Optional[List[bytes]] = None, title: str = "", **kwargs: Any
-        ) -> Dict[str, Any]:
-            total = sum(len(c) for c in (scene_clips or []))
-            return {
-                "total_bytes": total,
-                "engine": "mock_assembler",
-                "title": title,
-            }
-
-try:
-    from flow_bridge import (
-        DEFAULT_VOICE_STYLE,
-        SUPPORTED_ASPECT_RATIOS,
-        SUPPORTED_MODELS,
-        SUPPORTED_VOICE_PERSONAS,
-        FlowClient,
-        build_srt_subtitles,
-        build_webvtt_subtitles,
-    )
-except ImportError:
-    try:
-        from backend.app.bridge.flow import (
-            DEFAULT_VOICE_STYLE,
-            SUPPORTED_ASPECT_RATIOS,
-            SUPPORTED_MODELS,
-            SUPPORTED_VOICE_PERSONAS,
-            FlowClient,
-            build_srt_subtitles,
-            build_webvtt_subtitles,
-        )
-    except ImportError:
-        DEFAULT_VOICE_STYLE = (
-            "warm, articulate educator voice, natural human cadence with expressive "
-            "intonation and clear vocal emphasis on key technical terms"
-        )
-        SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16", "1:1"]
-        SUPPORTED_MODELS = [
-            "veo_3_1_t2v_fast_audio",
-            "veo_3_1_t2v_quality_audio",
-            "veo_3_1_t2v_fast",
-            "veo_3_1_t2v_quality",
-            "gemini-omni-1.1-flash",
-            "veo_2_0_t2v",
-        ]
-        SUPPORTED_VOICE_PERSONAS = [
-            "voice_y0joebp3bwta",
-            "Sulafat",
-            "Kore",
-            "Aoede",
-            "Puck",
-            "Charon",
-            "Fenrir",
-        ]
-
-        def build_srt_subtitles(scenes: Any) -> str:
-            return ""
-
-        def build_webvtt_subtitles(scenes: Any) -> str:
-            return "WEBVTT\n"
-
-        class FlowClient:
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                pass
-
-            def has_flow_session(self) -> bool:
-                return False
-
-            def list_projects(self) -> List[Any]:
-                return []
-
-            def get_project(self, *args: Any, **kwargs: Any) -> Any:
-                return None
-
-            def get_media_bytes(self, *args: Any, **kwargs: Any) -> Optional[bytes]:
-                return None
-
-try:
-    from flow_diff_tour import (
-        SENIOR_AUDIT_DIMENSIONS,
-        build_diff_tour_from_git_range,
-        render_diff_tour_to_mp4,
-        validate_diff_tour,
-        verify_tour_code_refs_against_git,
-    )
-except ImportError:
-    SENIOR_AUDIT_DIMENSIONS = (
-        "L1_PROMISES",
-        "L2_FAILURE",
-        "L3_OPERATIONS",
-        "L4_TRUST",
-        "L5_SCALE",
-        "L6_DESIGN",
-        "L7_TESTS",
-        "L8_AI_TRAPS",
-    )
-
-    def build_diff_tour_from_git_range(
-        repo_root: Any, base: str = "HEAD", head: str = "HEAD", title: Optional[str] = None
-    ) -> Dict[str, Any]:
-        return {"title": title or "Diff Tour", "steps": []}
-
-    def render_diff_tour_to_mp4(
-        tour_doc: Any, out_mp4: Any, **kwargs: Any
-    ) -> Dict[str, Any]:
-        return {"ok": True, "video_size_bytes": 0, "path": str(out_mp4)}
-
-    def validate_diff_tour(tour_doc: Any) -> Dict[str, Any]:
-        return {"ok": True, "errors": []}
-
-    def verify_tour_code_refs_against_git(
-        tour_doc: Any, repo_root: Any
-    ) -> Dict[str, Any]:
-        return {"ok": True, "missing_files": []}
-
-try:
-    from flow_live_rpc import FlowLiveRPCBridge
-except ImportError:
-    class FlowLiveRPCBridge:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
-
-        def render_scene(
-            self,
-            scene_title: str = "",
-            visual_prompt: str = "",
-            narration: str = "",
-            aspect_ratio: str = "16:9",
-            duration_sec: int = 5,
-            **kwargs: Any,
-        ) -> Dict[str, Any]:
-            return {
-                "mp4_bytes": b"",
-                "scene_title": scene_title,
-                "duration_sec": duration_sec,
-            }
-
-try:
-    from flow_manimgx import (
-        GeminiStudioVoice,
-        build_manimgx_educational_scene,
-        inspect_manimgx_scene,
-        render_manimgx_scene_to_mp4,
-    )
-except ImportError:
-    class GeminiStudioVoice:
-        def __init__(
-            self, language: str = "en", voice_gender: str = "female", **kwargs: Any
-        ) -> None:
-            self.language = language
-            self.voice_gender = voice_gender
-
-    def build_manimgx_educational_scene(
-        topic: str = "", formula_latex: str = "", narration_script: str = ""
-    ) -> Any:
-        class _MockScene:
-            pass
-        return _MockScene
-
-    def inspect_manimgx_scene(
-        scene_cls: Any,
-        width: int = 640,
-        height: int = 360,
-        fps: int = 15,
-        voice: Any = None,
-    ) -> Dict[str, Any]:
-        return {"ok": True, "layout_ok": True, "layout_problems": []}
-
-    def render_manimgx_scene_to_mp4(
-        scene_cls: Any,
-        width: int = 640,
-        height: int = 360,
-        fps: int = 15,
-        supersample: int = 1,
-        voice: Any = None,
-        inspect_layout: bool = True,
-    ) -> Dict[str, Any]:
-        return {
-            "ok": True,
-            "scene_name": "mock_manimgx",
-            "video_size_bytes": 0,
-            "width": width,
-            "height": height,
-            "fps": fps,
-            "frame_count": 0,
-            "duration_sec": 0,
-            "play_count": 0,
-            "has_audio": False,
-            "layout_ok": True,
-            "layout_problems": [],
-            "layout_report": {},
-            "subtitles_srt": "",
-            "subtitles_vtt": "",
-        }
-
-try:
-    from flow_studio_ui import render_flow_studio_html
-except ImportError:
-    def render_flow_studio_html() -> str:
-        return "<html><body><h1>Google Flow Educational Video Studio</h1><p>Mock UI fallback</p></body></html>"
-
+from flow_audio_video import FemaleVoiceoverOptimizer, MultiSceneVideoAssembler
+from flow_bridge import (
+    DEFAULT_VOICE_STYLE,
+    SUPPORTED_ASPECT_RATIOS,
+    SUPPORTED_MODELS,
+    SUPPORTED_VOICE_PERSONAS,
+    FlowClient,
+    build_openmaic_lecture_actions,
+    build_srt_subtitles,
+    build_webvtt_subtitles,
+)
+from flow_diff_tour import (
+    SENIOR_AUDIT_DIMENSIONS,
+    build_diff_tour_from_git_range,
+    render_diff_tour_to_mp4,
+    validate_diff_tour,
+    verify_tour_code_refs_against_git,
+)
+from flow_live_rpc import FlowLiveRPCBridge
+from flow_manimgx import (
+    GeminiStudioVoice,
+    build_manimgx_educational_scene,
+    inspect_manimgx_scene,
+    render_manimgx_scene_to_mp4,
+)
+from flow_studio_ui import render_flow_studio_html
 
 router = APIRouter(prefix="/api/flow", tags=["flow"])
 
@@ -271,12 +74,20 @@ class ScenePatchRequest(BaseModel):
     voice_persona: Optional[str] = None
     voice_style: Optional[str] = None
     native_veo_audio: Optional[bool] = None
+    formula_expression: Optional[str] = None
+    diagram_spec: Optional[Dict[str, Any]] = None
+    first_frame_path: Optional[str] = None
+    last_frame_path: Optional[str] = None
+    timecoded_directives: Optional[List[Dict[str, str]]] = None
+    pedagogical_phase: Optional[str] = None
+    learning_objective: Optional[str] = None
 
 
 class SceneGenerateRequest(BaseModel):
     prompt_override: Optional[str] = None
     aspect_ratio: Optional[str] = None
     use_cloud: Optional[bool] = None
+    compose_educational: bool = False
 
 
 class CloudVeoSceneRequest(BaseModel):
@@ -809,6 +620,21 @@ async def generate_flow_scene_clip(
             prompt_override=req.prompt_override,
             aspect_ratio=req.aspect_ratio,
             use_cloud=req.use_cloud,
+            compose_educational=req.compose_educational,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/compose-educational")
+async def compose_educational_flow_project(
+    project_id: str, request: Request
+) -> Dict[str, Any]:
+    """Render all scenes via FlowEducationalCompositor (720p HD + Studio TTS + animated plots) and assemble lesson."""
+    client = _get_flow_client(request)
+    try:
+        return await client.assemble_educational_video(
+            project_id, compose_educational=True
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -891,7 +717,7 @@ async def serve_flow_media(media_name: str, request: Request) -> Response:
 async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dict[str, Any]:
     """
     Persist student question, context metadata, and cropped canvas PNG to disk
-    under output/user_questions/ for immediate consumption by the Antigravity agent.
+    under output/user_questions/ for immediate consumption by the studio agent.
     """
     testbench_dir = Path(__file__).resolve().parent.parent
     user_q_dir = testbench_dir / "output" / "user_questions"
@@ -943,6 +769,21 @@ async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dic
         "saved_at": now_iso,
         "message": "Question and selection saved successfully",
     }
+
+
+@router.get("/lecture-actions/{page_num}")
+async def get_lecture_actions_endpoint(page_num: int) -> Dict[str, Any]:
+    """
+    Return the structured OpenMAIC classroom action script (`ShowSheet`, `ZoomBBox`,
+    `LaserPoint`, `RunSimPreset`, `QuizCheckpoint`) and `manim-slides` segment metadata
+    for any coursework sheet `1..45`.
+    """
+    if page_num < 1 or page_num > 45:
+        raise HTTPException(
+            status_code=422,
+            detail=f"page_num must be in range 1..45, got {page_num}",
+        )
+    return build_openmaic_lecture_actions(page_num)
 
 
 app = FastAPI(

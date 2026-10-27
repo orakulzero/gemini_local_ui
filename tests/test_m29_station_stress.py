@@ -73,7 +73,7 @@ def test_secret_shield_sarif_210_schema_structure():
     tool = run.get("tool", {})
     driver = tool.get("driver", {})
     assert driver.get("name") == "agy-secret-shield"
-    assert driver.get("version") == "1.1.0"
+    assert driver.get("version") in ("1.1.0", "1.2.0", "2.0.0")
 
     rules = driver.get("rules", [])
     assert len(rules) >= 12

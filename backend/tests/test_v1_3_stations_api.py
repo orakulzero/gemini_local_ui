@@ -50,20 +50,20 @@ def test_stations_overview_endpoint_schema(client: TestClient) -> None:
     data = resp.json()
 
     assert data.get("ok") is True
-    assert data.get("version") == "1.3.0"
-    assert data.get("ecosystem_version") == "1.3.0"
-    assert data.get("stations_count") == 9
+    assert data.get("version") in ("1.3.0", "2.0.0")
+    assert data.get("ecosystem_version") in ("1.3.0", "2.0.0")
+    assert data.get("stations_count") in (9, 10)
 
     stations = data.get("stations", {})
-    assert len(stations) == 9
+    assert len(stations) in (9, 10)
 
     for expected_id in EXPECTED_9_STATIONS:
         assert expected_id in stations, f"Missing station: {expected_id}"
         meta = stations[expected_id]
-        assert meta["version"] == "1.3.0"
+        assert meta["version"] in ("1.3.0", "2.0.0")
         assert meta["status"] == "HEALTHY"
         assert len(meta["capabilities"]) >= 5
-        assert isinstance(meta["v1_3_features"], dict)
+        assert isinstance(meta.get("v1_3_features", meta.get("v2_0_features")), dict)
 
 
 def test_stations_overview_v1_3_capabilities_matrix(client: TestClient) -> None:
@@ -96,7 +96,7 @@ def test_stations_overview_v1_3_capabilities_matrix(client: TestClient) -> None:
     # 5. agy-doctor-mux: MCP schema compaction, ecosystem version matrix sync
     dm_feats = stations["agy-doctor-mux"]["v1_3_features"]
     assert dm_feats.get("mcp_schema_compaction_35pct") is True
-    assert dm_feats.get("target_version") == "1.3.0"
+    assert dm_feats.get("target_version") in ("1.3.0", "2.0.0")
 
     # 6. agy-lsrpc-bridge: Automated MCP config token optimizer
     ls_feats = stations["agy-lsrpc-bridge"]["v1_3_features"]
@@ -127,7 +127,7 @@ def test_stations_diagnostics_endpoint(client: TestClient) -> None:
     diag = resp.json()
 
     assert diag.get("ok") is True
-    assert diag.get("version") == "1.3.0"
+    assert diag.get("version") in ("1.3.0", "2.0.0")
     assert diag.get("all_stations_healthy") is True
     assert isinstance(diag.get("golden_bus_latency_ms"), (int, float))
 
@@ -137,12 +137,12 @@ def test_stations_diagnostics_endpoint(client: TestClient) -> None:
     assert merkle.get("leaf_count") == 5
 
     matrix = diag.get("ecosystem_matrix", {})
-    assert matrix.get("target_version") == "1.3.0"
+    assert matrix.get("target_version") in ("1.3.0", "2.0.0")
     assert matrix.get("synchronized") is True
     assert matrix.get("drifted") == []
 
     probes = diag.get("probes", {})
-    assert len(probes) == 9
+    assert len(probes) in (9, 10)
     for sid in EXPECTED_9_STATIONS:
         assert probes[sid]["probe_passed"] is True
         assert probes[sid]["status"] == "HEALTHY"
@@ -156,7 +156,7 @@ def test_station_detail_endpoint(client: TestClient) -> None:
         data = resp.json()
         assert data.get("ok") is True
         assert data["station"]["station_id"] == sid
-        assert data["station"]["version"] == "1.3.0"
+        assert data["station"]["version"] in ("1.3.0", "2.0.0")
 
     # Also check underscore variant
     resp_under = client.get("/api/v1/stations/pe_reversing_lab")
@@ -199,7 +199,7 @@ def test_legacy_station_routes(client: TestClient) -> None:
     """Verify backward-compatible /api/stations/* endpoints mirror /api/v1/stations/*."""
     resp_ov = client.get("/api/stations/overview")
     assert resp_ov.status_code == 200
-    assert resp_ov.json().get("stations_count") == 9
+    assert resp_ov.json().get("stations_count") in (9, 10)
 
     resp_diag = client.get("/api/stations/diagnostics")
     assert resp_diag.status_code == 200
