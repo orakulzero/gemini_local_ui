@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from typing import Any
+from collections.abc import AsyncIterator
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.app.anthropic.adapter import AnthropicAdapter
@@ -21,30 +22,27 @@ from backend.app.anthropic.schemas import (
     ContentBlock,
     CountTokensRequest,
     CountTokensResponse,
-    MessageParam,
     MessageRequest,
     MessageResponse,
     MessageUsage,
     TextBlock,
     ThinkingBlock,
-    ToolUseBlock,
 )
 from backend.app.anthropic.sse import (
     generate_message_id,
     stream_anthropic_sse,
 )
 from backend.app.bridge.client import GeminiWebClient
-from backend.app.bridge.models import DEFAULT_MODELS
 from backend.app.bridge.session import SessionHealthStatus, SessionManager
 from backend.app.bridge.streaming_parser import StreamChunk
 from backend.app.bridge.uploader import GeminiUploader
 from backend.app.openai import conversation_cache
 from backend.app.openai.adapter import (
-    ImageAttachmentDescriptor,
     InvalidImagePayloadError,
     ModelNotFoundError,
 )
 from backend.app.openai.routes import stream_with_disconnect_check
+import contextlib
 
 logger = logging.getLogger("gemini_anthropic.routes")
 
@@ -69,7 +67,7 @@ def make_anthropic_error(
     )
 
 
-def get_gemini_client(request: Request) -> Optional[GeminiWebClient]:
+def get_gemini_client(request: Request) -> GeminiWebClient | None:
     """Dependency injection resolving active GeminiWebClient."""
     from backend.app.openai.routes import get_gemini_client as resolve_client
     try:
@@ -79,7 +77,7 @@ def get_gemini_client(request: Request) -> Optional[GeminiWebClient]:
         return None
 
 
-def get_gemini_uploader(request: Request) -> Optional[GeminiUploader]:
+def get_gemini_uploader(request: Request) -> GeminiUploader | None:
     """Dependency injection resolving active GeminiUploader."""
     from backend.app.openai.routes import get_gemini_uploader as resolve_uploader
     try:
@@ -95,9 +93,9 @@ async def create_anthropic_message(
     req: MessageRequest,
     request: Request,
     response: Response,
-    client: Optional[GeminiWebClient] = Depends(get_gemini_client),
-    uploader: Optional[GeminiUploader] = Depends(get_gemini_uploader),
-    x_gemini_account: Optional[str] = Header(None),
+    client: GeminiWebClient | None = Depends(get_gemini_client),
+    uploader: GeminiUploader | None = Depends(get_gemini_uploader),
+    x_gemini_account: str | None = Header(None),
 ) -> Any:
     """
     Anthropic Messages API v1 endpoint.
@@ -110,7 +108,7 @@ async def create_anthropic_message(
 
     # 2. Model Resolution & Per-Subagent Tier / Custom Gem Routing
     subagent_profile = detect_subagent_profile(req.system)
-    subagent_feature_mode: Optional[int] = None
+    subagent_feature_mode: int | None = None
     try:
         canonical_model, gem_id = AnthropicAdapter.resolve_model(req.model)
         if not gem_id and getattr(req, "gem_id", None):
@@ -124,9 +122,9 @@ async def create_anthropic_message(
         return make_anthropic_error(str(e), error_type="not_found_error", status_code=404)
 
     # 3. Account & Client Resolution
-    session_mgr: Optional[SessionManager] = getattr(request.app.state, "session_manager", None)
-    repo = getattr(request.app.state, "repository", None)
-    db = getattr(request.app.state, "db", None)
+    session_mgr: SessionManager | None = getattr(request.app.state, "session_manager", None)
+    getattr(request.app.state, "repository", None)
+    getattr(request.app.state, "db", None)
 
     target_account_id = x_gemini_account or req.account_id
     if not target_account_id and session_mgr:
@@ -154,9 +152,9 @@ async def create_anthropic_message(
     # 4. Conversation Prefix Cache Lookup & Turn Extraction
     has_tools = bool(req.tools and (not req.tool_choice or (isinstance(req.tool_choice, str) and req.tool_choice != "none") or (isinstance(req.tool_choice, dict) and req.tool_choice.get("type") != "none")))
     matched_n, cached_chat = conversation_cache.find(req.messages)
-    resume_cid: Optional[str] = None
-    resume_rid: Optional[str] = None
-    resume_rcid: Optional[str] = None
+    resume_cid: str | None = None
+    resume_rid: str | None = None
+    resume_rcid: str | None = None
 
     try:
         if cached_chat and matched_n > 0:
@@ -189,7 +187,7 @@ async def create_anthropic_message(
         return make_anthropic_error(f"Failed parsing message payload: {e}", error_type="invalid_request_error", status_code=400)
 
     # 5. Upload Attachments if any
-    attachments: List[Dict[str, str]] = []
+    attachments: list[dict[str, str]] = []
     if image_descriptors and uploader:
         try:
             for desc in image_descriptors:
@@ -200,17 +198,17 @@ async def create_anthropic_message(
             return make_anthropic_error(f"Failed uploading image attachment: {e}", error_type="api_error", status_code=500)
 
     # 6. Parse Stop Sequences
-    stop_seqs: Optional[List[str]] = req.stop_sequences
+    stop_seqs: list[str] | None = req.stop_sequences
 
     message_id = generate_message_id()
     start_time = time.time()
     failover_occurred = False
-    failover_from: Optional[str] = None
+    failover_from: str | None = None
     fulfilled_by_id = target_account_id
-    done_metadata: Dict[str, Any] = {}
+    done_metadata: dict[str, Any] = {}
 
-    def _build_stream_kwargs() -> Dict[str, Any]:
-        kw: Dict[str, Any] = {
+    def _build_stream_kwargs() -> dict[str, Any]:
+        kw: dict[str, Any] = {
             "prompt": prompt,
             "model": canonical_model,
             "gem_id": gem_id,
@@ -282,8 +280,8 @@ async def create_anthropic_message(
     # 7. Execution: Streaming vs Non-Streaming
     try:
         if req.stream:
-            accumulated_chunks: List[str] = []
-            accumulated_thoughts: List[str] = []
+            accumulated_chunks: list[str] = []
+            accumulated_thoughts: list[str] = []
 
             async def tracking_stream_generator():
                 nonlocal accumulated_chunks, accumulated_thoughts
@@ -318,7 +316,7 @@ async def create_anthropic_message(
                         yield line
 
                     final_streamed_text = "".join(accumulated_chunks)
-                    emitted_tool_names: List[str] = []
+                    emitted_tool_names: list[str] = []
                     if has_tools:
                         clean_text, tool_calls = AnthropicAdapter.parse_tool_calls(final_streamed_text)
                         response_blocks = []
@@ -351,10 +349,8 @@ async def create_anthropic_message(
                     )
                 finally:
                     if client and hasattr(client, "close"):
-                        try:
+                        with contextlib.suppress(Exception):
                             await client.close()
-                        except Exception:
-                            pass
 
             sse_headers = {
                 "Cache-Control": "no-cache",
@@ -372,107 +368,104 @@ async def create_anthropic_message(
                 media_type="text/event-stream",
                 headers=sse_headers,
             )
-        else:
-            # Non-streaming execution
-            full_text_chunks: List[str] = []
-            thought_chunks: List[str] = []
+        # Non-streaming execution
+        full_text_chunks: list[str] = []
+        thought_chunks: list[str] = []
 
-            try:
-                gen = create_stream_with_failover()
-                async for chunk in gen:
-                    if chunk.type == "text" and chunk.delta:
-                        full_text_chunks.append(chunk.delta)
-                    elif chunk.type == "thought" and chunk.delta:
-                        thought_chunks.append(chunk.delta)
-            except Exception as e:
-                err_str = str(e)
-                if "1037" in err_str or "429" in err_str:
-                    return make_anthropic_error("Upstream rate limit exceeded", error_type="rate_limit_error", status_code=429)
-                return make_anthropic_error(f"Generation failed: {e}", error_type="api_error", status_code=502)
-            finally:
-                if client and hasattr(client, "close"):
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
+        try:
+            gen = create_stream_with_failover()
+            async for chunk in gen:
+                if chunk.type == "text" and chunk.delta:
+                    full_text_chunks.append(chunk.delta)
+                elif chunk.type == "thought" and chunk.delta:
+                    thought_chunks.append(chunk.delta)
+        except Exception as e:
+            err_str = str(e)
+            if "1037" in err_str or "429" in err_str:
+                return make_anthropic_error("Upstream rate limit exceeded", error_type="rate_limit_error", status_code=429)
+            return make_anthropic_error(f"Generation failed: {e}", error_type="api_error", status_code=502)
+        finally:
+            if client and hasattr(client, "close"):
+                with contextlib.suppress(Exception):
+                    await client.close()
 
-            raw_reply_text = "".join(full_text_chunks)
-            thought_text = "".join(thought_chunks)
+        raw_reply_text = "".join(full_text_chunks)
+        thought_text = "".join(thought_chunks)
 
-            # Check stop sequences
-            stop_reason = "end_turn"
-            stop_matched = None
-            if stop_seqs:
-                for stop_seq in stop_seqs:
-                    if stop_seq in raw_reply_text:
-                        idx = raw_reply_text.find(stop_seq)
-                        raw_reply_text = raw_reply_text[:idx]
-                        stop_reason = "stop_sequence"
-                        stop_matched = stop_seq
-                        break
+        # Check stop sequences
+        stop_reason = "end_turn"
+        stop_matched = None
+        if stop_seqs:
+            for stop_seq in stop_seqs:
+                if stop_seq in raw_reply_text:
+                    idx = raw_reply_text.find(stop_seq)
+                    raw_reply_text = raw_reply_text[:idx]
+                    stop_reason = "stop_sequence"
+                    stop_matched = stop_seq
+                    break
 
-            content_blocks: List[ContentBlock] = []
+        content_blocks: list[ContentBlock] = []
 
-            # Add thinking block if thoughts exist
-            if thought_text and thinking_enabled:
-                content_blocks.append(ThinkingBlock(thinking=thought_text))
+        # Add thinking block if thoughts exist
+        if thought_text and thinking_enabled:
+            content_blocks.append(ThinkingBlock(thinking=thought_text))
 
-            # Parse tool calls if tools were provided
-            emitted_tool_names: List[str] = []
-            if has_tools:
-                clean_text, tool_calls = AnthropicAdapter.parse_tool_calls(raw_reply_text)
-                if clean_text:
-                    content_blocks.append(TextBlock(text=clean_text))
-                if tool_calls:
-                    for tc in tool_calls:
-                        content_blocks.append(tc)
-                        emitted_tool_names.append(tc.name)
-                    if stop_reason == "end_turn":
-                        stop_reason = "tool_use"
-                elif not clean_text and raw_reply_text:
-                    content_blocks.append(TextBlock(text=raw_reply_text))
-            else:
+        # Parse tool calls if tools were provided
+        emitted_tool_names: list[str] = []
+        if has_tools:
+            clean_text, tool_calls = AnthropicAdapter.parse_tool_calls(raw_reply_text)
+            if clean_text:
+                content_blocks.append(TextBlock(text=clean_text))
+            if tool_calls:
+                for tc in tool_calls:
+                    content_blocks.append(tc)
+                    emitted_tool_names.append(tc.name)
+                if stop_reason == "end_turn":
+                    stop_reason = "tool_use"
+            elif not clean_text and raw_reply_text:
                 content_blocks.append(TextBlock(text=raw_reply_text))
+        else:
+            content_blocks.append(TextBlock(text=raw_reply_text))
 
-            output_tokens = max(1, (len(raw_reply_text) + len(thought_text)) // 3)
+        output_tokens = max(1, (len(raw_reply_text) + len(thought_text)) // 3)
 
-            # Store in conversation cache
-            stored_content = [b.model_dump() if hasattr(b, "model_dump") else b for b in content_blocks]
-            _remember_turn({"role": "assistant", "content": stored_content})
+        # Store in conversation cache
+        stored_content = [b.model_dump() if hasattr(b, "model_dump") else b for b in content_blocks]
+        _remember_turn({"role": "assistant", "content": stored_content})
 
-            record_swarm_event(
-                message_id=message_id,
-                requested_model=req.model,
-                resolved_model=canonical_model,
-                subagent=subagent_profile["name"] if subagent_profile else None,
-                gem_id=gem_id,
-                cache_hit=bool(cached_chat and matched_n > 0),
-                matched_turns=matched_n,
-                total_turns=len(req.messages),
-                tool_calls=emitted_tool_names,
-                latency_ms=int((time.time() - start_time) * 1000),
+        record_swarm_event(
+            message_id=message_id,
+            requested_model=req.model,
+            resolved_model=canonical_model,
+            subagent=subagent_profile["name"] if subagent_profile else None,
+            gem_id=gem_id,
+            cache_hit=bool(cached_chat and matched_n > 0),
+            matched_turns=matched_n,
+            total_turns=len(req.messages),
+            tool_calls=emitted_tool_names,
+            latency_ms=int((time.time() - start_time) * 1000),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            stream=False,
+        )
+
+        response.headers["X-Gemini-Model-Resolved"] = canonical_model
+        if subagent_profile:
+            response.headers["X-Gemini-Subagent"] = str(subagent_profile["name"])
+        if gem_id:
+            response.headers["X-Gemini-Gem-Id"] = str(gem_id)
+
+        return MessageResponse(
+            id=message_id,
+            model=req.model,
+            content=content_blocks,
+            stop_reason=stop_reason,
+            stop_sequence=stop_matched,
+            usage=MessageUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                stream=False,
-            )
-
-            response.headers["X-Gemini-Model-Resolved"] = canonical_model
-            if subagent_profile:
-                response.headers["X-Gemini-Subagent"] = str(subagent_profile["name"])
-            if gem_id:
-                response.headers["X-Gemini-Gem-Id"] = str(gem_id)
-
-            return MessageResponse(
-                id=message_id,
-                model=req.model,
-                content=content_blocks,
-                stop_reason=stop_reason,
-                stop_sequence=stop_matched,
-                usage=MessageUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                ),
-            )
+            ),
+        )
 
     except Exception as e:
         logger.error("Unhandled error in Anthropic create_message: %s", e, exc_info=True)
