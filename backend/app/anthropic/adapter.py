@@ -8,13 +8,12 @@ multimodal image parsing, tool call extraction, and token counting.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import mimetypes
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 import httpx
 
 from backend.app.anthropic.schemas import (
@@ -22,14 +21,9 @@ from backend.app.anthropic.schemas import (
     ImageBlock,
     MessageParam,
     MessageRequest,
-    TextBlock,
-    ThinkingBlock,
     ToolParam,
-    ToolResultBlock,
     ToolUseBlock,
 )
-from backend.app.bridge.models import DEFAULT_MODELS, OPENAI_MODEL_ALIASES
-from backend.app.bridge.uploader import GeminiUploader
 from backend.app.openai.adapter import (
     DATA_URI_PATTERN,
     MAX_IMAGE_BYTES,
@@ -77,7 +71,7 @@ class AnthropicAdapter:
     """Translates Anthropic Messages API requests and responses to/from Gemini Web format."""
 
     @staticmethod
-    def resolve_model(model_name: str) -> Tuple[str, Optional[str]]:
+    def resolve_model(model_name: str) -> tuple[str, str | None]:
         """
         Resolves Claude or Gemini model alias to (canonical_model_id, gem_id).
         Claude models map to Argon 4 or Flash.
@@ -85,13 +79,13 @@ class AnthropicAdapter:
         """
         raw_name = model_name.strip()
         clean_name = raw_name
-        gem_id: Optional[str] = None
+        gem_id: str | None = None
         modifier = ""
 
         if "@" in clean_name:
             base_part, *mod_parts = clean_name.split("@")
             clean_name = base_part.strip()
-            kept_mods: List[str] = []
+            kept_mods: list[str] = []
             for mp in mod_parts:
                 mp_strip = mp.strip()
                 if mp_strip.startswith("gem="):
@@ -119,16 +113,16 @@ class AnthropicAdapter:
 
     @staticmethod
     def build_tools_system_instruction(
-        tools: Optional[List[Union[ToolParam, Dict[str, Any]]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
-    ) -> Optional[str]:
+        tools: list[ToolParam | dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> str | None:
         """Builds `# Tool Use` instruction block for Anthropic tools."""
         if not tools:
             return None
 
         # Check tool_choice
         choice_type = "auto"
-        forced_name: Optional[str] = None
+        forced_name: str | None = None
         if isinstance(tool_choice, str):
             choice_type = tool_choice
         elif isinstance(tool_choice, dict):
@@ -141,7 +135,7 @@ class AnthropicAdapter:
         if choice_type == "none":
             return None
 
-        tool_specs: List[str] = []
+        tool_specs: list[str] = []
         compact_mode = len(tools) > 5
         skip_cloud_tools = {
             "Artifact",
@@ -244,12 +238,12 @@ class AnthropicAdapter:
     @classmethod
     def extract_system_instruction(
         cls,
-        system: Optional[Union[str, List[Any]]] = None,
-        tools: Optional[List[Union[ToolParam, Dict[str, Any]]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
-    ) -> Optional[str]:
+        system: str | list[Any] | None = None,
+        tools: list[ToolParam | dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> str | None:
         """Extracts text from system parameter and appends tool instructions if applicable."""
-        system_parts: List[str] = []
+        system_parts: list[str] = []
 
         if isinstance(system, str):
             if system.strip():
@@ -274,7 +268,7 @@ class AnthropicAdapter:
         if len(raw_sys) > 6000:
             raw_sys = raw_sys[:4000].rstrip() + "\n...\n" + raw_sys[-1500:].lstrip()
 
-        out_parts: List[str] = []
+        out_parts: list[str] = []
         if raw_sys:
             out_parts.append(raw_sys)
 
@@ -285,7 +279,7 @@ class AnthropicAdapter:
         return "\n\n".join(out_parts) if out_parts else None
 
     @classmethod
-    async def parse_image_block(cls, block: Union[ImageBlock, Dict[str, Any]]) -> ImageAttachmentDescriptor:
+    async def parse_image_block(cls, block: ImageBlock | dict[str, Any]) -> ImageAttachmentDescriptor:
         """Parses an Anthropic ImageBlock into an ImageAttachmentDescriptor."""
         if hasattr(block, "model_dump"):
             b_dict = block.model_dump(exclude_none=True)
@@ -318,7 +312,7 @@ class AnthropicAdapter:
             filename = f"image_{len(raw_bytes)}{ext}"
             return ImageAttachmentDescriptor(data=raw_bytes, filename=filename, mime_type=media_type)
 
-        elif src_type == "url":
+        if src_type == "url":
             url = source.get("url", "")
             if not url:
                 raise InvalidImagePayloadError("URL image source missing 'url'")
@@ -333,7 +327,7 @@ class AnthropicAdapter:
                 ext = mimetypes.guess_extension(media_type) or ".png"
                 return ImageAttachmentDescriptor(data=raw_bytes, filename=f"image_{len(raw_bytes)}{ext}", mime_type=media_type)
 
-            if url.startswith("http://") or url.startswith("https://"):
+            if url.startswith(("http://", "https://")):
                 try:
                     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http_client:
                         resp = await http_client.get(url)
@@ -352,13 +346,13 @@ class AnthropicAdapter:
         raise InvalidImagePayloadError(f"Unsupported image source type: {src_type}")
 
     @staticmethod
-    def _sanitize_text_block(t_val: str, inline_system_parts: List[str]) -> str:
+    def _sanitize_text_block(t_val: str, inline_system_parts: list[str]) -> str:
         """
         Extracts <task-notification> results into clean [Subagent Completed] blocks,
         strips [SYSTEM NOTIFICATION - NOT USER INPUT] boilerplate, and moves
         regular <system-reminder> blocks to inline_system_parts.
         """
-        task_results: List[str] = []
+        task_results: list[str] = []
         for m in re.finditer(r"<task-notification>([\s\S]*?)</task-notification>", t_val):
             body = m.group(1)
             sum_m = re.search(r"<summary>([\s\S]*?)</summary>", body)
@@ -398,17 +392,17 @@ class AnthropicAdapter:
     @classmethod
     async def extract_turns_and_attachments(
         cls,
-        messages: List[Union[MessageParam, Dict[str, Any]]],
-        system_instruction: Optional[str] = None,
-        context_messages: Optional[List[Union[MessageParam, Dict[str, Any]]]] = None,
-    ) -> Tuple[str, List[Dict[str, str]], List[ImageAttachmentDescriptor]]:
+        messages: list[MessageParam | dict[str, Any]],
+        system_instruction: str | None = None,
+        context_messages: list[MessageParam | dict[str, Any]] | None = None,
+    ) -> tuple[str, list[dict[str, str]], list[ImageAttachmentDescriptor]]:
         """
         Processes Anthropic MessageParam turns into (final_prompt, history, image_descriptors).
         Handles text, image blocks, tool_use, tool_result, and thinking blocks.
         """
-        raw_turns: List[Tuple[str, str, List[ImageAttachmentDescriptor]]] = []
-        inline_system_parts: List[str] = []
-        tool_call_labels: Dict[str, str] = {}
+        raw_turns: list[tuple[str, str, list[ImageAttachmentDescriptor]]] = []
+        inline_system_parts: list[str] = []
+        tool_call_labels: dict[str, str] = {}
         fallback_user_goal = ""
 
         if context_messages:
@@ -433,8 +427,8 @@ class AnthropicAdapter:
             role = msg.role if hasattr(msg, "role") else msg.get("role", "user")
             content = msg.content if hasattr(msg, "content") else msg.get("content", "")
 
-            text_parts: List[str] = []
-            img_descriptors: List[ImageAttachmentDescriptor] = []
+            text_parts: list[str] = []
+            img_descriptors: list[ImageAttachmentDescriptor] = []
 
             if isinstance(content, str):
                 t_val = cls._sanitize_text_block(content.strip(), inline_system_parts)
@@ -514,7 +508,7 @@ class AnthropicAdapter:
                                     pass
                             text_parts.append(f"{prefix}: {clean_res}")
                         elif isinstance(res_content, list):
-                            nested_text: List[str] = []
+                            nested_text: list[str] = []
                             for n_block in res_content:
                                 if isinstance(n_block, dict):
                                     if n_block.get("type") == "text":
@@ -568,7 +562,7 @@ class AnthropicAdapter:
                     "",
                     merged_inline_sys,
                 )
-            compact_sys_lines: List[str] = []
+            compact_sys_lines: list[str] = []
             for s_line in merged_inline_sys.splitlines():
                 if s_line.startswith(("TRIGGER —", "SKIP only when", " - Downloaded files and extracted archives")):
                     continue
@@ -595,7 +589,7 @@ class AnthropicAdapter:
             return "", [], []
 
         # Coalesce consecutive turns with the same role
-        coalesced: List[Tuple[str, str, List[ImageAttachmentDescriptor]]] = []
+        coalesced: list[tuple[str, str, list[ImageAttachmentDescriptor]]] = []
         for role, text, imgs in raw_turns:
             if coalesced and coalesced[-1][0] == role:
                 prev_role, prev_text, prev_imgs = coalesced[-1]
@@ -606,7 +600,7 @@ class AnthropicAdapter:
 
         final_turn_role, final_prompt, final_images = coalesced[-1]
 
-        history: List[Dict[str, str]] = []
+        history: list[dict[str, str]] = []
         prior_turns = coalesced[:-1]
         total_prior = len(prior_turns)
         for idx, (r, t, _) in enumerate(prior_turns):
@@ -648,7 +642,7 @@ class AnthropicAdapter:
         return final_prompt, history, final_images
 
     @staticmethod
-    def parse_tool_calls(text: str) -> Tuple[str, List[ToolUseBlock]]:
+    def parse_tool_calls(text: str) -> tuple[str, list[ToolUseBlock]]:
         """
         Extracts ```tool_call ... ``` (or Gemini-normalized ```json ... ```) blocks
         from model output, generating standard Anthropic ToolUseBlock items with `toolu_` IDs.
@@ -656,8 +650,8 @@ class AnthropicAdapter:
         if not text or "```" not in text:
             return text or "", []
 
-        tool_blocks: List[ToolUseBlock] = []
-        matched_spans: List[Tuple[int, int]] = []
+        tool_blocks: list[ToolUseBlock] = []
+        matched_spans: list[tuple[int, int]] = []
         for match in TOOL_CALL_RE.finditer(text):
             fence_tag = (match.group(1) or "").strip().lower()
             raw_block = match.group(2).strip()
@@ -706,7 +700,7 @@ class AnthropicAdapter:
         if not tool_blocks:
             return text, []
 
-        pieces: List[str] = []
+        pieces: list[str] = []
         last_idx = 0
         for start, end in matched_spans:
             pieces.append(text[last_idx:start])
@@ -716,7 +710,7 @@ class AnthropicAdapter:
         return clean_text, tool_blocks
 
     @classmethod
-    def count_tokens(cls, req: Union[MessageRequest, CountTokensRequest]) -> int:
+    def count_tokens(cls, req: MessageRequest | CountTokensRequest) -> int:
         """
         Computes high-fidelity estimated token count for an Anthropic message payload.
         Includes system text, dialogue messages, tool declarations, and image tokens.
