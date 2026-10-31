@@ -9,16 +9,17 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any
+from collections.abc import AsyncIterator
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from backend.app.bridge.client import GeminiWebClient
 from backend.app.bridge.models import DEFAULT_MODELS
-from backend.app.storage.database import Database
 from backend.app.storage.repository import ConversationRepository
+import contextlib
 
 logger = logging.getLogger("gemini_api.chat")
 router = APIRouter(prefix="/api/chat", tags=["Web UI Chat"])
@@ -36,7 +37,7 @@ async def stream_with_disconnect_check(
     Ticks every `timeout` seconds (default 1.0s) so that prolonged reasoning
     silence (60-180s without tokens) does not block disconnect detection.
     """
-    queue: asyncio.Queue[Tuple[bool, Any]] = asyncio.Queue(maxsize=max_queue_size)
+    queue: asyncio.Queue[tuple[bool, Any]] = asyncio.Queue(maxsize=max_queue_size)
     stop_event = asyncio.Event()
 
     async def producer() -> None:
@@ -82,28 +83,28 @@ async def stream_with_disconnect_check(
 
 
 class ChatAttachmentInput(BaseModel):
-    uri: Optional[str] = None
+    uri: str | None = None
     filename: str
     mime_type: str = "application/octet-stream"
     file_size: int = 0
-    storage_path: Optional[str] = None
+    storage_path: str | None = None
 
 
 class ChatGenerateRequest(BaseModel):
-    conversation_id: Optional[str] = None
-    parent_message_id: Optional[Union[int, str]] = None
-    existing_user_message_id: Optional[int] = None
+    conversation_id: str | None = None
+    parent_message_id: int | str | None = None
+    existing_user_message_id: int | None = None
     prompt: str = ""
     model: str = "gemini-2.5-flash"
-    gem_id: Optional[str] = None
-    attachments: Optional[List[ChatAttachmentInput]] = None
-    account_id: Optional[str] = None
-    feature_mode: Optional[str] = "chat"
+    gem_id: str | None = None
+    attachments: list[ChatAttachmentInput] | None = None
+    account_id: str | None = None
+    feature_mode: str | None = "chat"
     incognito: bool = False
-    system_instruction: Optional[str] = None
+    system_instruction: str | None = None
 
 
-def format_ui_sse(event_data: Dict[str, Any]) -> str:
+def format_ui_sse(event_data: dict[str, Any]) -> str:
     """Formats event dict as a standard SSE data line for the Web UI."""
     return f"data: {json.dumps(event_data, separators=(',', ':'))}\n\n"
 
@@ -124,7 +125,7 @@ def get_gemini_client(request: Request) -> GeminiWebClient:
     return resolve_client(request)
 
 
-def get_repository(request: Request) -> Optional[ConversationRepository]:
+def get_repository(request: Request) -> ConversationRepository | None:
     """Dependency injection resolving active ConversationRepository."""
     repo = getattr(request.app.state, "repository", None)
     if not repo:
@@ -144,7 +145,7 @@ def get_repository(request: Request) -> Optional[ConversationRepository]:
 async def upload_chat_attachment(
     request: Request,
     file: UploadFile = File(...),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Uploads file or archive to Google Gemini content-push and returns resource URI."""
     session_mgr = getattr(request.app.state, "session_manager", None)
     if not session_mgr:
@@ -183,7 +184,7 @@ async def generate_chat_turn(
     req: ChatGenerateRequest,
     request: Request,
     client: GeminiWebClient = Depends(get_gemini_client),
-    repo: Optional[ConversationRepository] = Depends(get_repository),
+    repo: ConversationRepository | None = Depends(get_repository),
 ) -> StreamingResponse:
     """
     Streaming chat endpoint for the local UI with automatic quota failover.
@@ -251,7 +252,7 @@ async def generate_chat_turn(
         raise HTTPException(status_code=400, detail="Prompt or attachments must be provided")
 
     conv_id = req.conversation_id or f"conv_{uuid.uuid4().hex[:12]}"
-    user_msg_id: Optional[int] = req.existing_user_message_id
+    user_msg_id: int | None = req.existing_user_message_id
     now_ms = int(time.time() * 1000)
 
     # 1. Persist User Message in SQLite (unless incognito or continuing from an already-persisted message)
@@ -312,8 +313,8 @@ async def generate_chat_turn(
         })
 
         start_time = time.time()
-        full_text_list: List[str] = []
-        full_thought_list: List[str] = []
+        full_text_list: list[str] = []
+        full_thought_list: list[str] = []
         text_emitted = False
 
         current_acc_id = target_account_id
@@ -375,10 +376,10 @@ async def generate_chat_turn(
             ):
                 yield chk
 
-        accumulator_citations: List[Any] = []
-        accumulator_images: List[Any] = []
-        accumulator_grounding: Dict[str, Any] = {}
-        accumulator_youtube: List[Any] = []
+        accumulator_citations: list[Any] = []
+        accumulator_images: list[Any] = []
+        accumulator_grounding: dict[str, Any] = {}
+        accumulator_youtube: list[Any] = []
 
         try:
             try:
@@ -660,7 +661,7 @@ async def generate_chat_turn(
                     pass
 
             if repo and user_msg_id is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await repo.add_message(
                         conversation_id=conv_id,
                         role="assistant",
@@ -670,16 +671,12 @@ async def generate_chat_turn(
                         is_error=True,
                         created_at=int(time.time() * 1000),
                     )
-                except Exception:
-                    pass
             yield format_ui_sse({"type": "error", "error": str(e)})
         finally:
             for cli in (client_active, client, backup_cli):
                 if cli and hasattr(cli, "close"):
-                    try:
+                    with contextlib.suppress(Exception):
                         await cli.close()
-                    except Exception:
-                        pass
 
     return StreamingResponse(
         sse_event_stream(),
