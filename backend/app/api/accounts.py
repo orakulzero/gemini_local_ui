@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
@@ -61,17 +61,17 @@ class AccountPublicInfo(BaseModel):
     build_label: str = ""
     last_refresh_timestamp: float = 0.0
     next_refresh_seconds: float = 0.0
-    cooldown_until: Optional[float] = None
-    cooldown_models: Dict[str, float] = Field(default_factory=dict)
+    cooldown_until: float | None = None
+    cooldown_models: dict[str, float] = Field(default_factory=dict)
 
 
 class AccountCreateRequest(BaseModel):
     name: str
-    cookies: Optional[str] = None
+    cookies: str | None = None
     auto_import: bool = False
-    browser: Optional[str] = None
-    profile_dir: Optional[str] = None
-    tier_override: Optional[str] = None
+    browser: str | None = None
+    profile_dir: str | None = None
+    tier_override: str | None = None
     priority: int = 1
 
 
@@ -79,13 +79,13 @@ class FailoverConfigUpdate(BaseModel):
     enabled: bool = True
     strategy: str = "priority_tier"
     cooldown_duration_seconds: int = 3600
-    fallback_chain: List[str] = Field(default_factory=list)
+    fallback_chain: list[str] = Field(default_factory=list)
     notify_client_on_failover: bool = True
 
 
 class AccountsListResponse(BaseModel):
     active_account_id: str
-    accounts: List[AccountPublicInfo]
+    accounts: list[AccountPublicInfo]
     failover_config: FailoverConfigUpdate
 
 
@@ -158,9 +158,9 @@ async def list_accounts(
     vdata = vault.load_vault_data()
     failover_cfg = vdata.failover_config
 
-    accounts_out: List[AccountPublicInfo] = []
-    for profile in vdata.accounts.values():
-        accounts_out.append(build_public_info(profile, session_mgr))
+    accounts_out: list[AccountPublicInfo] = [
+        build_public_info(profile, session_mgr) for profile in vdata.accounts.values()
+    ]
 
     return AccountsListResponse(
         active_account_id=session_mgr.active_account_id,
@@ -180,14 +180,14 @@ async def create_account(
     req: AccountCreateRequest,
     session_mgr: SessionManager = Depends(get_session_manager),
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Registers or imports a new Google Gemini account profile."""
-    cookies_dict: Dict[str, str] = {}
+    cookies_dict: dict[str, str] = {}
     if req.auto_import:
         try:
             cookies_dict, _ = BrowserCookieExtractor.auto_extract()
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Auto extraction failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Auto extraction failed: {e}") from e
     elif req.cookies:
         cookies_dict = BrowserCookieExtractor.parse_manual(req.cookies)
     else:
@@ -233,7 +233,7 @@ async def get_account_detail(
     account_id: str = Path(...),
     session_mgr: SessionManager = Depends(get_session_manager),
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Retrieves metadata and health for a single account."""
     profile = vault.get_account(account_id)
     if not profile:
@@ -248,7 +248,7 @@ async def activate_account(
     account_id: str = Path(...),
     session_mgr: SessionManager = Depends(get_session_manager),
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Switches the active primary Google Gemini account."""
     profile = vault.get_account(account_id)
     if not profile:
@@ -269,7 +269,7 @@ async def delete_account(
     account_id: str = Path(...),
     session_mgr: SessionManager = Depends(get_session_manager),
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Deletes an account profile and halts its background rotation task."""
     profile = vault.get_account(account_id)
     if not profile:
@@ -288,7 +288,7 @@ async def delete_account(
 async def update_failover_config(
     req: FailoverConfigUpdate,
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Updates auto-failover policy and fallback chain."""
     config = FailoverConfig(
         enabled=req.enabled,
