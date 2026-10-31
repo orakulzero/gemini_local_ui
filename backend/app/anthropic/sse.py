@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 import uuid
 
 from backend.app.anthropic.adapter import AnthropicAdapter
@@ -23,7 +24,7 @@ def generate_message_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
-def format_anthropic_event(event: str, data: Dict[str, Any]) -> str:
+def format_anthropic_event(event: str, data: dict[str, Any]) -> str:
     """Formats event name and JSON data into Anthropic SSE format."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
@@ -33,7 +34,7 @@ async def stream_anthropic_sse(
     request_id: str,
     model_name: str,
     input_tokens: int = 0,
-    stop_sequences: Optional[List[str]] = None,
+    stop_sequences: list[str] | None = None,
     has_tools: bool = False,
     thinking_enabled: bool = True,
 ) -> AsyncIterator[str]:
@@ -65,11 +66,11 @@ async def stream_anthropic_sse(
     block_index = 0
     thought_block_open = False
     text_block_open = False
-    accumulated_thoughts: List[str] = []
-    accumulated_text_chunks: List[str] = []
+    accumulated_thoughts: list[str] = []
+    accumulated_text_chunks: list[str] = []
     accumulated_full_text = ""
     stop_reason: str = "end_turn"
-    stop_sequence_matched: Optional[str] = None
+    stop_sequence_matched: str | None = None
     stop_triggered = False
 
     try:
