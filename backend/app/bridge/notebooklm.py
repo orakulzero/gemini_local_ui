@@ -15,14 +15,13 @@ NotebookLMClient and dataclasses for Google NotebookLM integration (Features F47
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 import json
 import logging
 import random
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 import httpx
 
 from backend.app.bridge.exceptions import AuthenticationError, GeminiBridgeError
@@ -42,7 +41,7 @@ class NotebookSource:
     id: str
     title: str
     source_type: int = 1  # 1=text, 2=url, 3=pdf/doc, 4=youtube
-    url: Optional[str] = None
+    url: str | None = None
     summary: str = ""
     token_count: int = 0
     created_at: float = 0.0
@@ -66,14 +65,14 @@ class NotebookInfo:
     created_at: float = 0.0
     updated_at: float = 0.0
     source_count: int = 0
-    emoji: Optional[str] = "📓"
+    emoji: str | None = "📓"
 
 
 @dataclass
 class NotebookDetail(NotebookInfo):
     """Detailed notebook information including attached sources and notes."""
-    sources: List[NotebookSource] = field(default_factory=list)
-    notes: List[NotebookNote] = field(default_factory=list)
+    sources: list[NotebookSource] = field(default_factory=list)
+    notes: list[NotebookNote] = field(default_factory=list)
 
 
 class NotebookLMClient:
@@ -87,21 +86,21 @@ class NotebookLMClient:
 
     def __init__(
         self,
-        cookies: Optional[Dict[str, str]] = None,
+        cookies: dict[str, str] | None = None,
         base_url: str = DEFAULT_BASE_URL,
-        fallback_snlm0e: Optional[str] = None,
+        fallback_snlm0e: str | None = None,
         timeout: float = 60.0,
     ) -> None:
-        self.cookies: Dict[str, str] = dict(cookies or {})
+        self.cookies: dict[str, str] = dict(cookies or {})
         self.base_url: str = base_url.rstrip("/")
         self.timeout: float = timeout
-        self.access_token: Optional[str] = fallback_snlm0e
-        self.fallback_snlm0e: Optional[str] = fallback_snlm0e
+        self.access_token: str | None = fallback_snlm0e
+        self.fallback_snlm0e: str | None = fallback_snlm0e
         self.build_label: str = "boq_labs-tailwind-frontend_20261017.00_p0"
-        self.session_id: Optional[str] = None
+        self.session_id: str | None = None
         self.is_offline_fallback: bool = False
         self._reqid_counter: int = random.randint(100000, 999999)
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -157,8 +156,7 @@ class NotebookLMClient:
                     self.session_id = m_sid.group(1)
 
                 return bool(self.access_token)
-            else:
-                self.is_offline_fallback = True
+            self.is_offline_fallback = True
         except Exception as e:
             logger.warning("Could not scrape NotebookLM tokens from %s: %s; using fallback credentials", self.base_url, e)
             self.is_offline_fallback = True
@@ -232,10 +230,10 @@ class NotebookLMClient:
             self.is_offline_fallback = True
             raise
 
-    async def list_notebooks(self) -> List[NotebookInfo]:
+    async def list_notebooks(self) -> list[NotebookInfo]:
         """RPC wXbhsf: Lists all user notebooks."""
         raw = await self.call_batchexecute("wXbhsf", [None, 1, None, [0, None, 1]])
-        notebooks: List[NotebookInfo] = []
+        notebooks: list[NotebookInfo] = []
         if raw and isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], list):
             for item in raw[0]:
                 if isinstance(item, list) and len(item) >= 2:
@@ -269,7 +267,7 @@ class NotebookLMClient:
         created_at = float(meta[2][0]) if len(meta) > 2 and isinstance(meta[2], list) else 0.0
         updated_at = float(meta[3][0]) if len(meta) > 3 and isinstance(meta[3], list) else created_at
 
-        sources: List[NotebookSource] = []
+        sources: list[NotebookSource] = []
         if len(raw) > 1 and isinstance(raw[1], list):
             for s in raw[1]:
                 if isinstance(s, list) and len(s) >= 2:
@@ -285,7 +283,7 @@ class NotebookLMClient:
                         )
                     )
 
-        notes: List[NotebookNote] = []
+        notes: list[NotebookNote] = []
         if len(raw) > 2 and isinstance(raw[2], list):
             for n in raw[2]:
                 if isinstance(n, list) and len(n) >= 3:
@@ -372,7 +370,7 @@ class NotebookLMClient:
         self,
         notebook_id: str,
         url: str,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> NotebookSource:
         """RPC izAoDd: Adds a web URL or article as a grounded source into a notebook."""
         is_yt = "youtube.com/" in url.lower() or "youtu.be/" in url.lower()
@@ -413,7 +411,7 @@ class NotebookLMClient:
         self,
         notebook_id: str,
         youtube_url: str,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> NotebookSource:
         """RPC izAoDd (YouTube slot): Adds a YouTube video transcript as a grounded source."""
         payload = [[[None, None, None, None, None, None, None, [youtube_url]]], notebook_id, [2]]
@@ -454,7 +452,7 @@ class NotebookLMClient:
         self,
         notebook_id: str,
         guide_type: str = "study_guide",
-        source_ids: Optional[List[str]] = None,
+        source_ids: list[str] | None = None,
     ) -> NotebookNote:
         """
         RPC CYK0Xb: Generates a Studio Study Guide, Briefing Doc, FAQ, or Timeline
@@ -511,9 +509,9 @@ class NotebookLMClient:
     async def generate_mind_map(
         self,
         notebook_id: str,
-        topic: Optional[str] = None,
-        source_ids: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        topic: str | None = None,
+        source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         RPC yy45ke: Generates a hierarchical Mind Map (JSON tree + Mermaid mindmap syntax)
         for the specified notebook.
@@ -522,7 +520,7 @@ class NotebookLMClient:
         raw = await self.call_batchexecute("yy45ke", payload)
 
         root_label = topic or f"Notebook {notebook_id}"
-        children: List[Dict[str, Any]] = []
+        children: list[dict[str, Any]] = []
 
         if isinstance(raw, dict) and "root" in raw:
             return raw
@@ -582,7 +580,7 @@ class NotebookLMClient:
         notebook_id: str,
         instructions: str = "",
         language: str = "ru",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         RPC AHyHrd: Triggers or retrieves a Deep Dive Audio Overview podcast for the notebook.
         """
@@ -591,7 +589,7 @@ class NotebookLMClient:
 
         audio_id = f"audio_{notebook_id}_{int(time.time())}"
         status_str = "ready"
-        audio_url: Optional[str] = None
+        audio_url: str | None = None
 
         if isinstance(raw, list) and len(raw) > 0:
             if isinstance(raw[0], str):
