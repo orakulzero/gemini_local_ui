@@ -108,6 +108,14 @@ async def delete_pipeline_schedule(schedule_id: str) -> dict[str, Any]:
     return {"ok": True, "deleted": True, "schedule_id": schedule_id}
 
 
+@router.post("/schedules/trigger-due")
+async def trigger_due_schedules_endpoint() -> dict[str, Any]:
+    """REQ-PIPE-02, REQ-PIPE-06: Immediately triggers all due enabled schedules."""
+    orch = get_task_pipeline_orchestrator()
+    runs = await orch.trigger_due_schedules()
+    return {"ok": True, "triggered_count": len(runs), "runs": runs}
+
+
 @router.post("/runs/execute")
 async def execute_pipeline_run_endpoint(req: PipelineExecuteRequest) -> dict[str, Any]:
     """REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-06: Executes a staged Task-Mode pipeline run."""

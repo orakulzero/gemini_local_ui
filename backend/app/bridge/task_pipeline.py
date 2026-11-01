@@ -477,9 +477,136 @@ class TaskPipelineOrchestrator:
         return due
 
 
-    # ------------------------------------------------------------------
-    # REQ-PIPE-03 & REQ-PIPE-05: Stateful Self-Healing & Stage-Only Approval
-    # ------------------------------------------------------------------
+    async def _default_live_task_runner(
+        self,
+        prompt: str,
+        bundle: dict[str, Any],
+        model: str,
+        thinking: int,
+        cid: str | None,
+        rid: str | None,
+        rcid: str | None,
+        is_first_turn: bool,
+    ) -> dict[str, Any]:
+        """
+        REQ-PIPE-03: Executes live Gemini 4 Argon Task Mode (feature_mode=40) via
+        CredentialVault + SessionManager + GeminiUploader + GeminiWebClient.
+        """
+        from backend.app.bridge.client import GeminiWebClient
+        from backend.app.bridge.session import SessionManager
+        from backend.app.bridge.uploader import GeminiUploader
+        from backend.app.storage.vault import CredentialVault
+
+        vault = CredentialVault()
+        sm = SessionManager(vault=vault)
+        vdata = vault.load_vault_data()
+        if vdata and vdata.accounts:
+            await sm.initialize_all()
+        else:
+            stored = vault.load_credentials()
+            if stored and isinstance(stored, dict):
+                await sm.init_session(stored)
+
+        if not sm.get_health().is_authenticated:
+            await sm.close()
+            return {
+                "cid": cid or f"c_unauth_{uuid.uuid4().hex[:8]}",
+                "rid": "r_unauth",
+                "rcid": "rc_unauth",
+                "text": "",
+            }
+
+        client = GeminiWebClient(
+            session_context=sm.context,
+            base_url=sm.base_url,
+            vault=vault,
+            account_id=sm.active_account_id,
+            timeout=360.0,
+        )
+        try:
+            att_list: list[dict[str, Any]] | None = None
+            full_prompt = prompt
+            if is_first_turn and bundle.get("zip_bytes"):
+                uploader = GeminiUploader(session_context=sm.context, base_url=sm.base_url)
+                uri = await uploader.upload_file(
+                    data=bundle["zip_bytes"],
+                    filename=bundle["zip_filename"],
+                    mime_type="application/zip",
+                )
+                att_list = [{"uri": uri, "filename": bundle["zip_filename"], "scotty": True}]
+                contracts_summary = "\n".join(
+                    f"# {k}\n{v}" for k, v in list(bundle.get("ast_contracts", {}).items())[:15]
+                )
+                req_summary = ", ".join(bundle.get("req_tags", [])) or "None"
+                full_prompt = (
+                    f"[Task Mode Context Archive Attached: {bundle['zip_filename']}]\n"
+                    f"Required REQ-* Tags to Preserve: {req_summary}\n"
+                    f"AST Signature Contracts:\n```python\n{contracts_summary[:6000]}\n```\n\n"
+                    f"Task Instruction:\n{prompt}\n\n"
+                    "Output modified/created files using '### File: <rel_path>' followed by a ```python code block."
+                )
+
+            text_parts: list[str] = []
+            out_cid = cid
+            out_rid = rid
+            out_rcid = rcid
+            eff_model = f"{model}@thinking={thinking}@mode=task"
+            async for chunk in client.generate_stream(
+                prompt=full_prompt,
+                model=eff_model,
+                cid=cid,
+                rid=rid,
+                rcid=rcid,
+                attachments=att_list,
+                feature_mode=40,
+            ):
+                if getattr(chunk, "text_delta", ""):
+                    text_parts.append(chunk.text_delta)
+                if getattr(chunk, "cid", None):
+                    out_cid = chunk.cid
+                if getattr(chunk, "rid", None):
+                    out_rid = chunk.rid
+                if getattr(chunk, "rcid", None):
+                    out_rcid = chunk.rcid
+            return {
+                "cid": out_cid or cid or f"c_task_{uuid.uuid4().hex[:8]}",
+                "rid": out_rid or rid or "r_live",
+                "rcid": out_rcid or rcid or "rc_live",
+                "text": "".join(text_parts),
+            }
+        except Exception as exc:
+            logger.warning("Live Task-Mode runner error: %s", exc)
+            return {
+                "cid": cid or f"c_err_{uuid.uuid4().hex[:8]}",
+                "rid": rid or "r_err",
+                "rcid": rcid or "rc_err",
+                "text": "",
+            }
+        finally:
+            await client.close()
+            await sm.close()
+
+    async def trigger_due_schedules(
+        self,
+        now_ts: float | None = None,
+        task_runner: Callable[..., Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """REQ-PIPE-02: Executes all currently due enabled schedules and returns their run records."""
+        due_list = self.get_due_schedules(now_ts=now_ts)
+        executed_runs: list[dict[str, Any]] = []
+        for sched in due_list:
+            run_rec = await self.execute_pipeline_run(
+                workspace_dir=sched["workspace_dir"],
+                prompt=sched["prompt"],
+                target_files=sched.get("target_files") or None,
+                model=sched.get("model", "gemini-4-argon"),
+                thinking=int(sched.get("thinking", 2)),
+                max_heal_attempts=int(sched.get("max_heal_attempts", 2)),
+                task_runner=task_runner,
+                schedule_id=sched["schedule_id"],
+            )
+            executed_runs.append(run_rec)
+        return executed_runs
     def _read_original_files(self, workspace_dir: Path, target_files: list[str] | None) -> dict[str, str]:
         orig: dict[str, str] = {}
         if target_files:
@@ -574,12 +701,16 @@ class TaskPipelineOrchestrator:
                         rcid=rcid,
                     )
                 else:
-                    resp = {
-                        "cid": cid or f"c_task_{uuid.uuid4().hex[:8]}",
-                        "rid": f"r_turn_{attempt + 1}",
-                        "rcid": f"rc_turn_{attempt + 1}",
-                        "text": "",
-                    }
+                    resp = await self._default_live_task_runner(
+                        prompt=current_prompt,
+                        bundle=bundle,
+                        model=model,
+                        thinking=thinking,
+                        cid=cid,
+                        rid=rid,
+                        rcid=rcid,
+                        is_first_turn=(attempt == 0),
+                    )
                 cid = resp.get("cid") or cid
                 rid = resp.get("rid") or rid
                 rcid = resp.get("rcid") or rcid

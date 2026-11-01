@@ -113,8 +113,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("Could not bootstrap session from vault: %s", e)
 
+    import asyncio as _aio
+    from backend.app.bridge.task_pipeline import get_task_pipeline_orchestrator
+
+    async def _task_pipeline_scheduler_loop() -> None:
+        while True:
+            try:
+                await _aio.sleep(30.0)
+                orch = get_task_pipeline_orchestrator()
+                due = orch.get_due_schedules()
+                if due:
+                    await orch.trigger_due_schedules()
+            except _aio.CancelledError:
+                break
+            except Exception as loop_err:
+                logger.debug("Task pipeline scheduler loop warning: %s", loop_err)
+
+    scheduler_task = _aio.create_task(_task_pipeline_scheduler_loop())
+
     yield
 
+    scheduler_task.cancel()
     if session_manager:
         await session_manager.close()
     await db.close()
