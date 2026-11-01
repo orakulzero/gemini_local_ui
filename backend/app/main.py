@@ -28,6 +28,7 @@ from backend.app.api.mission_control import router as mission_control_router
 from backend.app.api.notebooklm import router as notebooklm_router
 from backend.app.api.task_pipeline import router as task_pipeline_router
 from backend.app.api.gemini_capabilities import router as capabilities_router
+from backend.app.api.ecosystem_scout import router as ecosystem_scout_router
 from backend.routes.stations import legacy_router as stations_legacy_router, router as stations_router
 from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
@@ -629,6 +630,7 @@ app.include_router(flow_router)
 app.include_router(mission_control_router)
 app.include_router(task_pipeline_router)
 app.include_router(capabilities_router)
+app.include_router(ecosystem_scout_router)
 app.include_router(stations_router)
 app.include_router(stations_legacy_router)
 app.include_router(openai_router)

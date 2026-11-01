@@ -516,6 +516,44 @@ class MCPServer:
             "handler": self._call_gemini_capabilities,
         }
 
+        self._tools["gemini_ecosystem_scout"] = {
+            "name": "gemini_ecosystem_scout",
+            "description": "REQ-SCOUT-01..05: Autonomous multi-lane ecosystem intelligence scout, cross-IDE skill transpiler, Stage-Only pipeline promoter, and Markdown digest generator.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "sweep",
+                            "list_findings",
+                            "adapt_skill",
+                            "promote_finding",
+                            "digest",
+                        ],
+                        "default": "sweep",
+                        "description": "Ecosystem scout action to perform.",
+                    },
+                    "lanes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Intelligence lanes to scan (repo_solutions, cross_ide_skills, forum_pain_points, emerging_tech).",
+                    },
+                    "focus_query": {"type": "string", "default": ""},
+                    "lane": {"type": "string"},
+                    "target_agy_repo": {"type": "string"},
+                    "min_score": {"type": "number", "default": 0.0},
+                    "source_ide": {"type": "string"},
+                    "skill_name": {"type": "string"},
+                    "raw_content": {"type": "string"},
+                    "target_plugin": {"type": "string", "default": "agy-golden-stack"},
+                    "finding_id": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+            "handler": self._call_gemini_ecosystem_scout,
+        }
+
 
     async def handle_message(
         self,
@@ -1651,5 +1689,49 @@ class MCPServer:
             return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
         except Exception as exc:
             return ([{"type": "text", "text": f"Error in gemini_capabilities: {exc}"}], True)
+
+    async def _call_gemini_ecosystem_scout(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """REQ-SCOUT-05: Executes M41 Ecosystem Scout actions via MCP."""
+        from backend.app.bridge.ecosystem_scout import get_ecosystem_scout
+
+        scout = get_ecosystem_scout()
+        action = str(params.get("action") or "sweep").strip().lower()
+        try:
+            if action == "sweep":
+                res: Any = await scout.run_intelligence_sweep(
+                    lanes=params.get("lanes"),
+                    focus_query=str(params.get("focus_query") or ""),
+                    client=client,
+                )
+            elif action == "list_findings":
+                findings = scout.list_findings(
+                    lane=params.get("lane"),
+                    target_agy_repo=params.get("target_agy_repo"),
+                    min_score=float(params.get("min_score", 0.0)),
+                )
+                res = {"ok": True, "count": len(findings), "findings": findings}
+            elif action == "adapt_skill":
+                res = scout.adapt_skill_to_antigravity(
+                    source_ide=str(params.get("source_ide") or "cursor"),
+                    skill_name=str(params.get("skill_name") or "adapted-skill"),
+                    raw_content=str(params.get("raw_content") or ""),
+                    target_plugin=str(params.get("target_plugin") or "agy-golden-stack"),
+                )
+            elif action == "promote_finding":
+                res = scout.promote_finding_to_pipeline(
+                    finding_id=str(params.get("finding_id") or ""),
+                )
+            elif action == "digest":
+                res = scout.generate_digest_markdown()
+            else:
+                return ([{"type": "text", "text": f"Unsupported action '{action}'"}], True)
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as exc:
+            return ([{"type": "text", "text": f"Error in gemini_ecosystem_scout: {exc}"}], True)
 
 
