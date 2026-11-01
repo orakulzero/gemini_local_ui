@@ -48,7 +48,7 @@ class ModelInfo:
 
     @property
     def supports_thinking(self) -> bool:
-        return self.capabilities.supports_thinking or self.thinking_flag in (2, 4)
+        return self.capabilities.supports_thinking or self.thinking_flag in (2, 3, 4)
 
 
 DEFAULT_MODELS: dict[str, ModelInfo] = {
@@ -224,6 +224,24 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
             max_output_tokens=8_192,
         ),
     ),
+    "gemini-4-argon-deep-think": ModelInfo(
+        id="95a4c0abcba24364",
+        display_name="4 Argon Deep Think",
+        description="Parallel Tree-of-Thought Deep Think reasoning (Ultra)",
+        model_number=1,
+        thinking_flag=3,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=2_000_000,
+            max_output_tokens=16_384,
+        ),
+        mode_tag="Argon4p0",
+    ),
 }
 
 UI_PRIMARY_MODEL_IDS: list[str] = [
@@ -264,6 +282,9 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-task": "95a4c0abcba24364@mode=task",
     "gemini-4-task": "95a4c0abcba24364@mode=task",
     "gemini-task-mode": "95a4c0abcba24364@mode=task",
+    "gemini-4-argon-deep-think": "gemini-4-argon-deep-think",
+    "deep-think": "gemini-4-argon-deep-think",
+    "deep_think": "gemini-4-argon-deep-think",
 }
 
 
@@ -272,6 +293,7 @@ def resolve_model(model_name: str) -> ModelInfo:
     clean_name = model_name.strip()
     override_thinking: int | None = None
     override_feature_mode: int = 0
+    force_deep_think: bool = False
 
     if "@" in clean_name:
         parts = clean_name.split("@")
@@ -286,12 +308,24 @@ def resolve_model(model_name: str) -> ModelInfo:
                 val = p.split("=", 1)[1].strip().lower()
                 if val in ("task", "tasks", "40", "spark"):
                     override_feature_mode = 40
+                elif val in ("deep-think", "deep_think", "deepthink"):
+                    override_thinking = 3
+                    force_deep_think = True
 
     target_id = OPENAI_MODEL_ALIASES.get(clean_name, clean_name)
     if target_id in DEFAULT_MODELS:
         base_info = DEFAULT_MODELS[target_id]
         eff_thinking = override_thinking if override_thinking is not None else base_info.thinking_flag
-        if eff_thinking != base_info.thinking_flag or override_feature_mode != base_info.feature_mode:
+        ctx_tokens = (
+            max(base_info.capabilities.context_window_tokens, 2_000_000)
+            if (force_deep_think or eff_thinking == 3)
+            else base_info.capabilities.context_window_tokens
+        )
+        if (
+            eff_thinking != base_info.thinking_flag
+            or override_feature_mode != base_info.feature_mode
+            or ctx_tokens != base_info.capabilities.context_window_tokens
+        ):
             return ModelInfo(
                 id=base_info.id,
                 display_name=base_info.display_name,
@@ -301,11 +335,11 @@ def resolve_model(model_name: str) -> ModelInfo:
                 capacity_tail=base_info.capacity_tail,
                 tier=base_info.tier,
                 capabilities=ModelCapabilities(
-                    supports_thinking=base_info.capabilities.supports_thinking,
+                    supports_thinking=base_info.capabilities.supports_thinking or eff_thinking in (2, 3, 4),
                     supports_vision=base_info.capabilities.supports_vision,
                     supports_file_upload=base_info.capabilities.supports_file_upload,
                     supports_code_execution=base_info.capabilities.supports_code_execution,
-                    context_window_tokens=base_info.capabilities.context_window_tokens,
+                    context_window_tokens=ctx_tokens,
                     max_output_tokens=base_info.capabilities.max_output_tokens,
                 ),
                 is_default=base_info.is_default,
@@ -328,7 +362,10 @@ def resolve_model(model_name: str) -> ModelInfo:
         model_number=model_number,
         thinking_flag=thinking_flag,
         capacity_tail=capacity_tail,
-        capabilities=ModelCapabilities(supports_thinking=is_thinking or thinking_flag in (2, 4)),
+        capabilities=ModelCapabilities(
+            supports_thinking=is_thinking or thinking_flag in (2, 3, 4),
+            context_window_tokens=2_000_000 if (is_pro or thinking_flag == 3) else 1_000_000,
+        ),
         mode_tag="Argon4p0" if is_argon else None,
         feature_mode=override_feature_mode,
     )

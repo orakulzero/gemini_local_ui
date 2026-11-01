@@ -471,9 +471,22 @@ class MCPServer:
                             "double_check",
                             "select_draft",
                             "modify_response",
+                            "ultra_profile",
+                            "ultra_deep_think",
+                            "ultra_pack_2m",
+                            "ultra_veo_render",
+                            "ultra_notebooklm_audio",
                         ],
                         "description": "Capability action to execute.",
                     },
+                    "account_id": {"type": "string"},
+                    "branch_count": {"type": "integer", "default": 3},
+                    "workspace_dir": {"type": "string"},
+                    "model_key": {"type": "string"},
+                    "resolution": {"type": "string", "default": "1080p"},
+                    "notebook_id": {"type": "string"},
+                    "mode": {"type": "string", "default": "deep_dive"},
+                    "instructions": {"type": "string", "default": ""},
                     "code": {"type": "string"},
                     "filename": {"type": "string"},
                     "content": {"type": "string"},
@@ -1595,6 +1608,43 @@ class MCPServer:
                     rid=params.get("rid"),
                     rcid=params.get("rcid"),
                     client=client,
+                )
+            elif action == "ultra_profile":
+                from backend.app.bridge.ultra_capabilities import get_ultra_subscription_manager
+
+                res = get_ultra_subscription_manager().detect_subscription_profile(
+                    account_id=str(params.get("account_id") or "acc_21aac20f"),
+                )
+            elif action == "ultra_deep_think":
+                from backend.app.bridge.ultra_capabilities import run_deep_think_reasoning
+
+                res = await run_deep_think_reasoning(
+                    prompt=str(params.get("prompt") or ""),
+                    branch_count=int(params.get("branch_count", 3)),
+                    client=client,
+                    cid=params.get("cid"),
+                )
+            elif action == "ultra_pack_2m":
+                from backend.app.bridge.ultra_capabilities import pack_ultra_2m_repository_context
+
+                res = pack_ultra_2m_repository_context(
+                    workspace_dir=str(params.get("workspace_dir") or "."),
+                )
+            elif action == "ultra_veo_render":
+                from backend.app.bridge.ultra_capabilities import get_veo_ultra_engine
+
+                res = await get_veo_ultra_engine().render_ultra_scene(
+                    prompt=str(params.get("prompt") or ""),
+                    model_key=str(params.get("model_key") or "veo_3_1_t2v_hq_1080p_audio"),
+                    resolution=str(params.get("resolution") or "1080p"),
+                )
+            elif action == "ultra_notebooklm_audio":
+                from backend.app.bridge.ultra_capabilities import get_notebooklm_ultra_engine
+
+                res = await get_notebooklm_ultra_engine().generate_ultra_audio_overview(
+                    notebook_id=str(params.get("notebook_id") or "nb_ultra_1"),
+                    mode=str(params.get("mode") or "deep_dive"),
+                    instructions=str(params.get("instructions") or ""),
                 )
             else:
                 return ([{"type": "text", "text": f"Unsupported action '{action}'"}], True)

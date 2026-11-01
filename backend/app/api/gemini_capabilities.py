@@ -6,6 +6,7 @@ Implements REQ-CAP-01 through REQ-CAP-07.
 
 from __future__ import annotations
 
+import base64
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +19,14 @@ from backend.app.bridge.gemini_capabilities import (
     get_response_quality_engine,
     get_saved_info_manager,
     run_cloud_python_sandbox,
+)
+from backend.app.bridge.ultra_capabilities import (
+    analyze_ultra_media_with_timecodes,
+    get_notebooklm_ultra_engine,
+    get_ultra_subscription_manager,
+    get_veo_ultra_engine,
+    pack_ultra_2m_repository_context,
+    run_deep_think_reasoning,
 )
 
 router = APIRouter(prefix="/api/v1/capabilities", tags=["capabilities"])
@@ -237,4 +246,106 @@ async def modify_response_endpoint(req: ModifyResponseRequest) -> Dict[str, Any]
     """REQ-CAP-07: Rewrites a response with the specified tone/length modifier."""
     return await get_response_quality_engine().modify_response(
         text=req.text, modifier=req.modifier, cid=req.cid, rid=req.rid, rcid=req.rcid
+    )
+
+
+
+class UltraDeepThinkRequest(BaseModel):
+    prompt: str
+    branch_count: int = 3
+    cid: Optional[str] = None
+
+
+class UltraPack2MRequest(BaseModel):
+    workspace_dir: str
+    max_total_bytes: int = 7_500_000
+    max_file_bytes: int = 1_000_000
+
+
+class UltraMediaAnalyzeRequest(BaseModel):
+    media_b64: str
+    filename: str = "video.mp4"
+    prompt: str = "Extract key timestamps"
+
+
+class UltraVeoRenderRequest(BaseModel):
+    prompt: str
+    model_key: str = "veo_3_1_t2v_hq_1080p_audio"
+    resolution: str = "1080p"
+    first_frame_b64: Optional[str] = None
+    last_frame_b64: Optional[str] = None
+    extend_from_scene_id: Optional[str] = None
+
+
+class UltraNotebookLMAudioRequest(BaseModel):
+    notebook_id: str
+    mode: str = "deep_dive"
+    instructions: str = ""
+    language: str = "ru"
+
+
+@router.get("/ultra/profile")
+async def ultra_profile_endpoint(account_id: str = "acc_21aac20f") -> Dict[str, Any]:
+    """REQ-ULTRA-06: Returns Ultra 5x subscription profile and thresholds."""
+    return get_ultra_subscription_manager().detect_subscription_profile(account_id=account_id)
+
+
+@router.get("/ultra/credits")
+async def ultra_credits_endpoint(account_id: str = "acc_21aac20f") -> Dict[str, Any]:
+    """REQ-ULTRA-06: Returns shared family AI credits pool telemetry."""
+    return get_ultra_subscription_manager().get_family_credits_telemetry(account_id=account_id)
+
+
+@router.post("/ultra/deep-think")
+async def ultra_deep_think_endpoint(req: UltraDeepThinkRequest) -> Dict[str, Any]:
+    """REQ-ULTRA-06: Executes Gemini 4 Argon Deep Think parallel reasoning."""
+    return await run_deep_think_reasoning(
+        prompt=req.prompt,
+        branch_count=req.branch_count,
+        cid=req.cid,
+    )
+
+
+@router.post("/ultra/pack-2m")
+async def ultra_pack_2m_endpoint(req: UltraPack2MRequest) -> Dict[str, Any]:
+    """REQ-ULTRA-06: Packs repository context up to the 2M-token Ultra budget."""
+    return pack_ultra_2m_repository_context(
+        workspace_dir=req.workspace_dir,
+        max_total_bytes=req.max_total_bytes,
+        max_file_bytes=req.max_file_bytes,
+    )
+
+
+@router.post("/ultra/media-analyze")
+async def ultra_media_analyze_endpoint(req: UltraMediaAnalyzeRequest) -> Dict[str, Any]:
+    """REQ-ULTRA-06: Analyzes long-form media payload and extracts timecodes."""
+    raw_bytes = base64.b64decode(req.media_b64) if req.media_b64 else b""
+    return await analyze_ultra_media_with_timecodes(
+        media_bytes=raw_bytes,
+        filename=req.filename,
+        prompt=req.prompt,
+    )
+
+
+@router.post("/ultra/veo-render")
+async def ultra_veo_render_endpoint(req: UltraVeoRenderRequest) -> Dict[str, Any]:
+    """REQ-ULTRA-06: Renders a Veo 3.1 Ultra scene."""
+    return await get_veo_ultra_engine().render_ultra_scene(
+        prompt=req.prompt,
+        model_key=req.model_key,
+        resolution=req.resolution,
+        first_frame_b64=req.first_frame_b64,
+        last_frame_b64=req.last_frame_b64,
+        extend_from_scene_id=req.extend_from_scene_id,
+    )
+
+
+@router.post("/ultra/notebooklm-audio")
+async def ultra_notebooklm_audio_endpoint(req: UltraNotebookLMAudioRequest) -> Dict[str, Any]:
+    """REQ-ULTRA-06: Generates a NotebookLM Ultra Audio Overview in critique/debate/deep_dive/brief mode."""
+    return await get_notebooklm_ultra_engine().generate_ultra_audio_overview(
+        notebook_id=req.notebook_id,
+        mode=req.mode,
+        instructions=req.instructions,
+        language=req.language,
     )
