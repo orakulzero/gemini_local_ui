@@ -1,7 +1,7 @@
 """
 backend/app/bridge/ecosystem_scout.py
-M41: Autonomous Ecosystem Intelligence, Repo/Skill/Forum Scout & Cross-IDE Skill Transpiler.
-Implements REQ-SCOUT-01, REQ-SCOUT-02, REQ-SCOUT-03, REQ-SCOUT-04.
+M41-M42: Autonomous Ecosystem Intelligence, Repo/Skill/Forum Scout & Cross-IDE Skill Transpiler.
+Implements REQ-SCOUT-01, REQ-SCOUT-02, REQ-SCOUT-03, REQ-SCOUT-04, REQ-SCOUT-06.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import tempfile
@@ -18,6 +19,11 @@ import uuid
 logger = logging.getLogger("gemini_backend.ecosystem_scout")
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]+")
+DEFAULT_SKILLS_ROOT = (
+    Path(r"e:\ANTIGRAVITY\.agents\skills")
+    if os.name == "nt"
+    else Path.home() / ".agents" / "skills"
+)
 
 LANE_TEMPLATES: dict[str, list[dict[str, Any]]] = {
     "repo_solutions": [
@@ -288,12 +294,71 @@ class EcosystemIntelligenceScout:
         self._save()
         return dict(record)
 
+    def install_staged_skill(
+        self,
+        skill_name_or_id: str,
+        skills_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """REQ-SCOUT-06: Installs a staged skill to <skills_root>/<skill_name>/SKILL.md and updates status to INSTALLED."""
+        matched: dict[str, Any] | None = None
+        if skill_name_or_id in self._state["staged_skills"]:
+            matched = self._state["staged_skills"][skill_name_or_id]
+        else:
+            candidates = [
+                rec
+                for rec in self._state["staged_skills"].values()
+                if rec.get("skill_name") == skill_name_or_id
+                or rec.get("adaptation_id") == skill_name_or_id
+            ]
+            if candidates:
+                matched = candidates[-1]
+        if matched is None:
+            raise KeyError(f"Staged skill '{skill_name_or_id}' not found")
+
+        root_dir = Path(skills_root) if skills_root is not None else DEFAULT_SKILLS_ROOT
+        skill_dir = root_dir / str(matched["skill_name"])
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        target_file = skill_dir / "SKILL.md"
+        target_file.write_text(str(matched["skill_markdown"]), encoding="utf-8")
+
+        matched["status"] = "INSTALLED"
+        matched["installed_path"] = str(target_file)
+        matched["ok"] = True
+        self._save()
+        return dict(matched)
+
+    def install_all_staged_skills(
+        self,
+        skills_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """REQ-SCOUT-06: Installs all unique staged skills to disk and updates their statuses to INSTALLED."""
+        latest_by_name: dict[str, str] = {}
+        for aid, rec in self._state["staged_skills"].items():
+            sname = str(rec.get("skill_name") or aid)
+            latest_by_name[sname] = aid
+
+        installed: list[dict[str, Any]] = []
+        for sname, aid in latest_by_name.items():
+            res = self.install_staged_skill(aid, skills_root=skills_root)
+            installed.append(res)
+
+        for rec in self._state["staged_skills"].values():
+            sname = str(rec.get("skill_name") or "")
+            if sname in latest_by_name:
+                rec["status"] = "INSTALLED"
+        self._save()
+        return {
+            "ok": True,
+            "installed_count": len(installed),
+            "installed": installed,
+        }
+
     def promote_finding_to_pipeline(
         self,
         finding_id: str,
         orchestrator: Any | None = None,
     ) -> dict[str, Any]:
-        """REQ-SCOUT-03: Promotes a scout finding into a Stage-Only Task Pipeline schedule."""
+        """REQ-SCOUT-03, REQ-SCOUT-06: Promotes a scout finding into a Stage-Only Task Pipeline schedule with resolved repo path."""
         if finding_id not in self._state["findings"]:
             raise KeyError(f"Finding '{finding_id}' not found")
         finding = self._state["findings"][finding_id]
@@ -304,9 +369,19 @@ class EcosystemIntelligenceScout:
             orchestrator = get_task_pipeline_orchestrator()
 
         target_repo = str(finding.get("target_agy_repo") or "gemini_local_ui")
+        resolved_workspace = target_repo
+        if not Path(target_repo).exists():
+            repo_root = Path(__file__).resolve().parents[3]
+            projects_root = repo_root.parent
+            candidate_dir = projects_root / target_repo
+            if target_repo == repo_root.name and repo_root.exists():
+                resolved_workspace = str(repo_root)
+            elif candidate_dir.exists():
+                resolved_workspace = str(candidate_dir)
+
         sched = orchestrator.create_schedule(
             name=f"Scout-{target_repo}-{finding_id[:6]}",
-            workspace_dir=target_repo,
+            workspace_dir=resolved_workspace,
             prompt=f"Implement scout finding '{finding['title']}': {finding['integration_proposal']}",
             model="gemini-4-argon-deep-think",
             thinking=3,
@@ -321,6 +396,7 @@ class EcosystemIntelligenceScout:
             "finding_id": finding_id,
             "schedule_id": schedule_id,
             "target_agy_repo": target_repo,
+            "workspace_dir": resolved_workspace,
             "status": "PROMOTED_TO_PIPELINE",
         }
 

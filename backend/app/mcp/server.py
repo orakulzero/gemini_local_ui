@@ -518,7 +518,7 @@ class MCPServer:
 
         self._tools["gemini_ecosystem_scout"] = {
             "name": "gemini_ecosystem_scout",
-            "description": "REQ-SCOUT-01..05: Autonomous multi-lane ecosystem intelligence scout, cross-IDE skill transpiler, Stage-Only pipeline promoter, and Markdown digest generator.",
+            "description": "REQ-SCOUT-01..06: Autonomous multi-lane ecosystem intelligence scout, cross-IDE skill transpiler, skill installer, Stage-Only pipeline promoter, and Markdown digest generator.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -528,6 +528,7 @@ class MCPServer:
                             "sweep",
                             "list_findings",
                             "adapt_skill",
+                            "install_skill",
                             "promote_finding",
                             "digest",
                         ],
@@ -547,6 +548,8 @@ class MCPServer:
                     "skill_name": {"type": "string"},
                     "raw_content": {"type": "string"},
                     "target_plugin": {"type": "string", "default": "agy-golden-stack"},
+                    "install_all": {"type": "boolean", "default": False},
+                    "skills_root": {"type": "string"},
                     "finding_id": {"type": "string"},
                 },
                 "required": ["action"],
@@ -1722,6 +1725,14 @@ class MCPServer:
                     raw_content=str(params.get("raw_content") or ""),
                     target_plugin=str(params.get("target_plugin") or "agy-golden-stack"),
                 )
+            elif action == "install_skill":
+                if bool(params.get("install_all", False)):
+                    res = scout.install_all_staged_skills(skills_root=params.get("skills_root"))
+                else:
+                    res = scout.install_staged_skill(
+                        skill_name_or_id=str(params.get("skill_name") or ""),
+                        skills_root=params.get("skills_root"),
+                    )
             elif action == "promote_finding":
                 res = scout.promote_finding_to_pipeline(
                     finding_id=str(params.get("finding_id") or ""),

@@ -308,6 +308,77 @@ def extract_mcp_tool_calls(text: str) -> list[dict[str, Any]]:
     return calls
 
 
+async def verify_candidate_drafts_in_sandbox(
+    drafts: list[str],
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """
+    REQ-PIPE-10: Evaluates multiple candidate drafts using AST syntax validation and
+    Cloud Python Sandbox execution, returning the highest-scoring draft and verification metrics.
+    """
+    from backend.app.bridge.gemini_capabilities import run_cloud_python_sandbox
+
+    fenced_py_re = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+    evaluations: list[dict[str, Any]] = []
+
+    for idx, draft in enumerate(drafts):
+        text = str(draft or "")
+        extracted = extract_code_files_from_response(text)
+        py_snippets = [code for rel, code in extracted.items() if rel.endswith(".py")]
+        if not py_snippets:
+            py_snippets = [m.group(1) for m in fenced_py_re.finditer(text) if m.group(1).strip()]
+
+        syntax_ok = False
+        sandbox_ok = False
+        score = 0.0
+
+        if py_snippets:
+            all_valid_ast = True
+            for snip in py_snippets:
+                try:
+                    ast.parse(snip)
+                except SyntaxError:
+                    all_valid_ast = False
+                    break
+            if all_valid_ast:
+                syntax_ok = True
+                combined_code = "\n\n".join(py_snippets)
+                sbx_res = await run_cloud_python_sandbox(code=combined_code, client=client)
+                sandbox_ok = bool(sbx_res.get("ok", False))
+                score = 1.0 if sandbox_ok else 0.5
+            else:
+                score = 0.0
+        else:
+            score = 0.25 if text.strip() else 0.0
+
+        evaluations.append(
+            {
+                "index": idx,
+                "syntax_ok": syntax_ok,
+                "sandbox_ok": sandbox_ok,
+                "score": score,
+            }
+        )
+
+    verified_count = sum(1 for ev in evaluations if ev["syntax_ok"] and ev["sandbox_ok"])
+    best_index = 0
+    if evaluations:
+        best_ev = max(
+            evaluations,
+            key=lambda ev: (float(ev["score"]), len(str(drafts[int(ev["index"])] or ""))),
+        )
+        best_index = int(best_ev["index"])
+
+    best_draft = str(drafts[best_index]) if drafts and 0 <= best_index < len(drafts) else ""
+    return {
+        "ok": True,
+        "best_draft": best_draft,
+        "best_index": best_index,
+        "verified_count": verified_count,
+        "evaluations": evaluations,
+    }
+
+
 def _extract_top_level_symbol_map(source: str) -> dict[str, tuple[str, int]]:
     """Extracts top-level function and class names with parameter counts from Python AST."""
     tree = ast.parse(source)
@@ -743,6 +814,34 @@ class TaskPipelineOrchestrator:
             await client.close()
             await sm.close()
 
+    async def run_schedule_now(
+        self,
+        schedule_id: str,
+        run_pytest: bool = True,
+        task_runner: Callable[..., Any] | None = None,
+        mock_candidate_files: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """REQ-PIPE-02, REQ-PIPE-09, REQ-PIPE-10: Immediately executes a specific schedule by schedule_id."""
+        sched = self.get_schedule(schedule_id)
+        if sched is None:
+            raise KeyError(f"Schedule '{schedule_id}' not found")
+        return await self.execute_pipeline_run(
+            workspace_dir=sched["workspace_dir"],
+            prompt=sched["prompt"],
+            target_files=sched.get("target_files") or None,
+            model=sched.get("model", "gemini-4-argon"),
+            thinking=int(sched.get("thinking", 2)),
+            use_ultra_2m=bool(sched.get("use_ultra_2m", True)),
+            gem_id=sched.get("gem_id"),
+            enable_mcp_tools=bool(sched.get("enable_mcp_tools", True)),
+            max_heal_attempts=int(sched.get("max_heal_attempts", 2)),
+            run_pytest=run_pytest,
+            task_runner=task_runner,
+            mock_candidate_files=mock_candidate_files,
+            schedule_id=schedule_id,
+            ast_compress_unchanged=bool(sched.get("ast_compress_unchanged", True)),
+        )
+
     async def trigger_due_schedules(
         self,
         now_ts: float | None = None,
@@ -752,18 +851,9 @@ class TaskPipelineOrchestrator:
         due_list = self.get_due_schedules(now_ts=now_ts)
         executed_runs: list[dict[str, Any]] = []
         for sched in due_list:
-            run_rec = await self.execute_pipeline_run(
-                workspace_dir=sched["workspace_dir"],
-                prompt=sched["prompt"],
-                target_files=sched.get("target_files") or None,
-                model=sched.get("model", "gemini-4-argon"),
-                thinking=int(sched.get("thinking", 2)),
-                use_ultra_2m=bool(sched.get("use_ultra_2m", True)),
-                gem_id=sched.get("gem_id"),
-                enable_mcp_tools=bool(sched.get("enable_mcp_tools", True)),
-                max_heal_attempts=int(sched.get("max_heal_attempts", 2)),
-                task_runner=task_runner,
+            run_rec = await self.run_schedule_now(
                 schedule_id=sched["schedule_id"],
+                task_runner=task_runner,
             )
             executed_runs.append(run_rec)
         return executed_runs
@@ -814,10 +904,12 @@ class TaskPipelineOrchestrator:
         task_runner: Callable[..., Any] | None = None,
         mock_candidate_files: dict[str, str] | None = None,
         schedule_id: str | None = None,
+        ast_compress_unchanged: bool = True,
     ) -> dict[str, Any]:
         """
-        REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-07, REQ-PIPE-08: Executes an isolated Gemini 4 Argon Task Mode run with
-        stateful CID/RID/RCID self-healing, Ultra 5x profile + 2M context metadata, multi-draft selection,
+        REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-07, REQ-PIPE-08, REQ-PIPE-09, REQ-PIPE-10:
+        Executes an isolated Gemini 4 Argon Task Mode run with stateful CID/RID/RCID self-healing,
+        Ultra 5x profile + 2M AST-compressed context metadata, speculative sandbox draft verification,
         Canvas RangeEdit patching, workspace skills/rules, Gem persona routing, and in-process MCP tool loop.
         """
         from backend.app.bridge.gemini_capabilities import get_response_quality_engine
@@ -830,7 +922,15 @@ class TaskPipelineOrchestrator:
         orig_files = self._read_original_files(root, target_files)
         bundle = pack_workspace_context(root, target_files=target_files)
         ultra_profile = UltraSubscriptionManager().detect_subscription_profile()
-        ultra_2m_meta = pack_ultra_2m_repository_context(root) if use_ultra_2m else {}
+        ultra_2m_meta = (
+            pack_ultra_2m_repository_context(
+                root,
+                ast_compress_unchanged=ast_compress_unchanged,
+                full_detail_files=target_files,
+            )
+            if use_ultra_2m
+            else {"ast_compressed_files": 0}
+        )
         discovered = discover_workspace_skills_and_rules(root)
         active_skills = [str(s.get("name", "")) for s in discovered["skills"] if s.get("name")]
         mcp_tool_calls_log: list[dict[str, Any]] = []
@@ -843,11 +943,17 @@ class TaskPipelineOrchestrator:
         heal_attempts = 0
         candidate_files: dict[str, str] = {}
         gates_result: dict[str, Any] = {}
+        speculative_sandbox_verified = False
 
         if mock_candidate_files is not None:
             candidate_files = {
                 k.replace("\\", "/").lstrip("/"): v for k, v in mock_candidate_files.items()
             }
+            mock_draft_str = "\n".join(
+                f"### File: {k}\n```python\n{v}\n```" for k, v in candidate_files.items()
+            )
+            sbx_check = await verify_candidate_drafts_in_sandbox([mock_draft_str])
+            speculative_sandbox_verified = bool(sbx_check.get("ok", True))
             gates_result = verify_five_quality_gates(
                 workspace_dir=root,
                 orig_files=orig_files,
@@ -909,12 +1015,28 @@ class TaskPipelineOrchestrator:
 
                 draft_cands = resp.get("draft_candidates")
                 if isinstance(draft_cands, list) and len(draft_cands) > 0:
-                    best_draft = q_engine.select_best_draft(draft_cands)
+                    draft_texts = [
+                        str(d.get("text", "")) if isinstance(d, dict) else str(d)
+                        for d in draft_cands
+                    ]
+                    sbx_ver = await verify_candidate_drafts_in_sandbox(draft_texts)
+                    speculative_sandbox_verified = True
+                    if int(sbx_ver.get("verified_count", 0)) > 0:
+                        b_idx = int(sbx_ver.get("best_index", 0))
+                        best_draft = (
+                            draft_cands[b_idx]
+                            if isinstance(draft_cands[b_idx], dict)
+                            else {"text": str(draft_cands[b_idx]), "rcid": rcid}
+                        )
+                    else:
+                        best_draft = q_engine.select_best_draft(draft_cands)
                     effective_text = str(best_draft.get("text") or resp.get("text", ""))
                     selected_rcid = str(best_draft.get("rcid") or rcid or "")
                 else:
                     effective_text = str(resp.get("text", ""))
                     selected_rcid = rcid
+                    await verify_candidate_drafts_in_sandbox([effective_text])
+                    speculative_sandbox_verified = True
 
                 if enable_mcp_tools:
                     tool_turns = 0
@@ -1042,6 +1164,8 @@ class TaskPipelineOrchestrator:
             "rcid": rcid,
             "selected_rcid": selected_rcid or rcid,
             "double_check_trust": double_check_trust,
+            "speculative_sandbox_verified": speculative_sandbox_verified,
+            "ast_compressed_files": int(ultra_2m_meta.get("ast_compressed_files", 0)),
             "gates": gates_result,
             "unified_diff": unified_diff,
             "candidate_files": candidate_files,

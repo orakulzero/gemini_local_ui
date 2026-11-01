@@ -11,6 +11,7 @@ M35-M38 Google AI Ultra 5x Family Member & Advanced Studio Capabilities Bridge:
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from backend.app.bridge.gemini_capabilities import _get_live_client_if_available
 
 logger = logging.getLogger("gemini_bridge.ultra_capabilities")
 
+ULTRA_2M_MAX_BYTES = 7_500_000
 _PRUNED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".ruff_cache", ".pytest_cache", ".mypy_cache"}
 _TIMECODE_RE = re.compile(r"\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^,\n\]]+)")
 _BRANCH_LINE_RE = re.compile(r"^\s*(?:[-*]\s*Branch\s*\d*[:\-]?|\d+[\.\)])\s*(.+)$", re.IGNORECASE)
@@ -213,20 +215,134 @@ async def run_deep_think_reasoning(
     }
 
 
+def _format_ast_arguments(args: ast.arguments) -> str:
+    """Formats ast.arguments with explicit spaces around default '=' values."""
+    parts: List[str] = []
+    pos_args = list(args.posonlyargs) + list(args.args)
+    num_defaults = len(args.defaults)
+    default_offset = len(pos_args) - num_defaults
+    for idx, arg in enumerate(pos_args):
+        piece = arg.arg
+        if arg.annotation is not None:
+            piece += f": {ast.unparse(arg.annotation)}"
+        if idx >= default_offset:
+            def_node = args.defaults[idx - default_offset]
+            piece += f" = {ast.unparse(def_node)}"
+        parts.append(piece)
+        if args.posonlyargs and idx == len(args.posonlyargs) - 1:
+            parts.append("/")
+    if args.vararg is not None:
+        va = f"*{args.vararg.arg}"
+        if args.vararg.annotation is not None:
+            va += f": {ast.unparse(args.vararg.annotation)}"
+        parts.append(va)
+    elif args.kwonlyargs:
+        parts.append("*")
+    for kw_arg, kw_def in zip(args.kwonlyargs, args.kw_defaults):
+        kp = kw_arg.arg
+        if kw_arg.annotation is not None:
+            kp += f": {ast.unparse(kw_arg.annotation)}"
+        if kw_def is not None:
+            kp += f" = {ast.unparse(kw_def)}"
+        parts.append(kp)
+    if args.kwarg is not None:
+        kwa = f"**{args.kwarg.arg}"
+        if args.kwarg.annotation is not None:
+            kwa += f": {ast.unparse(args.kwarg.annotation)}"
+        parts.append(kwa)
+    return ", ".join(parts)
+
+
+def _format_function_contract(
+    node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    indent: str = "",
+) -> List[str]:
+    """Formats a function or method AST node into a compact signature + docstring + ellipsis."""
+    lines: List[str] = []
+    for dec in node.decorator_list:
+        lines.append(f"{indent}@{ast.unparse(dec)}")
+    prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+    arg_str = _format_ast_arguments(node.args)
+    ret_str = f" -> {ast.unparse(node.returns)}" if node.returns is not None else ""
+    lines.append(f"{indent}{prefix} {node.name}({arg_str}){ret_str}:")
+    doc = ast.get_docstring(node, clean=False)
+    if doc:
+        lines.append(f'{indent}    """{doc}"""')
+    lines.append(f"{indent}    ...")
+    return lines
+
+
+def compress_python_ast_contract(source_code: str) -> str:
+    """
+    REQ-PIPE-09: Compresses a Python module into an AST signature contract preserving
+    imports, top-level constants, class hierarchies, function/method signatures, and docstrings.
+    """
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return source_code
+
+    out_lines: List[str] = []
+    mod_doc = ast.get_docstring(tree, clean=False)
+    if mod_doc:
+        out_lines.append(f'"""{mod_doc}"""')
+
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            out_lines.append(ast.unparse(node))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            out_lines.append(ast.unparse(node))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out_lines.extend(_format_function_contract(node, indent=""))
+        elif isinstance(node, ast.ClassDef):
+            for dec in node.decorator_list:
+                out_lines.append(f"@{ast.unparse(dec)}")
+            bases = [ast.unparse(b) for b in node.bases]
+            base_str = f"({', '.join(bases)})" if bases else ""
+            out_lines.append(f"class {node.name}{base_str}:")
+            cls_doc = ast.get_docstring(node, clean=False)
+            has_members = False
+            if cls_doc:
+                out_lines.append(f'    """{cls_doc}"""')
+                has_members = True
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    out_lines.extend(_format_function_contract(sub, indent="    "))
+                    has_members = True
+                elif isinstance(sub, (ast.Assign, ast.AnnAssign)):
+                    out_lines.append(f"    {ast.unparse(sub)}")
+                    has_members = True
+            if not has_members:
+                out_lines.append("    ...")
+
+    return "\n".join(out_lines) + "\n"
+
+
 def pack_ultra_2m_repository_context(
     workspace_dir: Union[Path, str],
-    max_total_bytes: int = 7_500_000,
+    max_total_bytes: int = ULTRA_2M_MAX_BYTES,
     max_file_bytes: int = 1_000_000,
+    ast_compress_unchanged: bool = False,
+    full_detail_files: Optional[List[str]] = None,
+    max_bytes: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    REQ-ULTRA-03: Walks workspace_dir and packs source/documentation files into a single
-    structured bundle up to the 2,000,000-token (~7.5 MB) Ultra context capacity.
+    REQ-ULTRA-03, REQ-PIPE-09: Walks workspace_dir and packs source/documentation files into a single
+    structured bundle up to the 2,000,000-token (~7.5 MB) Ultra context capacity, optionally
+    compressing unchanged Python modules into AST signature contracts.
     """
+    effective_max_total = int(max_bytes) if max_bytes is not None else int(max_total_bytes)
     root = Path(workspace_dir)
     blocks: List[str] = []
     file_count = 0
     total_lines = 0
     total_bytes = 0
+    ast_compressed_files = 0
+
+    detail_norm = {
+        p.replace("\\", "/").lstrip("/") for p in (full_detail_files or [])
+    }
+    detail_basenames = {Path(p).name for p in detail_norm}
 
     if root.exists():
         for dirpath, dirnames, filenames in os.walk(root):
@@ -241,13 +357,21 @@ def pack_ultra_2m_repository_context(
                     continue
                 if size <= 0 or size > max_file_bytes:
                     continue
-                if total_bytes + size > max_total_bytes:
+                if total_bytes + size > effective_max_total:
                     break
                 try:
                     content = fpath.read_text(encoding="utf-8")
                 except (UnicodeDecodeError, OSError):
                     continue
                 rel = fpath.relative_to(root).as_posix()
+                if (
+                    ast_compress_unchanged
+                    and fpath.suffix.lower() == ".py"
+                    and rel not in detail_norm
+                    and fpath.name not in detail_basenames
+                ):
+                    content = compress_python_ast_contract(content)
+                    ast_compressed_files += 1
                 blocks.append(f'<file path="{rel}">\n{content}\n</file>')
                 file_count += 1
                 total_lines += len(content.splitlines())
@@ -260,6 +384,7 @@ def pack_ultra_2m_repository_context(
         "file_count": file_count,
         "total_lines": total_lines,
         "total_bytes": total_bytes,
+        "ast_compressed_files": ast_compressed_files,
         "estimated_tokens": max(1, total_bytes // 4) if total_bytes > 0 else 0,
         "max_context_tokens": 2_000_000,
     }

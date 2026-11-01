@@ -35,6 +35,12 @@ class AdaptSkillRequest(BaseModel):
     target_plugin: str = "agy-golden-stack"
 
 
+class InstallSkillRequest(BaseModel):
+    skill_name: str = ""
+    install_all: bool = False
+    skills_root: str | None = None
+
+
 @router.post("/sweep")
 async def trigger_scout_sweep(req: ScoutSweepRequest, request: Request) -> dict[str, Any]:
     """REQ-SCOUT-01, REQ-SCOUT-05: Executes a multi-lane ecosystem intelligence sweep."""
@@ -86,6 +92,21 @@ async def adapt_cross_ide_skill(req: AdaptSkillRequest) -> dict[str, Any]:
         raw_content=req.raw_content,
         target_plugin=req.target_plugin,
     )
+
+
+@router.post("/install-skill")
+async def install_scout_skill(req: InstallSkillRequest) -> dict[str, Any]:
+    """REQ-SCOUT-05, REQ-SCOUT-06: Installs a staged skill or all staged skills to disk."""
+    scout = get_ecosystem_scout()
+    try:
+        if req.install_all:
+            return scout.install_all_staged_skills(skills_root=req.skills_root)
+        return scout.install_staged_skill(
+            skill_name_or_id=req.skill_name,
+            skills_root=req.skills_root,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/promote/{finding_id}")
