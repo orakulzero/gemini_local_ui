@@ -375,6 +375,7 @@ class SessionManager:
                 sess.context.status = SessionHealthStatus.HEALTHY
                 sess.context.last_error = None
                 sess.context.last_refresh = time.time()
+                sess.context.passive_rotation = True
                 logger.info(
                     "Restored persisted SNlM0e token from vault for account '%s' (HTML scrape omitted SNlM0e)",
                     acc_id,

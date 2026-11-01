@@ -223,7 +223,7 @@ class BrowserCookieExtractor:
                         cursor = conn.cursor()
                         cursor.execute(
                             "SELECT name, value, lastAccessed FROM moz_cookies "
-                            "WHERE host LIKE '%google.com' ORDER BY lastAccessed ASC"
+                            "WHERE host IN ('.google.com', 'google.com', 'gemini.google.com') ORDER BY lastAccessed ASC"
                         )
                         for name, val, last_accessed in cursor.fetchall():
                             if val:
