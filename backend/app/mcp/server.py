@@ -6,11 +6,10 @@ Provides tool registration, execution dispatch, and resource resolution.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import asdict
 import json
 import logging
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from backend.app.bridge.client import GeminiWebClient
 from backend.app.bridge.image_downloader import GeminiImageDownloader
@@ -35,13 +34,13 @@ class MCPServer:
 
     def __init__(
         self,
-        session_manager: Optional[SessionManager] = None,
-        image_data_dir: Optional[Any] = None,
+        session_manager: SessionManager | None = None,
+        image_data_dir: Any | None = None,
     ) -> None:
         self.session_manager = session_manager
         self.image_data_dir = image_data_dir
         self.is_initialized = False
-        self._tools: Dict[str, Dict[str, Any]] = {}
+        self._tools: dict[str, dict[str, Any]] = {}
         self._register_tools()
 
     def _register_tools(self) -> None:
@@ -557,10 +556,10 @@ class MCPServer:
 
     async def handle_message(
         self,
-        msg: Union[Dict[str, Any], List[Dict[str, Any]]],
-        client: Optional[GeminiWebClient] = None,
-        notebooklm_client: Optional[NotebookLMClient] = None,
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]], None]:
+        msg: dict[str, Any] | list[dict[str, Any]],
+        client: GeminiWebClient | None = None,
+        notebooklm_client: NotebookLMClient | None = None,
+    ) -> dict[str, Any] | list[dict[str, Any]] | None:
         """Dispatches single or batch JSON-RPC 2.0 messages."""
         if isinstance(msg, list):
             if len(msg) == 0:
@@ -571,17 +570,16 @@ class MCPServer:
                 if resp is not None:
                     responses.append(resp)
             return responses if responses else None
-        elif isinstance(msg, dict):
+        if isinstance(msg, dict):
             return await self._handle_single_message(msg, client, notebooklm_client)
-        else:
-            return self._make_error(None, -32600, "Invalid Request: Expected JSON object or array")
+        return self._make_error(None, -32600, "Invalid Request: Expected JSON object or array")
 
     async def _handle_single_message(
         self,
-        req: Dict[str, Any],
-        client: Optional[GeminiWebClient] = None,
-        notebooklm_client: Optional[NotebookLMClient] = None,
-    ) -> Optional[Dict[str, Any]]:
+        req: dict[str, Any],
+        client: GeminiWebClient | None = None,
+        notebooklm_client: NotebookLMClient | None = None,
+    ) -> dict[str, Any] | None:
         """Processes a single JSON-RPC 2.0 request or notification."""
         if not isinstance(req, dict):
             return self._make_error(None, -32600, "Invalid Request: Must be a JSON object")
@@ -678,15 +676,15 @@ class MCPServer:
 
         return self._make_error(req_id, -32601, f"Method '{method}' not found")
 
-    def _make_result(self, req_id: Any, result: Any) -> Dict[str, Any]:
+    def _make_result(self, req_id: Any, result: Any) -> dict[str, Any]:
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": result,
         }
 
-    def _make_error(self, req_id: Any, code: int, message: str, data: Any = None) -> Dict[str, Any]:
-        err: Dict[str, Any] = {"code": code, "message": message}
+    def _make_error(self, req_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+        err: dict[str, Any] = {"code": code, "message": message}
         if data is not None:
             err["data"] = data
         return {
@@ -700,10 +698,10 @@ class MCPServer:
     # ------------------------------------------------------------------------
     async def _call_gemini_argon_chat(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -720,9 +718,9 @@ class MCPServer:
         if system_prompt:
             effective_prompt = f"# System Instruction\n{system_prompt}\n\n{prompt}"
 
-        text_parts: List[str] = []
-        thought_parts: List[str] = []
-        meta_info: Dict[str, Any] = {}
+        text_parts: list[str] = []
+        thought_parts: list[str] = []
+        meta_info: dict[str, Any] = {}
 
         async for chunk in client.generate_stream(
             prompt=effective_prompt,
@@ -743,7 +741,7 @@ class MCPServer:
         full_text = str(meta_info.get("full_text") or "".join(text_parts))
         full_thoughts = "".join(thought_parts)
 
-        output_lines: List[str] = []
+        output_lines: list[str] = []
         if full_thoughts:
             output_lines.append(f"<thought>\n{full_thoughts}\n</thought>\n")
         output_lines.append(full_text)
@@ -758,10 +756,10 @@ class MCPServer:
 
     async def _call_gemini_argon_task(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -771,8 +769,8 @@ class MCPServer:
         rid = args.get("rid")
         rcid = args.get("rcid")
 
-        file_blocks: List[str] = []
-        bridge_attachments: List[Any] = []
+        file_blocks: list[str] = []
+        bridge_attachments: list[Any] = []
         for cf in context_files:
             fn = cf.get("filename", "file.txt")
             if "uri" in cf and cf["uri"]:
@@ -784,9 +782,9 @@ class MCPServer:
         if file_blocks:
             effective_prompt = "\n\n".join(file_blocks) + f"\n\n{prompt}"
 
-        text_parts: List[str] = []
-        thought_parts: List[str] = []
-        meta_info: Dict[str, Any] = {}
+        text_parts: list[str] = []
+        thought_parts: list[str] = []
+        meta_info: dict[str, Any] = {}
 
         async for chunk in client.generate_stream(
             prompt=effective_prompt,
@@ -807,7 +805,7 @@ class MCPServer:
         full_text = str(meta_info.get("full_text") or "".join(text_parts))
         full_thoughts = "".join(thought_parts)
 
-        output_lines: List[str] = []
+        output_lines: list[str] = []
         if full_thoughts:
             output_lines.append(f"<thought>\n{full_thoughts}\n</thought>\n")
         output_lines.append(full_text)
@@ -820,10 +818,10 @@ class MCPServer:
 
     async def _call_gemini_generate_image(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -831,7 +829,7 @@ class MCPServer:
         aspect_ratio = args.get("aspect_ratio", "1:1")
         gen_prompt = f"Generate an image with aspect ratio {aspect_ratio}: {prompt}"
 
-        found_images: List[Dict[str, Any]] = []
+        found_images: list[dict[str, Any]] = []
 
         async for chunk in client.generate_stream(prompt=gen_prompt, model="gemini-2.5-flash"):
             if chunk.metadata and "images" in chunk.metadata:
@@ -855,10 +853,10 @@ class MCPServer:
 
     async def _call_notebooklm_list(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -868,7 +866,7 @@ class MCPServer:
             notebooks = await notebooklm_client.list_notebooks()
             data = [asdict(n) for n in notebooks]
             return [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}], False
-        except Exception as e:
+        except Exception:
             from backend.app.api.notebooklm import _LOCAL_FALLBACK_NOTEBOOKS
             fallback_data = [
                 {k: v for k, v in nb.items() if k not in ("sources", "notes")}
@@ -878,10 +876,10 @@ class MCPServer:
 
     async def _call_notebooklm_query(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -939,7 +937,7 @@ class MCPServer:
         )
 
         if client:
-            text_parts: List[str] = []
+            text_parts: list[str] = []
             async for chunk in client.generate_stream(prompt=grounded_prompt, model="gemini-4-argon"):
                 if chunk.type == "text":
                     text_parts.append(chunk.delta)
@@ -949,10 +947,10 @@ class MCPServer:
 
     async def _call_notebooklm_add_source(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -975,7 +973,7 @@ class MCPServer:
                 "source": src_dict,
             }
             return [{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False
-        except Exception as e:
+        except Exception:
             from backend.app.api.notebooklm import _LOCAL_FALLBACK_NOTEBOOKS
             fallback_src = {
                 "id": f"src_text_{len(title)}_{len(content)}",
@@ -996,10 +994,10 @@ class MCPServer:
 
     async def _call_notebooklm_add_url_source(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -1035,10 +1033,10 @@ class MCPServer:
 
     async def _call_notebooklm_generate_study_guide(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -1077,10 +1075,10 @@ class MCPServer:
 
     async def _call_notebooklm_generate_mind_map(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -1116,10 +1114,10 @@ class MCPServer:
 
     async def _call_notebooklm_generate_audio_overview(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not notebooklm_client:
             return [{"type": "text", "text": "NotebookLM client not initialized"}], True
 
@@ -1150,10 +1148,10 @@ class MCPServer:
 
     async def _call_gemini_list_gems(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -1198,10 +1196,10 @@ class MCPServer:
 
     async def _call_gemini_create_gem(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -1235,10 +1233,10 @@ class MCPServer:
 
     async def _call_gemini_update_gem(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -1272,10 +1270,10 @@ class MCPServer:
 
     async def _call_gemini_delete_gem(
         self,
-        args: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        args: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         if not client:
             return [{"type": "text", "text": "Gemini client not initialized"}], True
 
@@ -1299,9 +1297,9 @@ class MCPServer:
     async def _resolve_resource(
         self,
         uri: str,
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> List[Dict[str, Any]]:
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> list[dict[str, Any]]:
         """Resolves URI schemes like notebooklm:// and gemini:// into resource contents."""
         if uri == "notebooklm://notebooks":
             if notebooklm_client:
@@ -1354,10 +1352,10 @@ class MCPServer:
 
     async def _call_claude_list_plugins(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Lists all available Claude plugins and agents from the local filesystem."""
         from backend.app.api.claude_plugins import scan_plugins
         import json
@@ -1379,10 +1377,10 @@ class MCPServer:
 
     async def _call_claude_sync_plugin_gems(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Syncs local Claude agents to Gemini Custom Gems."""
         from backend.app.api.claude_plugins import sync_gems
         import json
@@ -1395,10 +1393,10 @@ class MCPServer:
 
     async def _call_notebooklm_sync_repo(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Incrementally syncs workspace files into a NotebookLM notebook with SHA-256 deduplication."""
         from backend.app.api.notebooklm import sync_repo_to_notebooklm
 
@@ -1423,10 +1421,10 @@ class MCPServer:
 
     async def _call_claude_init_workspace(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Installs the .claude/{agents,skills,commands,hooks,settings.json} pack into a target directory."""
         from backend.app.api.claude_plugins import init_claude_workspace
 
@@ -1451,10 +1449,10 @@ class MCPServer:
 
     async def _call_gemini_background_batch(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Dispatches or queries multi-stage background Gemini synthesis jobs."""
         from backend.app.api.claude_plugins import (
             BackgroundJobRequest,
@@ -1469,37 +1467,36 @@ class MCPServer:
             if action == "list":
                 res = await list_background_jobs_endpoint(limit=int(params.get("limit", 20)))
                 return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
-            elif action == "status":
+            if action == "status":
                 job_id = str(params.get("job_id") or "").strip()
                 if not job_id:
                     return ([{"type": "text", "text": "'job_id' is required for action='status'"}], True)
                 res = await get_background_job_endpoint(job_id)
                 return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
-            else:
-                title = str(params.get("title") or "").strip()
-                if not title:
-                    return ([{"type": "text", "text": "'title' is required for action='create'"}], True)
-                raw_stages = params.get("stages") or []
-                stages = [BackgroundStageSpec(**s) for s in raw_stages if isinstance(s, dict)]
-                req = BackgroundJobRequest(
-                    title=title,
-                    workspace_dir=params.get("workspace_dir"),
-                    stages=stages,
-                    script_command=params.get("script_command"),
-                    artifacts=list(params.get("artifacts") or []),
-                    run_async=bool(params.get("run_async", True)),
-                )
-                res = await create_background_job(req)
-                return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+            title = str(params.get("title") or "").strip()
+            if not title:
+                return ([{"type": "text", "text": "'title' is required for action='create'"}], True)
+            raw_stages = params.get("stages") or []
+            stages = [BackgroundStageSpec(**s) for s in raw_stages if isinstance(s, dict)]
+            req = BackgroundJobRequest(
+                title=title,
+                workspace_dir=params.get("workspace_dir"),
+                stages=stages,
+                script_command=params.get("script_command"),
+                artifacts=list(params.get("artifacts") or []),
+                run_async=bool(params.get("run_async", True)),
+            )
+            res = await create_background_job(req)
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
         except Exception as e:
             return ([{"type": "text", "text": f"Error in gemini_background_batch: {str(e)}"}], True)
 
     async def _call_gemini_task_pipeline(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """REQ-PIPE-06: Executes Task-Mode pipeline orchestration actions via MCP."""
         from backend.app.bridge.task_pipeline import get_task_pipeline_orchestrator
 
@@ -1545,10 +1542,10 @@ class MCPServer:
 
     async def _call_gemini_capabilities(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """REQ-CAP-01..07: Dispatches M31-M34 native Gemini capability actions via MCP."""
         from backend.app.bridge.gemini_capabilities import (
             get_canvas_manager,
@@ -1692,10 +1689,10 @@ class MCPServer:
 
     async def _call_gemini_ecosystem_scout(
         self,
-        params: Dict[str, Any],
-        client: Optional[GeminiWebClient],
-        notebooklm_client: Optional[NotebookLMClient],
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+        params: dict[str, Any],
+        client: GeminiWebClient | None,
+        notebooklm_client: NotebookLMClient | None,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """REQ-SCOUT-05: Executes M41 Ecosystem Scout actions via MCP."""
         from backend.app.bridge.ecosystem_scout import get_ecosystem_scout
 
