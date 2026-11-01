@@ -363,6 +363,8 @@ class StreamingDeltaAccumulator:
         self._seen_youtube_ids: set[str] = set()
         self.answered_by: Optional[str] = None
         self.speculative_tail_buffer: int = 12
+        self._extracted_code_executions: List[Dict[str, Any]] = []
+        self._extracted_draft_candidates: List[Dict[str, Any]] = []
 
     def _normalize_citations(self, raw: Any) -> List[Any]:
         if not raw or not isinstance(raw, list):
@@ -585,7 +587,17 @@ class StreamingDeltaAccumulator:
 
             # 3. Extract Candidates (inner_json[4])
             if len(part_json) > 4 and isinstance(part_json[4], list) and len(part_json[4]) > 0:
-                candidate = part_json[4][0]
+                candidates_list = part_json[4]
+                self._extracted_draft_candidates = [
+                    {
+                        "rcid": str(c[0] or ""),
+                        "text": str(c[1][0] if len(c) > 1 and isinstance(c[1], list) and len(c[1]) > 0 else ""),
+                        "index": idx,
+                    }
+                    for idx, c in enumerate(candidates_list)
+                    if isinstance(c, list) and len(c) > 0
+                ]
+                candidate = candidates_list[0]
                 if isinstance(candidate, list):
                     if len(candidate) > 0 and candidate[0]:
                         self.rcid = str(candidate[0])
@@ -756,6 +768,50 @@ class StreamingDeltaAccumulator:
                                         })
                                         new_youtube = True
 
+                        # Extract Cloud Python Code Execution (REQ-CAP-01)
+                        if isinstance(rich, dict):
+                            exec_code = rich.get("executable_code")
+                            exec_res = rich.get("code_execution_result")
+                            if isinstance(exec_code, dict) or isinstance(exec_res, dict):
+                                ec_dict = exec_code if isinstance(exec_code, dict) else {}
+                                er_dict = exec_res if isinstance(exec_res, dict) else {}
+                                exec_entry = {
+                                    "language": str(ec_dict.get("language", "python")),
+                                    "code": str(ec_dict.get("code", "")),
+                                    "stdout": str(er_dict.get("output", er_dict.get("stdout", ""))),
+                                    "stderr": str(er_dict.get("stderr", "")),
+                                    "outcome": str(er_dict.get("outcome", "OUTCOME_OK")),
+                                }
+                                if exec_entry not in self._extracted_code_executions:
+                                    self._extracted_code_executions.append(exec_entry)
+                            raw_exec_list = rich.get("code_executions")
+                            if isinstance(raw_exec_list, list):
+                                for item in raw_exec_list:
+                                    if isinstance(item, dict) and item not in self._extracted_code_executions:
+                                        self._extracted_code_executions.append(item)
+                        elif isinstance(rich, list):
+                            for item in rich:
+                                if isinstance(item, dict) and ("executable_code" in item or "code" in item):
+                                    ec_dict = (
+                                        item.get("executable_code", item)
+                                        if isinstance(item.get("executable_code", item), dict)
+                                        else {}
+                                    )
+                                    er_dict = (
+                                        item.get("code_execution_result", item)
+                                        if isinstance(item.get("code_execution_result", item), dict)
+                                        else {}
+                                    )
+                                    exec_entry = {
+                                        "language": str(ec_dict.get("language", "python")),
+                                        "code": str(ec_dict.get("code", "")),
+                                        "stdout": str(er_dict.get("output", er_dict.get("stdout", ""))),
+                                        "stderr": str(er_dict.get("stderr", "")),
+                                        "outcome": str(er_dict.get("outcome", "OUTCOME_OK")),
+                                    }
+                                    if exec_entry not in self._extracted_code_executions:
+                                        self._extracted_code_executions.append(exec_entry)
+
                     # Emit media chunk if new images or YouTube videos were found
                     if new_images or new_youtube:
                         chunks.append(
@@ -778,28 +834,33 @@ class StreamingDeltaAccumulator:
                 chunks.append(StreamChunk(type="text", delta=final_delta))
 
             self._done_emitted = True
+            done_meta: Dict[str, Any] = {
+                "cid": self.cid,
+                "rid": self.rid,
+                "rcid": self.rcid,
+                "answered_by": self.answered_by,
+                "continuation_token": self.continuation_token,
+                "full_text": self.full_raw_text,
+                "full_thoughts": self.full_raw_thoughts,
+                "citations": self.citations,
+                "images": self.images,
+                "grounding_sources": self.grounding_sources,
+                "grounding_queries": self.grounding_queries,
+                "grounding": {
+                    "sources": self.grounding_sources,
+                    "queries": self.grounding_queries,
+                },
+                "youtube": self.youtube_videos,
+            }
+            if self._extracted_code_executions:
+                done_meta["code_executions"] = list(self._extracted_code_executions)
+            if len(self._extracted_draft_candidates) >= 2:
+                done_meta["draft_candidates"] = list(self._extracted_draft_candidates)
             chunks.append(
                 StreamChunk(
                     type="done",
                     delta="",
-                    metadata={
-                        "cid": self.cid,
-                        "rid": self.rid,
-                        "rcid": self.rcid,
-                        "answered_by": self.answered_by,
-                        "continuation_token": self.continuation_token,
-                        "full_text": self.full_raw_text,
-                        "full_thoughts": self.full_raw_thoughts,
-                        "citations": self.citations,
-                        "images": self.images,
-                        "grounding_sources": self.grounding_sources,
-                        "grounding_queries": self.grounding_queries,
-                        "grounding": {
-                            "sources": self.grounding_sources,
-                            "queries": self.grounding_queries,
-                        },
-                        "youtube": self.youtube_videos,
-                    },
+                    metadata=done_meta,
                 )
             )
 

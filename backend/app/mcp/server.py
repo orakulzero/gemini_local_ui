@@ -447,6 +447,62 @@ class MCPServer:
             "handler": self._call_gemini_task_pipeline,
         }
 
+        self._tools["gemini_capabilities"] = {
+            "name": "gemini_capabilities",
+            "description": "REQ-CAP-01..07: Execute Cloud Python Sandbox, Canvas range edits, 2-phase Deep Research, Saved Info memory CRUD, Cloud Scheduled Actions, Double-Check verification, Multi-Draft selection, and Response Modifiers.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "sandbox_run",
+                            "canvas_create",
+                            "canvas_edit_range",
+                            "deep_research",
+                            "saved_info_add",
+                            "saved_info_list",
+                            "saved_info_delete",
+                            "saved_info_sync_file",
+                            "cloud_schedule_create",
+                            "cloud_schedule_list",
+                            "cloud_schedule_pause",
+                            "cloud_schedule_delete",
+                            "double_check",
+                            "select_draft",
+                            "modify_response",
+                        ],
+                        "description": "Capability action to execute.",
+                    },
+                    "code": {"type": "string"},
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                    "doc_id": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "replacement_content": {"type": "string"},
+                    "topic": {"type": "string"},
+                    "auto_approve": {"type": "boolean", "default": True},
+                    "category": {"type": "string", "default": "engineering_rule"},
+                    "memory_id": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "name": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "cron_expr": {"type": "string"},
+                    "schedule_id": {"type": "string"},
+                    "paused": {"type": "boolean"},
+                    "text": {"type": "string"},
+                    "draft_candidates": {"type": "array", "items": {"type": "object"}},
+                    "modifier": {"type": "string", "default": "concise"},
+                    "cid": {"type": "string"},
+                    "rid": {"type": "string"},
+                    "rcid": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+            "handler": self._call_gemini_capabilities,
+        }
+
 
     async def handle_message(
         self,
@@ -1435,5 +1491,115 @@ class MCPServer:
             return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
         except Exception as exc:
             return ([{"type": "text", "text": f"Error in gemini_task_pipeline: {exc}"}], True)
+
+    async def _call_gemini_capabilities(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """REQ-CAP-01..07: Dispatches M31-M34 native Gemini capability actions via MCP."""
+        from backend.app.bridge.gemini_capabilities import (
+            get_canvas_manager,
+            get_cloud_schedule_manager,
+            get_deep_research_engine,
+            get_response_quality_engine,
+            get_saved_info_manager,
+            run_cloud_python_sandbox,
+        )
+
+        action = str(params.get("action") or "").strip().lower()
+        try:
+            if action == "sandbox_run":
+                res: Any = await run_cloud_python_sandbox(
+                    code=str(params.get("code") or ""),
+                    prompt=params.get("prompt"),
+                    client=client,
+                    cid=params.get("cid"),
+                    rid=params.get("rid"),
+                    rcid=params.get("rcid"),
+                )
+            elif action == "canvas_create":
+                res = get_canvas_manager().create_document(
+                    filename=str(params.get("filename") or "untitled.py"),
+                    content=str(params.get("content") or ""),
+                    cid=params.get("cid"),
+                    rid=params.get("rid"),
+                    rcid=params.get("rcid"),
+                )
+            elif action == "canvas_edit_range":
+                res = get_canvas_manager().apply_range_edit(
+                    doc_id=str(params.get("doc_id") or ""),
+                    start_line=int(params.get("start_line", 1)),
+                    end_line=int(params.get("end_line", 1)),
+                    replacement_content=str(params.get("replacement_content") or ""),
+                )
+            elif action == "deep_research":
+                res = await get_deep_research_engine().run_deep_research(
+                    topic=str(params.get("topic") or ""),
+                    auto_approve=bool(params.get("auto_approve", True)),
+                    client=client,
+                )
+            elif action == "saved_info_add":
+                res = get_saved_info_manager().add_memory(
+                    content=str(params.get("content") or ""),
+                    category=str(params.get("category") or "engineering_rule"),
+                    client=client,
+                )
+            elif action == "saved_info_list":
+                res = {"ok": True, "memories": get_saved_info_manager().list_memories()}
+            elif action == "saved_info_delete":
+                mid = str(params.get("memory_id") or "")
+                res = {"ok": True, "deleted": get_saved_info_manager().delete_memory(mid, client=client)}
+            elif action == "saved_info_sync_file":
+                res = get_saved_info_manager().sync_rules_file(
+                    file_path=str(params.get("file_path") or ""),
+                    category=str(params.get("category") or "engineering_rule"),
+                    client=client,
+                )
+            elif action == "cloud_schedule_create":
+                res = get_cloud_schedule_manager().create_cloud_schedule(
+                    name=str(params.get("name") or "Scheduled Action"),
+                    prompt=str(params.get("prompt") or ""),
+                    cron_expr=str(params.get("cron_expr") or "0 * * * *"),
+                    client=client,
+                )
+            elif action == "cloud_schedule_list":
+                res = {"ok": True, "schedules": get_cloud_schedule_manager().list_cloud_schedules(client=client)}
+            elif action == "cloud_schedule_pause":
+                res = get_cloud_schedule_manager().pause_cloud_schedule(
+                    schedule_id=str(params.get("schedule_id") or ""),
+                    paused=bool(params.get("paused", True)),
+                    client=client,
+                )
+            elif action == "cloud_schedule_delete":
+                sid = str(params.get("schedule_id") or "")
+                res = {"ok": True, "deleted": get_cloud_schedule_manager().delete_cloud_schedule(sid, client=client)}
+            elif action == "double_check":
+                res = await get_response_quality_engine().double_check_response(
+                    text=str(params.get("text") or ""),
+                    cid=params.get("cid"),
+                    rid=params.get("rid"),
+                    rcid=params.get("rcid"),
+                    client=client,
+                )
+            elif action == "select_draft":
+                res = get_response_quality_engine().select_best_draft(
+                    draft_candidates=list(params.get("draft_candidates") or []),
+                )
+            elif action == "modify_response":
+                res = await get_response_quality_engine().modify_response(
+                    text=str(params.get("text") or ""),
+                    modifier=str(params.get("modifier") or "concise"),
+                    cid=params.get("cid"),
+                    rid=params.get("rid"),
+                    rcid=params.get("rcid"),
+                    client=client,
+                )
+            else:
+                return ([{"type": "text", "text": f"Unsupported action '{action}'"}], True)
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as exc:
+            return ([{"type": "text", "text": f"Error in gemini_capabilities: {exc}"}], True)
 
 
