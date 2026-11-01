@@ -448,3 +448,91 @@ def test_req_pipe_07_ultra_5x_pipeline_integration(tmp_path: Path) -> None:
     assert run_rec["double_check_trust"] > 0.0
     assert "# REQ-CALC-01: Ultra 5x RangeEdit verified" in run_rec["candidate_files"]["src/calc.py"]
     assert "def multiply(a: int, b: int) -> int:" in run_rec["candidate_files"]["src/calc.py"]
+
+
+def test_req_pipe_08_mcp_skills_rules_and_gem_pipeline_integration(tmp_path: Path) -> None:
+    """REQ-PIPE-08: Workspace skills/rules discovery, Gem persona routing, and in-process MCP tool loop."""
+    from backend.app.bridge.task_pipeline import discover_workspace_skills_and_rules
+
+    _create_mini_project(tmp_path, initial_multiply="a * b")
+
+    # 1. Create workspace skills and rules and verify discovery
+    skill_dir = tmp_path / "skills" / "demo-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: Demo skill\n---\nAlways validate bounds.\n",
+        encoding="utf-8",
+    )
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "AGENTS.md").write_text("- Enforce strict bounds check.\n", encoding="utf-8")
+
+    discovered = discover_workspace_skills_and_rules(tmp_path)
+    assert any(s.get("name") == "demo-skill" for s in discovered["skills"])
+    assert len(discovered["rules"]) >= 1
+    assert "demo-skill" in discovered["prompt_block"]
+    assert "Enforce strict bounds check." in discovered["prompt_block"]
+
+    # 2. Execute pipeline run with MCP tool-call loop, active skills/rules, and gem_id
+    orchestrator = TaskPipelineOrchestrator(storage_path=tmp_path / "state_pipe08.json")
+    prompts_seen: List[str] = []
+
+    async def mock_mcp_runner(
+        prompt: str,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        cid: Optional[str] = None,
+        rid: Optional[str] = None,
+        rcid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        prompts_seen.append(prompt)
+        if len(prompts_seen) == 1:
+            assert "# Active Skills & Rules" in prompt
+            assert "demo-skill" in prompt
+            assert "# Available MCP Tools" in prompt
+            assert "gemini_capabilities" in prompt
+            return {
+                "cid": "c_mcp_08",
+                "rid": "r_mcp_08_t1",
+                "rcid": "rc_mcp_08_t1",
+                "text": (
+                    "Inspecting capabilities via MCP tool first.\n"
+                    "```tool_call\n"
+                    '{"name": "gemini_capabilities", "arguments": {"action": "ultra_profile", "account_id": "acc_21aac20f"}}\n'
+                    "```\n"
+                ),
+            }
+        assert cid == "c_mcp_08"
+        assert "# MCP Tool Result (gemini_capabilities)" in prompt
+        assert "ultra_5x" in prompt
+        return {
+            "cid": "c_mcp_08",
+            "rid": "r_mcp_08_t2",
+            "rcid": "rc_mcp_08_t2",
+            "text": (
+                "### RangeEdit: src/calc.py:2-2\n"
+                "```python\n"
+                "# REQ-CALC-01: MCP + Skill + Gem verified\n"
+                "```\n"
+            ),
+        }
+
+    run_rec = asyncio.run(
+        orchestrator.execute_pipeline_run(
+            workspace_dir=str(tmp_path),
+            prompt="Use MCP tool and workspace skills to verify src/calc.py",
+            target_files=["src/calc.py"],
+            gem_id="gem_ultra_pipeline",
+            enable_mcp_tools=True,
+            task_runner=mock_mcp_runner,
+        )
+    )
+
+    assert run_rec["status"] == "STAGED_AWAITING_APPROVAL"
+    assert run_rec["gem_id"] == "gem_ultra_pipeline"
+    assert len(run_rec["mcp_tool_calls"]) == 1
+    assert run_rec["mcp_tool_calls"][0]["name"] == "gemini_capabilities"
+    assert len(run_rec["active_skills"]) >= 1
+    assert "demo-skill" in run_rec["active_skills"]
+    assert run_rec["gates"]["passed"] is True
+    assert "# REQ-CALC-01: MCP + Skill + Gem verified" in run_rec["candidate_files"]["src/calc.py"]
+

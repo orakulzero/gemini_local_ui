@@ -207,6 +207,107 @@ def extract_code_files_from_response(
     return extracted
 
 
+def discover_workspace_skills_and_rules(workspace_dir: str | Path) -> dict[str, Any]:
+    """
+    REQ-PIPE-08: Scans workspace_dir for local skills (skills/*/SKILL.md, .claude/skills/*/SKILL.md)
+    and engineering rules (rules/*.md, .claude/rules/*.md, AGENTS.md, CLAUDE.md), plus saved memories.
+    """
+    root = Path(workspace_dir).resolve()
+    skills: list[dict[str, str]] = []
+    rules: list[str] = []
+
+    skill_bases = [root / "skills", root / ".claude" / "skills", root / ".agents" / "skills"]
+    for sbase in skill_bases:
+        if not sbase.is_dir():
+            continue
+        for skill_md in sorted(sbase.glob("*/SKILL.md")):
+            try:
+                raw = skill_md.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            name = skill_md.parent.name
+            desc = ""
+            body = raw
+            if raw.startswith("---"):
+                parts = raw.split("---", 2)
+                if len(parts) >= 3:
+                    front = parts[1]
+                    body = parts[2]
+                    for line in front.splitlines():
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            if k.strip() == "name" and v.strip():
+                                name = v.strip()
+                            elif k.strip() == "description" and v.strip():
+                                desc = v.strip()
+            skills.append(
+                {
+                    "name": name,
+                    "description": desc,
+                    "instructions": body.strip()[:600],
+                    "path": skill_md.relative_to(root).as_posix(),
+                }
+            )
+
+    rule_files: list[Path] = [root / "AGENTS.md", root / "CLAUDE.md"]
+    for rbase in (root / "rules", root / ".claude" / "rules", root / ".agents" / "rules"):
+        if rbase.is_dir():
+            rule_files.extend(sorted(rbase.glob("*.md")))
+
+    for rfile in rule_files:
+        if rfile.is_file():
+            try:
+                txt = rfile.read_text(encoding="utf-8", errors="replace").strip()
+                if txt:
+                    rules.append(txt[:800])
+            except OSError:
+                pass
+
+    try:
+        from backend.app.bridge.gemini_capabilities import get_saved_info_manager
+
+        for mem in get_saved_info_manager().list_memories():
+            c = str(mem.get("content", "")).strip()
+            if c:
+                rules.append(c)
+    except Exception:
+        pass
+
+    prompt_lines = ["# Active Skills & Rules"]
+    for s in skills:
+        prompt_lines.append(f"- Skill [{s['name']}]: {s['description']} — {s['instructions']}")
+    for r in rules:
+        prompt_lines.append(f"- Rule: {r}")
+
+    return {
+        "skills": skills,
+        "rules": rules,
+        "prompt_block": "\n".join(prompt_lines),
+    }
+
+
+def extract_mcp_tool_calls(text: str) -> list[dict[str, Any]]:
+    """REQ-PIPE-08: Extracts JSON tool call payloads from ```tool_call fenced blocks."""
+    calls: list[dict[str, Any]] = []
+    if not text:
+        return calls
+    pattern = re.compile(r"```tool_call\s*\n(.*?)```", re.DOTALL)
+    for match in pattern.finditer(text):
+        raw_json = match.group(1).strip()
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict) and parsed.get("name"):
+                calls.append(
+                    {
+                        "name": str(parsed["name"]),
+                        "arguments": dict(parsed.get("arguments") or {}),
+                    }
+                )
+        except Exception:
+            continue
+    return calls
+
+
 def _extract_top_level_symbol_map(source: str) -> dict[str, tuple[str, int]]:
     """Extracts top-level function and class names with parameter counts from Python AST."""
     tree = ast.parse(source)
@@ -443,10 +544,12 @@ class TaskPipelineOrchestrator:
         model: str = "gemini-4-argon",
         thinking: int = 2,
         use_ultra_2m: bool = True,
+        gem_id: str | None = "gem_ultra_pipeline",
+        enable_mcp_tools: bool = True,
         max_heal_attempts: int = 2,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        """REQ-PIPE-02, REQ-PIPE-07: Creates a recurring Task-Mode schedule (cron or interval)."""
+        """REQ-PIPE-02, REQ-PIPE-07, REQ-PIPE-08: Creates a recurring Task-Mode schedule (cron or interval)."""
         now_ts = time.time()
         schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
         record: dict[str, Any] = {
@@ -461,6 +564,8 @@ class TaskPipelineOrchestrator:
             "model": model,
             "thinking": int(thinking),
             "use_ultra_2m": bool(use_ultra_2m),
+            "gem_id": gem_id,
+            "enable_mcp_tools": bool(enable_mcp_tools),
             "max_heal_attempts": int(max_heal_attempts),
             "enabled": bool(enabled),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -520,6 +625,7 @@ class TaskPipelineOrchestrator:
         rcid: str | None,
         is_first_turn: bool,
         use_ultra_2m: bool = True,
+        gem_id: str | None = None,
     ) -> dict[str, Any]:
         """
         REQ-PIPE-03, REQ-PIPE-07: Executes live Gemini 4 Argon Task Mode (feature_mode=40) via
@@ -600,6 +706,7 @@ class TaskPipelineOrchestrator:
                 rid=rid,
                 rcid=rcid,
                 attachments=att_list,
+                gem_id=gem_id,
                 feature_mode=40,
             ):
                 if getattr(chunk, "text_delta", ""):
@@ -652,6 +759,8 @@ class TaskPipelineOrchestrator:
                 model=sched.get("model", "gemini-4-argon"),
                 thinking=int(sched.get("thinking", 2)),
                 use_ultra_2m=bool(sched.get("use_ultra_2m", True)),
+                gem_id=sched.get("gem_id"),
+                enable_mcp_tools=bool(sched.get("enable_mcp_tools", True)),
                 max_heal_attempts=int(sched.get("max_heal_attempts", 2)),
                 task_runner=task_runner,
                 schedule_id=sched["schedule_id"],
@@ -698,6 +807,8 @@ class TaskPipelineOrchestrator:
         model: str = "gemini-4-argon",
         thinking: int = 2,
         use_ultra_2m: bool = True,
+        gem_id: str | None = None,
+        enable_mcp_tools: bool = True,
         max_heal_attempts: int = 2,
         run_pytest: bool = True,
         task_runner: Callable[..., Any] | None = None,
@@ -705,9 +816,9 @@ class TaskPipelineOrchestrator:
         schedule_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-07: Executes an isolated Gemini 4 Argon Task Mode run with
+        REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-07, REQ-PIPE-08: Executes an isolated Gemini 4 Argon Task Mode run with
         stateful CID/RID/RCID self-healing, Ultra 5x profile + 2M context metadata, multi-draft selection,
-        Canvas RangeEdit patching, and stages verified diffs without writing to workspace_dir.
+        Canvas RangeEdit patching, workspace skills/rules, Gem persona routing, and in-process MCP tool loop.
         """
         from backend.app.bridge.gemini_capabilities import get_response_quality_engine
         from backend.app.bridge.ultra_capabilities import (
@@ -720,6 +831,9 @@ class TaskPipelineOrchestrator:
         bundle = pack_workspace_context(root, target_files=target_files)
         ultra_profile = UltraSubscriptionManager().detect_subscription_profile()
         ultra_2m_meta = pack_ultra_2m_repository_context(root) if use_ultra_2m else {}
+        discovered = discover_workspace_skills_and_rules(root)
+        active_skills = [str(s.get("name", "")) for s in discovered["skills"] if s.get("name")]
+        mcp_tool_calls_log: list[dict[str, Any]] = []
 
         cid: str | None = None
         rid: str | None = None
@@ -756,6 +870,15 @@ class TaskPipelineOrchestrator:
                 }
             ]
             current_prompt = prompt
+            if discovered["skills"] or discovered["rules"] or enable_mcp_tools:
+                mcp_tools_section = (
+                    "# Available MCP Tools\n"
+                    "- gemini_capabilities\n"
+                    "- gemini_task_pipeline\n"
+                    "- notebooklm_query\n"
+                    'Emit ```tool_call\n{"name": "...", "arguments": {...}}\n``` to invoke an MCP tool before outputting code.'
+                )
+                current_prompt = f"{prompt}\n\n{discovered['prompt_block']}\n\n{mcp_tools_section}"
             q_engine = get_response_quality_engine()
             for attempt in range(max_heal_attempts + 1):
                 if task_runner is not None:
@@ -778,6 +901,7 @@ class TaskPipelineOrchestrator:
                         rcid=rcid,
                         is_first_turn=(attempt == 0),
                         use_ultra_2m=use_ultra_2m,
+                        gem_id=gem_id,
                     )
                 cid = resp.get("cid") or cid
                 rid = resp.get("rid") or rid
@@ -791,6 +915,79 @@ class TaskPipelineOrchestrator:
                 else:
                     effective_text = str(resp.get("text", ""))
                     selected_rcid = rcid
+
+                if enable_mcp_tools:
+                    tool_turns = 0
+                    while tool_turns < 3:
+                        tool_calls = extract_mcp_tool_calls(effective_text)
+                        if not tool_calls or extract_code_files_from_response(
+                            effective_text, orig_files={**orig_files, **candidate_files}
+                        ):
+                            break
+                        tool_turns += 1
+                        from backend.app.mcp.server import MCPServer
+
+                        mcp_srv = MCPServer()
+                        tool_blocks: list[str] = []
+                        for tc in tool_calls:
+                            tc_name = str(tc.get("name", ""))
+                            tc_args = dict(tc.get("arguments") or {})
+                            mcp_resp = await mcp_srv.handle_message(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "method": "tools/call",
+                                    "params": {"name": tc_name, "arguments": tc_args},
+                                }
+                            )
+                            content_items = (mcp_resp or {}).get("result", {}).get("content", [])
+                            tool_text = (
+                                str(content_items[0].get("text", ""))
+                                if content_items
+                                else json.dumps(mcp_resp or {})
+                            )
+                            mcp_tool_calls_log.append(
+                                {
+                                    "name": tc_name,
+                                    "arguments": tc_args,
+                                    "result_preview": tool_text[:500],
+                                }
+                            )
+                            tool_blocks.append(f"# MCP Tool Result ({tc_name})\n{tool_text}")
+                        tool_prompt = "\n\n".join(tool_blocks) + "\n\nNow output the final code changes."
+                        if task_runner is not None:
+                            resp = await self._invoke_runner(
+                                task_runner,
+                                prompt=tool_prompt,
+                                attachments=None,
+                                cid=cid,
+                                rid=rid,
+                                rcid=rcid,
+                            )
+                        else:
+                            resp = await self._default_live_task_runner(
+                                prompt=tool_prompt,
+                                bundle=bundle,
+                                model=model,
+                                thinking=thinking,
+                                cid=cid,
+                                rid=rid,
+                                rcid=rcid,
+                                is_first_turn=False,
+                                use_ultra_2m=use_ultra_2m,
+                                gem_id=gem_id,
+                            )
+                        cid = resp.get("cid") or cid
+                        rid = resp.get("rid") or rid
+                        rcid = resp.get("rcid") or rcid
+                        draft_cands = resp.get("draft_candidates")
+                        if isinstance(draft_cands, list) and len(draft_cands) > 0:
+                            best_draft = q_engine.select_best_draft(draft_cands)
+                            effective_text = str(best_draft.get("text") or resp.get("text", ""))
+                            selected_rcid = str(best_draft.get("rcid") or rcid or "")
+                        else:
+                            effective_text = str(resp.get("text", ""))
+                            selected_rcid = rcid
 
                 dc_res = await q_engine.double_check_response(text=effective_text)
                 double_check_trust = float(dc_res.get("trust_score", 0.95))
@@ -833,6 +1030,10 @@ class TaskPipelineOrchestrator:
             "model": model,
             "thinking": thinking,
             "use_ultra_2m": bool(use_ultra_2m),
+            "gem_id": gem_id,
+            "enable_mcp_tools": bool(enable_mcp_tools),
+            "mcp_tool_calls": mcp_tool_calls_log,
+            "active_skills": active_skills,
             "ultra_profile": ultra_profile,
             "status": status_val,
             "heal_attempts": heal_attempts,
