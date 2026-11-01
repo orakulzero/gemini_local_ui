@@ -5,13 +5,11 @@ Shared exception hierarchy and Google RPC error status code mapper.
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class GeminiBridgeError(Exception):
     """Base exception for all Gemini web bridge failures."""
 
-    def __init__(self, message: str, code: Optional[int] = None) -> None:
+    def __init__(self, message: str, code: int | None = None) -> None:
         super().__init__(message)
         self.code = code
 
@@ -33,7 +31,7 @@ class TemporaryBackendOverloadError(GeminiBridgeError):
 class UsageLimitExceededError(GeminiBridgeError):
     """Raised when account hourly/daily quota is exhausted (Code 1037)."""
 
-    def __init__(self, message: str = "Account generation quota exceeded", reset_timestamp: Optional[int] = None) -> None:
+    def __init__(self, message: str = "Account generation quota exceeded", reset_timestamp: int | None = None) -> None:
         super().__init__(message, code=1037)
         self.reset_timestamp = reset_timestamp
 
@@ -59,19 +57,19 @@ class IPBlockedError(GeminiBridgeError):
         super().__init__(message, code=1060)
 
 
-def map_google_error_code(code: int, message: Optional[str] = None) -> None:
+def map_google_error_code(code: int, message: str | None = None) -> None:
     """Maps Google internal RPC status code to a concrete exception."""
     if code in (1013, 13, 14):
         raise TemporaryBackendOverloadError(message or "Google backend temporary overload", code=code)
-    elif code == 1037:
+    if code == 1037:
         raise UsageLimitExceededError(message or "Account generation quota exceeded")
-    elif code == 1050:
+    if code == 1050:
         raise ModelInconsistentError(message or "Model changed within an active multi-turn thread")
-    elif code == 1052:
+    if code == 1052:
         raise ModelHeaderInvalidError(message or "Invalid model identifier or capacity flag")
-    elif code == 1060:
+    if code == 1060:
         raise IPBlockedError(message or "Source IP temporarily blocked by Google bot mitigation")
-    elif code == 7:
+    if code == 7:
         raise AuthenticationError(message or "Permission denied: Session cookies revoked or expired", code=7)
-    else:
-        raise GeminiBridgeError(message or f"Google internal error code: {code}", code=code)
+    
+    raise GeminiBridgeError(message or f"Google internal error code: {code}", code=code)
