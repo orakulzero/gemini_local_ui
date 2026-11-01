@@ -9,7 +9,7 @@ import logging
 import re
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -40,10 +40,7 @@ def get_repository(request: Request) -> ConversationRepository:
         if not db:
             import backend.app.main as main_mod
             db = getattr(main_mod, "db", None)
-        if db:
-            repo = ConversationRepository(db)
-        else:
-            repo = ConversationRepository(Database())
+        repo = ConversationRepository(db) if db else ConversationRepository(Database())
     return repo
 
 
@@ -53,7 +50,7 @@ def get_gemini_client(request: Request) -> GeminiWebClient:
     return resolve_client(request)
 
 
-def get_optional_client(request: Request) -> Optional[GeminiWebClient]:
+def get_optional_client(request: Request) -> GeminiWebClient | None:
     """Dependency injection returning client if configured, otherwise None."""
     try:
         from backend.app.openai.routes import get_gemini_client as resolve_client
@@ -64,36 +61,36 @@ def get_optional_client(request: Request) -> Optional[GeminiWebClient]:
 
 # Request & Response Schemas
 class CreateConversationRequest(BaseModel):
-    title: Optional[str] = "New Conversation"
-    model: Optional[str] = "gemini-2.5-pro"
-    gem_id: Optional[str] = None
-    system_prompt: Optional[str] = None
+    title: str | None = "New Conversation"
+    model: str | None = "gemini-2.5-pro"
+    gem_id: str | None = None
+    system_prompt: str | None = None
 
 
 class UpdateConversationRequest(BaseModel):
-    title: Optional[str] = None
-    model: Optional[str] = None
-    gem_id: Optional[str] = None
-    system_prompt: Optional[str] = None
-    is_pinned: Optional[bool] = None
-    is_archived: Optional[bool] = None
+    title: str | None = None
+    model: str | None = None
+    gem_id: str | None = None
+    system_prompt: str | None = None
+    is_pinned: bool | None = None
+    is_archived: bool | None = None
 
 
 class SwitchBranchRequest(BaseModel):
-    target_message_id: Union[int, str] = Field(..., description="Message ID or sibling to switch active branch to")
+    target_message_id: int | str = Field(..., description="Message ID or sibling to switch active branch to")
 
 
 class EditMessageRequest(BaseModel):
     content: str = Field(..., description="New prompt content for the message edit")
-    model: Optional[str] = None
+    model: str | None = None
 
 
 class ForkBranchRequest(BaseModel):
-    parent_id: Optional[Union[int, str]] = None
+    parent_id: int | str | None = None
     role: str = "user"
     content: str
-    thoughts: Optional[str] = None
-    model: Optional[str] = None
+    thoughts: str | None = None
+    model: str | None = None
 
 
 class SyncRemoteRequest(BaseModel):
@@ -105,10 +102,10 @@ class ConversationSummary(BaseModel):
     id: str
     title: str
     model: str
-    remote_conversation_id: Optional[str] = None
-    gem_id: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_leaf_message_id: Optional[int] = None
+    remote_conversation_id: str | None = None
+    gem_id: str | None = None
+    system_prompt: str | None = None
+    active_leaf_message_id: int | None = None
     is_pinned: bool
     is_archived: bool
     created_at: int
@@ -117,7 +114,7 @@ class ConversationSummary(BaseModel):
 
 
 class ConversationListResponse(BaseModel):
-    conversations: List[ConversationSummary]
+    conversations: list[ConversationSummary]
     total: int
     page: int
     limit: int
@@ -130,7 +127,7 @@ async def list_conversations(
     limit: int = Query(20, ge=1, le=100),
     archived: bool = Query(False),
     pinned_first: bool = Query(True),
-    search: Optional[str] = Query(None),
+    search: str | None = Query(None),
     repo: ConversationRepository = Depends(get_repository),
 ) -> ConversationListResponse:
     """Lists conversations with pagination and pinned-first sorting."""
@@ -155,7 +152,7 @@ async def list_conversations(
 async def create_conversation(
     req: CreateConversationRequest,
     repo: ConversationRepository = Depends(get_repository),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Creates a new conversation container."""
     conv = await repo.create_conversation(
         title=req.title or "New Conversation",
@@ -170,10 +167,10 @@ async def create_conversation(
 async def get_conversation(
     id: str,
     tree: bool = Query(True, description="Include DAG tree representation"),
-    leaf_id: Optional[Union[int, str]] = Query(None, description="Reconstruct thread to specific leaf"),
+    leaf_id: int | str | None = Query(None, description="Reconstruct thread to specific leaf"),
     repo: ConversationRepository = Depends(get_repository),
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Retrieves conversation metadata and reconstructed active thread or full DAG."""
     conv = await repo.get_conversation(id)
     if not conv:
@@ -195,7 +192,7 @@ async def get_conversation(
         except Exception as e:
             logger.warning("Lazy remote turn hydration failed for %s: %s", conv.remote_conversation_id, e)
 
-    resp: Dict[str, Any] = {
+    resp: dict[str, Any] = {
         "conversation": conv.to_dict(),
         "active_leaf_message_id": conv.active_leaf_message_id,
         "active_thread": [m.to_dict() for m in active_thread],
@@ -213,7 +210,7 @@ async def update_conversation(
     id: str,
     req: UpdateConversationRequest,
     repo: ConversationRepository = Depends(get_repository),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Updates conversation attributes."""
     conv = await repo.get_conversation(id)
     if not conv:
@@ -232,8 +229,8 @@ async def delete_conversation(
     id: str,
     remote: bool = Query(False, description="Also delete from remote Google account if linked"),
     repo: ConversationRepository = Depends(get_repository),
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Deletes conversation locally, and optionally from remote Google Gemini account."""
     conv = await repo.get_conversation(id)
     if not conv:
@@ -255,12 +252,12 @@ async def sync_remote_conversations(
     req: SyncRemoteRequest = SyncRemoteRequest(),
     repo: ConversationRepository = Depends(get_repository),
     client: GeminiWebClient = Depends(get_gemini_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Triggers synchronization between local database and Google Gemini web account."""
     try:
         remote_list = await client.list_remote_conversations(limit=req.limit)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed querying Google Gemini RPC: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed querying Google Gemini RPC: {e}") from e
 
     result = await repo.reconcile_remote_conversations(remote_list)
 
@@ -287,7 +284,7 @@ async def sync_remote_conversations(
 async def export_conversation(
     id: str,
     format: str = Query("markdown", pattern="^(markdown|json)$"),
-    leaf_id: Optional[Union[int, str]] = Query(None),
+    leaf_id: int | str | None = Query(None),
     repo: ConversationRepository = Depends(get_repository),
 ) -> Response:
     """Exports conversation thread to clean GitHub Markdown or structured JSON."""
@@ -320,7 +317,7 @@ async def switch_branch(
     id: str,
     req: SwitchBranchRequest,
     repo: ConversationRepository = Depends(get_repository),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Switches active branch by resolving to leaf under target message."""
     resolved_leaf, thread = await repo.switch_active_branch(id, req.target_message_id)
     return {
@@ -333,10 +330,10 @@ async def switch_branch(
 @router.post("/{id}/messages/{message_id}/edit")
 async def edit_message_and_branch(
     id: str,
-    message_id: Union[int, str],
+    message_id: int | str,
     req: EditMessageRequest,
     repo: ConversationRepository = Depends(get_repository),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Edits an earlier message, creating a new sibling branch node."""
     new_msg, new_thread = await repo.create_branch_edit(
         conversation_id=id,
@@ -356,7 +353,7 @@ async def fork_conversation_branch(
     id: str,
     req: ForkBranchRequest,
     repo: ConversationRepository = Depends(get_repository),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Forks a new branch directly from parent_id."""
     conv = await repo.get_conversation(id)
     if not conv:
