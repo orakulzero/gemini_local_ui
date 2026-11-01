@@ -7,7 +7,6 @@ Implements REQ-PIPE-01, REQ-PIPE-02, REQ-PIPE-03, REQ-PIPE-04, REQ-PIPE-05.
 from __future__ import annotations
 
 import ast
-import asyncio
 from datetime import datetime, timezone
 import difflib
 import inspect
@@ -22,7 +21,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 import uuid
 import zipfile
 
