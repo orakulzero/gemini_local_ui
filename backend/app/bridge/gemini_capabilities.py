@@ -600,6 +600,16 @@ class ResponseQualityEngine:
                 score += 250.0
             if "#" in txt:
                 score += 100.0
+            finish_reason = str(cand.get("finish_reason", "")).upper()
+            if finish_reason == "STOP":
+                score += 400.0
+            elif finish_reason == "MAX_TOKENS":
+                score -= 400.0
+            citations = cand.get("citations")
+            if isinstance(citations, list) and len(citations) > 0:
+                score += 300.0 * len(citations)
+            if "RangeEdit:" in txt or "REQ-" in txt:
+                score += 300.0
             if score > best_score:
                 best_score = score
                 best_cand = {

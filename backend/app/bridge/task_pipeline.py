@@ -141,10 +141,15 @@ def pack_workspace_context(
     }
 
 
-def extract_code_files_from_response(text: str) -> dict[str, str]:
+def extract_code_files_from_response(
+    text: str,
+    orig_files: dict[str, str] | None = None,
+) -> dict[str, str]:
     """
-    REQ-PIPE-03: Extracts multi-file code blocks from Gemini Task Mode Markdown responses.
-    Supports '### File: <path>', '**File:** <path>', '```lang:<path>', and '<file path="...">'.
+    REQ-PIPE-03, REQ-PIPE-07: Extracts multi-file code blocks and targeted Canvas RangeEdit blocks
+    from Gemini Task Mode Markdown responses.
+    Supports '### File: <path>', '**File:** <path>', '```lang:<path>', '<file path="...">',
+    and '### RangeEdit: <path>:<start_line>-<end_line>'.
     """
     extracted: dict[str, str] = {}
     if not text:
@@ -173,6 +178,31 @@ def extract_code_files_from_response(text: str) -> dict[str, str]:
         code = match.group(2)
         if rel and rel not in extracted:
             extracted[rel] = code if code.endswith("\n") else code + "\n"
+
+    range_fence = re.compile(
+        r"(?:^|\n)(?:#{1,4}\s*RangeEdit:\s*|\*\*RangeEdit:\*\*\s*)`?([^\n:`*]+):(\d+)-(\d+)`?\s*\n```[^\n]*\n(.*?)```",
+        re.DOTALL,
+    )
+    if range_fence.search(text):
+        from backend.app.bridge.gemini_capabilities import CanvasSessionManager
+
+        canvas_mgr = CanvasSessionManager()
+        base_map = dict(orig_files or {})
+        for match in range_fence.finditer(text):
+            rel = match.group(1).strip().replace("\\", "/").lstrip("/")
+            start_line = int(match.group(2))
+            end_line = int(match.group(3))
+            repl_code = match.group(4)
+            base_content = extracted.get(rel) or base_map.get(rel)
+            if rel and base_content is not None:
+                doc = canvas_mgr.create_document(filename=rel, content=base_content)
+                updated_doc = canvas_mgr.apply_range_edit(
+                    doc["doc_id"],
+                    start_line=start_line,
+                    end_line=end_line,
+                    replacement_content=repl_code,
+                )
+                extracted[rel] = str(updated_doc["content"])
 
     return extracted
 
@@ -412,10 +442,11 @@ class TaskPipelineOrchestrator:
         target_files: list[str] | None = None,
         model: str = "gemini-4-argon",
         thinking: int = 2,
+        use_ultra_2m: bool = True,
         max_heal_attempts: int = 2,
         enabled: bool = True,
     ) -> dict[str, Any]:
-        """REQ-PIPE-02: Creates a recurring Task-Mode schedule (cron or interval)."""
+        """REQ-PIPE-02, REQ-PIPE-07: Creates a recurring Task-Mode schedule (cron or interval)."""
         now_ts = time.time()
         schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
         record: dict[str, Any] = {
@@ -429,6 +460,7 @@ class TaskPipelineOrchestrator:
             "target_files": list(target_files or []),
             "model": model,
             "thinking": int(thinking),
+            "use_ultra_2m": bool(use_ultra_2m),
             "max_heal_attempts": int(max_heal_attempts),
             "enabled": bool(enabled),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -487,12 +519,14 @@ class TaskPipelineOrchestrator:
         rid: str | None,
         rcid: str | None,
         is_first_turn: bool,
+        use_ultra_2m: bool = True,
     ) -> dict[str, Any]:
         """
-        REQ-PIPE-03: Executes live Gemini 4 Argon Task Mode (feature_mode=40) via
+        REQ-PIPE-03, REQ-PIPE-07: Executes live Gemini 4 Argon Task Mode (feature_mode=40) via
         CredentialVault + SessionManager + GeminiUploader + GeminiWebClient.
         """
         from backend.app.bridge.client import GeminiWebClient
+        from backend.app.bridge.gemini_capabilities import get_saved_info_manager
         from backend.app.bridge.session import SessionManager
         from backend.app.bridge.uploader import GeminiUploader
         from backend.app.storage.vault import CredentialVault
@@ -514,6 +548,8 @@ class TaskPipelineOrchestrator:
                 "rid": "r_unauth",
                 "rcid": "rc_unauth",
                 "text": "",
+                "draft_candidates": [],
+                "code_executions": [],
             }
 
         client = GeminiWebClient(
@@ -538,18 +574,24 @@ class TaskPipelineOrchestrator:
                     f"# {k}\n{v}" for k, v in list(bundle.get("ast_contracts", {}).items())[:15]
                 )
                 req_summary = ", ".join(bundle.get("req_tags", [])) or "None"
+                saved_memories = get_saved_info_manager().list_memories()
+                rules_block = "\n".join(f"- {m.get('content', '')}" for m in saved_memories if m.get("content"))
                 full_prompt = (
-                    f"[Task Mode Context Archive Attached: {bundle['zip_filename']}]\n"
+                    f"[Task Mode Context Archive Attached: {bundle['zip_filename']} | Ultra 2M={use_ultra_2m}]\n"
                     f"Required REQ-* Tags to Preserve: {req_summary}\n"
+                    f"Saved Account Engineering Rules:\n{rules_block or 'None'}\n"
                     f"AST Signature Contracts:\n```python\n{contracts_summary[:6000]}\n```\n\n"
                     f"Task Instruction:\n{prompt}\n\n"
-                    "Output modified/created files using '### File: <rel_path>' followed by a ```python code block."
+                    "Output modified/created files using '### File: <rel_path>' or targeted "
+                    "'### RangeEdit: <rel_path>:<start_line>-<end_line>' followed by a ```python code block."
                 )
 
             text_parts: list[str] = []
             out_cid = cid
             out_rid = rid
             out_rcid = rcid
+            draft_candidates: list[dict[str, Any]] = []
+            code_executions: list[dict[str, Any]] = []
             eff_model = f"{model}@thinking={thinking}@mode=task"
             async for chunk in client.generate_stream(
                 prompt=full_prompt,
@@ -568,11 +610,17 @@ class TaskPipelineOrchestrator:
                     out_rid = chunk.rid
                 if getattr(chunk, "rcid", None):
                     out_rcid = chunk.rcid
+                if getattr(chunk, "type", "") == "done" and isinstance(getattr(chunk, "metadata", None), dict):
+                    meta = chunk.metadata
+                    draft_candidates = list(meta.get("draft_candidates") or [])
+                    code_executions = list(meta.get("code_executions") or [])
             return {
                 "cid": out_cid or cid or f"c_task_{uuid.uuid4().hex[:8]}",
                 "rid": out_rid or rid or "r_live",
                 "rcid": out_rcid or rcid or "rc_live",
                 "text": "".join(text_parts),
+                "draft_candidates": draft_candidates,
+                "code_executions": code_executions,
             }
         except Exception as exc:
             logger.warning("Live Task-Mode runner error: %s", exc)
@@ -581,6 +629,8 @@ class TaskPipelineOrchestrator:
                 "rid": rid or "r_err",
                 "rcid": rcid or "rc_err",
                 "text": "",
+                "draft_candidates": [],
+                "code_executions": [],
             }
         finally:
             await client.close()
@@ -601,6 +651,7 @@ class TaskPipelineOrchestrator:
                 target_files=sched.get("target_files") or None,
                 model=sched.get("model", "gemini-4-argon"),
                 thinking=int(sched.get("thinking", 2)),
+                use_ultra_2m=bool(sched.get("use_ultra_2m", True)),
                 max_heal_attempts=int(sched.get("max_heal_attempts", 2)),
                 task_runner=task_runner,
                 schedule_id=sched["schedule_id"],
@@ -646,6 +697,7 @@ class TaskPipelineOrchestrator:
         target_files: list[str] | None = None,
         model: str = "gemini-4-argon",
         thinking: int = 2,
+        use_ultra_2m: bool = True,
         max_heal_attempts: int = 2,
         run_pytest: bool = True,
         task_runner: Callable[..., Any] | None = None,
@@ -653,16 +705,27 @@ class TaskPipelineOrchestrator:
         schedule_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        REQ-PIPE-03, REQ-PIPE-05: Executes an isolated Gemini 4 Argon Task Mode run with
-        stateful CID/RID/RCID self-healing and stages verified diffs without writing to workspace_dir.
+        REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-07: Executes an isolated Gemini 4 Argon Task Mode run with
+        stateful CID/RID/RCID self-healing, Ultra 5x profile + 2M context metadata, multi-draft selection,
+        Canvas RangeEdit patching, and stages verified diffs without writing to workspace_dir.
         """
+        from backend.app.bridge.gemini_capabilities import get_response_quality_engine
+        from backend.app.bridge.ultra_capabilities import (
+            UltraSubscriptionManager,
+            pack_ultra_2m_repository_context,
+        )
+
         root = Path(workspace_dir).resolve()
         orig_files = self._read_original_files(root, target_files)
         bundle = pack_workspace_context(root, target_files=target_files)
+        ultra_profile = UltraSubscriptionManager().detect_subscription_profile()
+        ultra_2m_meta = pack_ultra_2m_repository_context(root) if use_ultra_2m else {}
 
         cid: str | None = None
         rid: str | None = None
         rcid: str | None = None
+        selected_rcid: str | None = None
+        double_check_trust: float = 0.95
         heal_attempts = 0
         candidate_files: dict[str, str] = {}
         gates_result: dict[str, Any] = {}
@@ -680,6 +743,7 @@ class TaskPipelineOrchestrator:
             cid = "c_mock_pipeline"
             rid = "r_mock_1"
             rcid = "rc_mock_1"
+            selected_rcid = rcid
         else:
             attachments = [
                 {
@@ -687,9 +751,12 @@ class TaskPipelineOrchestrator:
                     "size_bytes": bundle["size_bytes"],
                     "ast_contracts": bundle["ast_contracts"],
                     "req_tags": bundle["req_tags"],
+                    "ultra_2m_max_tokens": ultra_2m_meta.get("max_context_tokens", 2_000_000),
+                    "ultra_2m_estimated_tokens": ultra_2m_meta.get("estimated_tokens", 0),
                 }
             ]
             current_prompt = prompt
+            q_engine = get_response_quality_engine()
             for attempt in range(max_heal_attempts + 1):
                 if task_runner is not None:
                     resp = await self._invoke_runner(
@@ -710,11 +777,28 @@ class TaskPipelineOrchestrator:
                         rid=rid,
                         rcid=rcid,
                         is_first_turn=(attempt == 0),
+                        use_ultra_2m=use_ultra_2m,
                     )
                 cid = resp.get("cid") or cid
                 rid = resp.get("rid") or rid
                 rcid = resp.get("rcid") or rcid
-                extracted = extract_code_files_from_response(str(resp.get("text", "")))
+
+                draft_cands = resp.get("draft_candidates")
+                if isinstance(draft_cands, list) and len(draft_cands) > 0:
+                    best_draft = q_engine.select_best_draft(draft_cands)
+                    effective_text = str(best_draft.get("text") or resp.get("text", ""))
+                    selected_rcid = str(best_draft.get("rcid") or rcid or "")
+                else:
+                    effective_text = str(resp.get("text", ""))
+                    selected_rcid = rcid
+
+                dc_res = await q_engine.double_check_response(text=effective_text)
+                double_check_trust = float(dc_res.get("trust_score", 0.95))
+
+                extracted = extract_code_files_from_response(
+                    effective_text,
+                    orig_files={**orig_files, **candidate_files},
+                )
                 if extracted:
                     candidate_files.update(extracted)
 
@@ -733,7 +817,8 @@ class TaskPipelineOrchestrator:
                     current_prompt = (
                         f"Self-Healing Verification Failed on Gates: {', '.join(failed_names)}.\n"
                         f"Diagnostics / Pytest Output (FAILED / AssertionError):\n{diag_block}\n\n"
-                        "Return fixed complete file(s) using '### File: <rel_path>' fenced code blocks "
+                        "Return fixed complete file(s) using '### File: <rel_path>' or targeted "
+                        "'### RangeEdit: <rel_path>:<start_line>-<end_line>' fenced code blocks "
                         "preserving 100% of REQ-* tags, signatures, and >=95% non-empty lines."
                     )
 
@@ -747,11 +832,15 @@ class TaskPipelineOrchestrator:
             "prompt": prompt,
             "model": model,
             "thinking": thinking,
+            "use_ultra_2m": bool(use_ultra_2m),
+            "ultra_profile": ultra_profile,
             "status": status_val,
             "heal_attempts": heal_attempts,
             "cid": cid,
             "rid": rid,
             "rcid": rcid,
+            "selected_rcid": selected_rcid or rcid,
+            "double_check_trust": double_check_trust,
             "gates": gates_result,
             "unified_diff": unified_diff,
             "candidate_files": candidate_files,

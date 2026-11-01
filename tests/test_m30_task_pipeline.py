@@ -359,3 +359,92 @@ def test_req_pipe_06_fastapi_endpoints_and_mcp_tool(tmp_path: Path) -> None:
     # Cleanup schedule
     del_resp = client.delete(f"/api/task-pipeline/schedules/{sched_id}")
     assert del_resp.status_code == 200
+
+
+def test_req_pipe_07_ultra_5x_pipeline_integration(tmp_path: Path) -> None:
+    """REQ-PIPE-07: Ultra 5x profile, Canvas RangeEdit patching, and multi-draft quality selection."""
+    from backend.app.bridge.task_pipeline import extract_code_files_from_response
+
+    # 1. Verify Canvas targeted RangeEdit line replacement preserves surrounding lines intact
+    orig_mod = {"src/mod.py": "line1\nline2\nline3\nline4\n"}
+    range_response = (
+        "### RangeEdit: src/mod.py:2-3\n"
+        "```python\n"
+        "updated_line2\n"
+        "updated_line3\n"
+        "```\n"
+    )
+    patched_files = extract_code_files_from_response(range_response, orig_files=orig_mod)
+    assert patched_files == {"src/mod.py": "line1\nupdated_line2\nupdated_line3\nline4\n"}
+
+    # 2. Verify schedule creation stores Ultra 5x Deep-Think & 2M parameters
+    _create_mini_project(tmp_path, initial_multiply="a * b")
+    orchestrator = TaskPipelineOrchestrator(storage_path=tmp_path / "state.json")
+    sched = orchestrator.create_schedule(
+        name="Ultra 5x Deep Think Schedule",
+        workspace_dir=str(tmp_path),
+        prompt="Verify and annotate src/calc.py",
+        model="gemini-4-argon-deep-think",
+        thinking=3,
+        use_ultra_2m=True,
+        target_files=["src/calc.py"],
+    )
+    assert sched["model"] == "gemini-4-argon-deep-think"
+    assert sched["thinking"] == 3
+    assert sched["use_ultra_2m"] is True
+
+    # 3. Verify execute_pipeline_run selects best draft candidate, applies RangeEdit, and computes trust
+    async def mock_ultra_runner(
+        prompt: str,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        cid: Optional[str] = None,
+        rid: Optional[str] = None,
+        rcid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "cid": "c_ultra_5x",
+            "rid": "r_ultra_5x",
+            "rcid": "rc_draft_truncated",
+            "text": "### File: src/calc.py\n```python\ndef add(a: int, b: int) -> int:\n    return 0\n```\n",
+            "draft_candidates": [
+                {
+                    "rcid": "rc_draft_truncated",
+                    "text": "### File: src/calc.py\n```python\ndef add(a: int, b: int) -> int:\n    return 0\n```\n",
+                    "finish_reason": "MAX_TOKENS",
+                    "citations": [],
+                },
+                {
+                    "rcid": "rc_draft_best",
+                    "text": (
+                        "Verified REQ-CALC-01 implementation against [1](https://docs.python.org/3/).\n"
+                        "### RangeEdit: src/calc.py:2-2\n"
+                        "```python\n"
+                        "# REQ-CALC-01: Ultra 5x RangeEdit verified\n"
+                        "```\n"
+                    ),
+                    "finish_reason": "STOP",
+                    "citations": [{"url": "https://docs.python.org/3/", "title": "Python Docs"}],
+                },
+            ],
+        }
+
+    run_rec = asyncio.run(
+        orchestrator.execute_pipeline_run(
+            workspace_dir=str(tmp_path),
+            prompt="Apply targeted header refinement to src/calc.py",
+            target_files=["src/calc.py"],
+            model="gemini-4-argon-deep-think",
+            thinking=3,
+            use_ultra_2m=True,
+            task_runner=mock_ultra_runner,
+            schedule_id=sched["schedule_id"],
+        )
+    )
+
+    assert run_rec["status"] == "STAGED_AWAITING_APPROVAL"
+    assert run_rec["gates"]["passed"] is True
+    assert run_rec["ultra_profile"]["tier"] == "ultra_5x"
+    assert run_rec["selected_rcid"] == "rc_draft_best"
+    assert run_rec["double_check_trust"] > 0.0
+    assert "# REQ-CALC-01: Ultra 5x RangeEdit verified" in run_rec["candidate_files"]["src/calc.py"]
+    assert "def multiply(a: int, b: int) -> int:" in run_rec["candidate_files"]["src/calc.py"]

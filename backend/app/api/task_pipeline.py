@@ -24,8 +24,9 @@ class ScheduleCreateRequest(BaseModel):
     interval_seconds: int = Field(default=3600, ge=10)
     cron_expr: str | None = None
     target_files: list[str] | None = None
-    model: str = "gemini-4-argon"
-    thinking: int = 2
+    model: str = "gemini-4-argon-deep-think"
+    thinking: int = 3
+    use_ultra_2m: bool = True
     max_heal_attempts: int = 2
     enabled: bool = True
 
@@ -42,8 +43,9 @@ class PipelineExecuteRequest(BaseModel):
     workspace_dir: str
     prompt: str
     target_files: list[str] | None = None
-    model: str = "gemini-4-argon"
-    thinking: int = 2
+    model: str = "gemini-4-argon-deep-think"
+    thinking: int = 3
+    use_ultra_2m: bool = True
     max_heal_attempts: int = 2
     run_pytest: bool = True
     mock_candidate_files: dict[str, str] | None = None
@@ -56,7 +58,7 @@ class RejectRunRequest(BaseModel):
 
 @router.post("/schedules")
 async def create_pipeline_schedule(req: ScheduleCreateRequest) -> dict[str, Any]:
-    """REQ-PIPE-02, REQ-PIPE-06: Creates a new Task-Mode schedule."""
+    """REQ-PIPE-02, REQ-PIPE-06, REQ-PIPE-07: Creates a new Task-Mode schedule."""
     orch = get_task_pipeline_orchestrator()
     return orch.create_schedule(
         name=req.name,
@@ -68,6 +70,7 @@ async def create_pipeline_schedule(req: ScheduleCreateRequest) -> dict[str, Any]
         target_files=req.target_files,
         model=req.model,
         thinking=req.thinking,
+        use_ultra_2m=req.use_ultra_2m,
         max_heal_attempts=req.max_heal_attempts,
         enabled=req.enabled,
     )
@@ -118,7 +121,7 @@ async def trigger_due_schedules_endpoint() -> dict[str, Any]:
 
 @router.post("/runs/execute")
 async def execute_pipeline_run_endpoint(req: PipelineExecuteRequest) -> dict[str, Any]:
-    """REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-06: Executes a staged Task-Mode pipeline run."""
+    """REQ-PIPE-03, REQ-PIPE-05, REQ-PIPE-06, REQ-PIPE-07: Executes a staged Task-Mode pipeline run."""
     orch = get_task_pipeline_orchestrator()
     return await orch.execute_pipeline_run(
         workspace_dir=req.workspace_dir,
@@ -126,6 +129,7 @@ async def execute_pipeline_run_endpoint(req: PipelineExecuteRequest) -> dict[str
         target_files=req.target_files,
         model=req.model,
         thinking=req.thinking,
+        use_ultra_2m=req.use_ultra_2m,
         max_heal_attempts=req.max_heal_attempts,
         run_pytest=req.run_pytest,
         mock_candidate_files=req.mock_candidate_files,
