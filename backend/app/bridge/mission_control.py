@@ -15,16 +15,15 @@ import copy
 import datetime
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
 import shutil
-import struct
 import subprocess
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any
+import contextlib
 
 _AGY_TOKEN = "anti" + "gravity"
 _AGY_SCHEME = _AGY_TOKEN + "://"
@@ -38,7 +37,7 @@ VALID_ISO9000_PHASES = (
     "RELEASE",
 )
 
-SENIOR_REVIEW_DIMENSIONS: Tuple[str, ...] = (
+SENIOR_REVIEW_DIMENSIONS: tuple[str, ...] = (
     "L1_PROMISES",
     "L2_FAILURE",
     "L3_OPERATIONS",
@@ -49,16 +48,16 @@ SENIOR_REVIEW_DIMENSIONS: Tuple[str, ...] = (
     "L8_AI_TRAPS",
 )
 
-VALID_EPISTEMIC_BASES: Tuple[str, ...] = ("fact", "inferred", "opinion")
+VALID_EPISTEMIC_BASES: tuple[str, ...] = ("fact", "inferred", "opinion")
 
-_PIPELINES_STORE: Dict[str, Dict[str, Any]] = {}
+_PIPELINES_STORE: dict[str, dict[str, Any]] = {}
 
 
-def drop_revealing_asks(tour_data: Dict[str, Any]) -> Dict[str, Any]:
+def drop_revealing_asks(tour_data: dict[str, Any]) -> dict[str, Any]:
     """Strip 'asks' array from questions and immediately preceding steps."""
     tour = copy.deepcopy(tour_data)
     steps = tour.get("steps", [])
-    indices_to_strip: Set[int] = set()
+    indices_to_strip: set[int] = set()
     for idx, step in enumerate(steps):
         if step.get("question") is True:
             indices_to_strip.add(idx)
@@ -71,14 +70,14 @@ def drop_revealing_asks(tour_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_diff_tour(
-    tour_data: Dict[str, Any], drop_revealing_asks_flag: bool = False
-) -> Dict[str, Any]:
+    tour_data: dict[str, Any], drop_revealing_asks_flag: bool = False
+) -> dict[str, Any]:
     """Validate diff-tour v1 payload against 8 review dimensions, line ranges, and epistemic basis."""
     if not isinstance(tour_data, dict):
         return {"valid": False, "errors": ["Tour must be a JSON object"], "tour": {}}
 
     tour = copy.deepcopy(tour_data)
-    errors: List[str] = []
+    errors: list[str] = []
 
     title = tour.get("title")
     if not title or not isinstance(title, str) or not title.strip():
@@ -134,7 +133,7 @@ def validate_diff_tour(
     }
 
 
-def render_diff_tour_tui(tour_data: Dict[str, Any]) -> str:
+def render_diff_tour_tui(tour_data: dict[str, Any]) -> str:
     """Render a deterministic pure-Python TUI box preview for a diff-tour v1 payload."""
     tour_exe = shutil.which("tour.exe") or shutil.which("tour")
     if tour_exe:
@@ -202,11 +201,11 @@ def render_diff_tour_tui(tour_data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _validate_sarif_210(sarif_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
+def _validate_sarif_210(sarif_data: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate OASIS SARIF 2.1.0 schema compliance."""
     if not isinstance(sarif_data, dict):
         return False, ["SARIF report must be a JSON object"]
-    errors: List[str] = []
+    errors: list[str] = []
     if sarif_data.get("version") != "2.1.0":
         errors.append(f"SARIF version must be '2.1.0' (got '{sarif_data.get('version')}')")
     runs = sarif_data.get("runs")
@@ -227,7 +226,7 @@ def _validate_sarif_210(sarif_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
 
 
 
-def _forbidden_tokens() -> List[str]:
+def _forbidden_tokens() -> list[str]:
     t1 = "Ora" + "kul"
     t2 = t1 + " " + "Grey"
     t3 = "ANTI" + "GRAVITY"
@@ -269,9 +268,9 @@ class MissionControlHub:
 
     def __init__(
         self,
-        workspace_root: Optional[Path] = None,
-        config_root: Optional[Path] = None,
-        brain_root: Optional[Path] = None,
+        workspace_root: Path | None = None,
+        config_root: Path | None = None,
+        brain_root: Path | None = None,
     ) -> None:
         self.workspace_root = Path(
             workspace_root if workspace_root is not None else _default_workspace_root()
@@ -289,10 +288,10 @@ class MissionControlHub:
     # ========================================================================
 
     def _run_slot_p10(
-        self, event_name: str, payload: Dict[str, Any], context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, event_name: str, payload: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         git_lock = self.workspace_root / ".git" / "index.lock"
-        healed: List[str] = []
+        healed: list[str] = []
         if git_lock.is_file():
             try:
                 age = time.time() - git_lock.stat().st_mtime
@@ -305,16 +304,16 @@ class MissionControlHub:
         return {"decision": "allow"}
 
     def _run_slot_p20(
-        self, event_name: str, payload: Dict[str, Any], context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, event_name: str, payload: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         text = str(payload.get("prompt") or payload.get("message") or "")
         md_links = re.findall(r"\[[^\]]+\]\((conversation://[a-zA-Z0-9_-]+)\)", text)
         context["valid_conversation_links"] = list(dict.fromkeys(md_links))
         return {"decision": "allow"}
 
     def _run_slot_p30(
-        self, event_name: str, payload: Dict[str, Any], context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, event_name: str, payload: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         if "diff_tour" in payload and payload["diff_tour"] is not None:
             val = validate_diff_tour(payload["diff_tour"])
             if not val["valid"]:
@@ -356,13 +355,13 @@ class MissionControlHub:
         return {"decision": "allow"}
 
     def _run_slot_p40(
-        self, event_name: str, payload: Dict[str, Any], context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, event_name: str, payload: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         context["plugins_checked"] = True
         return {"decision": "allow"}
 
-    def _audit_workspace_5gates(self) -> List[str]:
-        errors: List[str] = []
+    def _audit_workspace_5gates(self) -> list[str]:
+        errors: list[str] = []
         lic_file = self.workspace_root / "LICENSE"
         if not lic_file.is_file():
             errors.append("Gate 5: Missing LICENSE file at workspace root")
@@ -384,7 +383,7 @@ class MissionControlHub:
             ".monitor",
         }
         forbidden = _forbidden_tokens()
-        candidate_files: List[Path] = []
+        candidate_files: list[Path] = []
         if (self.workspace_root / ".git").exists():
             import subprocess
 
@@ -436,8 +435,8 @@ class MissionControlHub:
         return errors
 
     def _run_slot_p50(
-        self, event_name: str, payload: Dict[str, Any], context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, event_name: str, payload: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         if "sarif_report" in payload and payload["sarif_report"] is not None:
             ok, errors = _validate_sarif_210(payload["sarif_report"])
             if not ok:
@@ -465,13 +464,13 @@ class MissionControlHub:
     def dispatch_bus_event(
         self,
         event_name: str,
-        payload: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Dispatch an event through P10..P50 in ascending priority order."""
         pl = dict(payload or {})
-        context: Dict[str, Any] = {}
-        executed_slots: List[str] = []
-        slot_timings_ms: Dict[str, float] = {}
+        context: dict[str, Any] = {}
+        executed_slots: list[str] = []
+        slot_timings_ms: dict[str, float] = {}
 
         if self._active_depth > 0 or bool(pl.get("_golden_bus_active")):
             return {
@@ -539,10 +538,10 @@ class MissionControlHub:
         finally:
             self._active_depth -= 1
 
-    def benchmark_bus(self, iterations: int = 25) -> Dict[str, Any]:
+    def benchmark_bus(self, iterations: int = 25) -> dict[str, Any]:
         """Benchmark P10..P50 in-memory dispatch latency."""
         iters = max(1, min(500, int(iterations)))
-        durations: List[float] = []
+        durations: list[float] = []
         for _ in range(iters):
             res = self.dispatch_bus_event(
                 "PreToolUse",
@@ -566,7 +565,7 @@ class MissionControlHub:
     # 2. L2 Plugin Discovery, Context-Compaction & Live Toggle
     # ========================================================================
 
-    def _read_config_json(self) -> Dict[str, Any]:
+    def _read_config_json(self) -> dict[str, Any]:
         cfg_file = self.config_root / "config.json"
         if not cfg_file.is_file():
             return {}
@@ -576,7 +575,7 @@ class MissionControlHub:
         except Exception:
             return {}
 
-    def _write_config_json_atomic(self, data: Dict[str, Any]) -> None:
+    def _write_config_json_atomic(self, data: dict[str, Any]) -> None:
         self.config_root.mkdir(parents=True, exist_ok=True)
         cfg_file = self.config_root / "config.json"
         raw = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -589,17 +588,15 @@ class MissionControlHub:
             os.replace(tmp_name, cfg_file)
         finally:
             if os.path.exists(tmp_name):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_name)
-                except OSError:
-                    pass
 
-    def list_plugins(self) -> List[Dict[str, Any]]:
+    def list_plugins(self) -> list[dict[str, Any]]:
         """Return context-compacted inventory of installed plugins."""
         cfg = self._read_config_json()
         plugins_cfg = (cfg.get("plugins") or {}) if isinstance(cfg, dict) else {}
         plugins_root = self.config_root / "plugins"
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
 
         if plugins_root.is_dir():
             for pdir in sorted(plugins_root.iterdir(), key=lambda p: p.name):
@@ -633,20 +630,20 @@ class MissionControlHub:
                     elif "enabled" in entry:
                         disabled = not bool(entry["enabled"])
 
-                skills: List[str] = []
+                skills: list[str] = []
                 skills_dir = pdir / "skills"
                 if skills_dir.is_dir():
                     for sdir in sorted(skills_dir.iterdir(), key=lambda p: p.name):
                         if sdir.is_dir() and (sdir / "SKILL.md").is_file():
                             skills.append(sdir.name)
 
-                agents: List[str] = []
+                agents: list[str] = []
                 agents_dir = pdir / "agents"
                 if agents_dir.is_dir():
                     for afile in sorted(agents_dir.glob("*.md"), key=lambda p: p.name):
                         agents.append(afile.stem)
 
-                rules: List[str] = []
+                rules: list[str] = []
                 rules_dir = pdir / "rules"
                 if rules_dir.is_dir():
                     for rfile in sorted(rules_dir.glob("*.md"), key=lambda p: p.name):
@@ -656,14 +653,14 @@ class MissionControlHub:
                     pdir / "hooks" / "hooks.json"
                 ).is_file()
 
-                mcp_names: List[str] = []
+                mcp_names: list[str] = []
                 mcp_file = pdir / "mcp_config.json"
                 if mcp_file.is_file():
                     try:
                         mdata = json.loads(mcp_file.read_text(encoding="utf-8"))
                         smap = (mdata or {}).get("mcpServers") or {}
                         if isinstance(smap, dict):
-                            mcp_names.extend(str(k) for k in smap.keys())
+                            mcp_names.extend(str(k) for k in smap)
                     except Exception:
                         pass
 
@@ -700,7 +697,7 @@ class MissionControlHub:
             )
         return items
 
-    def toggle_plugin(self, target: str, enabled: bool) -> Dict[str, Any]:
+    def toggle_plugin(self, target: str, enabled: bool) -> dict[str, Any]:
         """Toggle a plugin's enabled state keyed by its true install `dir`."""
         clean = (target or "").strip()
         if not clean:
@@ -751,8 +748,8 @@ class MissionControlHub:
         pipeline_id: str,
         target_phase: str,
         baseline_id: str = "BL-001",
-        locked_test_hashes: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
+        locked_test_hashes: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Advance an ISO 9001 Agile V pipeline run across SPEC..RELEASE with SHA-256 verification."""
         clean_id = (pipeline_id or "").strip()
         if not clean_id:
@@ -776,7 +773,7 @@ class MissionControlHub:
 
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         seal_digest = hashlib.sha256(
-            f"{clean_id}|{phase}|{baseline_id}|{now_iso}".encode("utf-8")
+            f"{clean_id}|{phase}|{baseline_id}|{now_iso}".encode()
         ).hexdigest()[:16]
 
         record = {
@@ -791,7 +788,7 @@ class MissionControlHub:
         _PIPELINES_STORE[clean_id] = record
         return record
 
-    def list_pipelines(self) -> List[Dict[str, Any]]:
+    def list_pipelines(self) -> list[dict[str, Any]]:
         if not _PIPELINES_STORE:
             return [
                 {
@@ -816,16 +813,16 @@ class MissionControlHub:
         self,
         query: str = "",
         limit: int = 20,
-        dimension: Optional[str] = None,
-        severity: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        dimension: str | None = None,
+        severity: str | None = None,
+    ) -> dict[str, Any]:
         """Search across brain conversation folders, handoffs, diff-tours, and CAPA records."""
         q = (query or "").strip().lower()
         max_items = max(1, min(100, int(limit)))
-        results: List[Dict[str, Any]] = []
-        child_reports: List[Dict[str, Any]] = []
-        diff_tours: List[Dict[str, Any]] = []
-        capa_records: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
+        child_reports: list[dict[str, Any]] = []
+        diff_tours: list[dict[str, Any]] = []
+        capa_records: list[dict[str, Any]] = []
 
         dim_filter = dimension.upper() if dimension else None
         sev_filter = severity.upper() if severity else None
@@ -923,7 +920,7 @@ class MissionControlHub:
                             pass
 
                 # Gather markdown artifacts in conv_dir
-                snippet_texts: List[str] = []
+                snippet_texts: list[str] = []
                 for md_file in sorted(conv_dir.glob("*.md"))[:5]:
                     try:
                         txt = md_file.read_text(encoding="utf-8", errors="ignore").strip()
@@ -954,7 +951,7 @@ class MissionControlHub:
             "capa_records": capa_records,
         }
 
-    def get_overview(self) -> Dict[str, Any]:
+    def get_overview(self) -> dict[str, Any]:
         """Return complete 5-Tier Architecture & Mission Control overview."""
         plugins = self.list_plugins()
         brain = self.search_brain_memory(query="", limit=10)
@@ -1009,12 +1006,12 @@ class MissionControlHub:
     def generate_diff_tour(
         self,
         title: str = "Senior Engineer Architecture Tour",
-        target_file: Optional[str] = None,
-        dimensions: Optional[List[str]] = None,
+        target_file: str | None = None,
+        dimensions: list[str] | None = None,
         drop_revealing_asks_flag: bool = False,
         base: str = "HEAD",
         head: str = "HEAD",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate a valid diff-tour v1 payload anchored in real workspace files."""
         dims = [d for d in (dimensions or SENIOR_REVIEW_DIMENSIONS) if d in SENIOR_REVIEW_DIMENSIONS]
         if not dims:
@@ -1028,7 +1025,7 @@ class MissionControlHub:
             if py_files:
                 candidate_rel = str(py_files[0].relative_to(self.workspace_root)).replace("\\", "/")
 
-        meta_map: Dict[str, Dict[str, Any]] = {
+        meta_map: dict[str, dict[str, Any]] = {
             "L1_PROMISES": {
                 "basis": "fact",
                 "desc": "Verified API route contracts and endpoint specification invariants",
@@ -1079,7 +1076,7 @@ class MissionControlHub:
             },
         }
 
-        steps: List[Dict[str, Any]] = []
+        steps: list[dict[str, Any]] = []
         for i, dim in enumerate(dims):
             m = meta_map.get(dim, {"basis": "fact", "desc": f"Review {dim}", "question": False, "asks": []})
             start_l = 1 + (i * 12)
@@ -1095,7 +1092,7 @@ class MissionControlHub:
                 "asks": list(m["asks"]),
             })
 
-        tour: Dict[str, Any] = {
+        tour: dict[str, Any] = {
             "version": 1,
             "title": title,
             "base": base,
@@ -1120,8 +1117,8 @@ class MissionControlHub:
         }
 
     def validate_diff_tour_payload(
-        self, tour: Dict[str, Any], drop_revealing_asks_flag: bool = False
-    ) -> Dict[str, Any]:
+        self, tour: dict[str, Any], drop_revealing_asks_flag: bool = False
+    ) -> dict[str, Any]:
         """Validate diff-tour v1 payload and attach deterministic TUI preview."""
         val = validate_diff_tour(tour, drop_revealing_asks_flag=drop_revealing_asks_flag)
         tui = render_diff_tour_tui(val["tour"] if val["valid"] else tour)
@@ -1139,12 +1136,12 @@ class MissionControlHub:
 
     def detect_plugin_drift(
         self, baseline_version: str = "1.1.0"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Detect plugin manifest version drift against baseline version (default 1.1.0)."""
         plugins_dir = self.config_root / "plugins"
-        drifted: List[Dict[str, Any]] = []
-        synced: List[Dict[str, Any]] = []
-        all_plugins: List[Dict[str, Any]] = []
+        drifted: list[dict[str, Any]] = []
+        synced: list[dict[str, Any]] = []
+        all_plugins: list[dict[str, Any]] = []
 
         if plugins_dir.is_dir():
             for pdir in sorted(plugins_dir.iterdir()):
@@ -1194,12 +1191,12 @@ class MissionControlHub:
         }
 
     def reconcile_plugins(
-        self, target_version: str = "1.1.0", plugins: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        self, target_version: str = "1.1.0", plugins: list[str] | None = None
+    ) -> dict[str, Any]:
         """Atomically reconcile drifted plugin manifests to target version preserving custom fields."""
         drift_report = self.detect_plugin_drift(baseline_version=target_version)
         target_set = set(plugins) if plugins else None
-        reconciled: List[str] = []
+        reconciled: list[str] = []
 
         for p_info in drift_report["plugins"]:
             p_name = p_info["name"]
@@ -1237,10 +1234,8 @@ class MissionControlHub:
                 reconciled.append(p_name)
             except Exception:
                 if "tmp_name" in locals() and os.path.exists(tmp_name):
-                    try:
+                    with contextlib.suppress(OSError):
                         os.unlink(tmp_name)
-                    except OSError:
-                        pass
 
         return {
             "ok": True,
@@ -1253,7 +1248,7 @@ class MissionControlHub:
     # 7. Station Analyzers & L5 Topological Wave DAG (R2)
     # ========================================================================
 
-    def run_secret_shield(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def run_secret_shield(self, req: dict[str, Any]) -> dict[str, Any]:
         """L4 Station: Secret Shield v1.1.0 scanner, OASIS SARIF 2.1.0 exporter, and DPAPI rotator."""
         rotate_envelopes = req.get("rotate_envelopes")
         rotated = []
@@ -1401,7 +1396,7 @@ class MissionControlHub:
             "certificate_sha256": cert_hash,
         }
 
-    def run_pe_lab(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def run_pe_lab(self, req: dict[str, Any]) -> dict[str, Any]:
         """L4 Station: PE Reversing Lab v1.1.0 PE32+ static triage and YARA rule generator."""
         target_path = req.get("target_path")
         raw_b64 = req.get("raw_base64")
@@ -1479,14 +1474,14 @@ class MissionControlHub:
                 "architecture": "x86_64",
             }
 
-    def run_eskd_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def run_eskd_inspect(self, req: dict[str, Any]) -> dict[str, Any]:
         """L4 Station: ESKD Vision Station v1.1.0 optical normocontrol and GOST geometry verification."""
         sheet_format = req.get("sheet_format", "A4").upper()
-        stamp_type = req.get("stamp_type", "stamp_form1")
-        annotations = req.get("annotations")
-        line_segments = req.get("line_segments")
-        target_dpi = float(req.get("target_dpi", 300.0))
-        tolerance_mm = float(req.get("tolerance_mm", 1.0))
+        req.get("stamp_type", "stamp_form1")
+        req.get("annotations")
+        req.get("line_segments")
+        float(req.get("target_dpi", 300.0))
+        float(req.get("tolerance_mm", 1.0))
         sheets = req.get("sheets")
 
         if sheets and isinstance(sheets, list):
@@ -1502,11 +1497,11 @@ class MissionControlHub:
             except Exception:
                 pass
 
-    def run_eskd_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def run_eskd_inspect(self, req: dict[str, Any]) -> dict[str, Any]:
         """L4 Station: ESKD Vision Station v1.1.0 optical normocontrol and GOST geometry verification."""
         sheet_format = req.get("sheet_format", "A4").upper()
-        stamp_type = req.get("stamp_type", "stamp_form1")
-        annotations = req.get("annotations")
+        req.get("stamp_type", "stamp_form1")
+        req.get("annotations")
         line_segments = req.get("line_segments")
         target_dpi = float(req.get("target_dpi", 300.0))
         tolerance_mm = float(req.get("tolerance_mm", 1.0))
@@ -1621,7 +1616,7 @@ class MissionControlHub:
                 },
             }
 
-    def run_federation_waves(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def run_federation_waves(self, req: dict[str, Any]) -> dict[str, Any]:
         """L5 Station: Topological Wave Parallelism DAG execution with circuit-breaker fault halting."""
         wf_name = req.get("workflow_name", "cross_station_audit_dag")
         raw_tasks = req.get("tasks", [])
@@ -1641,14 +1636,14 @@ class MissionControlHub:
                 if dep not in task_map:
                     raise ValueError(f"Task '{tid}' depends on unknown task '{dep}'")
 
-        in_degree = {tid: 0 for tid in task_map}
+        in_degree = dict.fromkeys(task_map, 0)
         adj = {tid: [] for tid in task_map}
         for tid, t in task_map.items():
             for dep in t.get("depends_on", []):
                 adj[dep].append(tid)
                 in_degree[tid] += 1
 
-        waves: List[List[str]] = []
+        waves: list[list[str]] = []
         current_wave = [tid for tid, deg in in_degree.items() if deg == 0]
         visited_count = 0
 
@@ -1666,8 +1661,8 @@ class MissionControlHub:
         if visited_count < len(task_map):
             raise ValueError("Cyclic dependency detected in task graph")
 
-        results: Dict[str, Any] = {}
-        prov_trace: List[Dict[str, Any]] = []
+        results: dict[str, Any] = {}
+        prov_trace: list[dict[str, Any]] = []
         failed_wave = False
         error_msg = None
 
@@ -1684,7 +1679,7 @@ class MissionControlHub:
                 try:
                     if payload.get("should_fail"):
                         raise RuntimeError(f"Simulated station fault in task '{tid}'")
-                    elif st_id == "agy-secret-shield":
+                    if st_id == "agy-secret-shield":
                         t_res = self.run_secret_shield(payload)
                     elif st_id == "pe-reversing-lab":
                         t_res = self.run_pe_lab(payload)
