@@ -411,6 +411,42 @@ class MCPServer:
             "handler": self._call_gemini_background_batch,
         }
 
+        self._tools["gemini_task_pipeline"] = {
+            "name": "gemini_task_pipeline",
+            "description": "REQ-PIPE-06: Orchestrate Gemini 4 Argon Task Mode schedules, stateful self-healing runs, 5-gate verification, and stage-only human approval.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "create_schedule",
+                            "list_schedules",
+                            "delete_schedule",
+                            "run_now",
+                            "list_runs",
+                            "get_run",
+                            "approve",
+                            "reject",
+                            "sync_cloud",
+                        ],
+                        "default": "list_schedules",
+                        "description": "Pipeline action to execute.",
+                    },
+                    "schedule_id": {"type": "string"},
+                    "run_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "workspace_dir": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "interval_seconds": {"type": "integer", "default": 3600},
+                    "target_files": {"type": "array", "items": {"type": "string"}},
+                    "reason": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+            "handler": self._call_gemini_task_pipeline,
+        }
+
 
     async def handle_message(
         self,
@@ -1350,5 +1386,54 @@ class MCPServer:
                 return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
         except Exception as e:
             return ([{"type": "text", "text": f"Error in gemini_background_batch: {str(e)}"}], True)
+
+    async def _call_gemini_task_pipeline(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient],
+        notebooklm_client: Optional[NotebookLMClient],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """REQ-PIPE-06: Executes Task-Mode pipeline orchestration actions via MCP."""
+        from backend.app.bridge.task_pipeline import get_task_pipeline_orchestrator
+
+        orch = get_task_pipeline_orchestrator()
+        action = str(params.get("action") or "list_schedules").strip().lower()
+        try:
+            if action == "list_schedules":
+                res: Any = {"ok": True, "schedules": orch.list_schedules()}
+            elif action == "create_schedule":
+                res = orch.create_schedule(
+                    name=str(params.get("name") or "Scheduled Task"),
+                    workspace_dir=str(params.get("workspace_dir") or "."),
+                    prompt=str(params.get("prompt") or ""),
+                    interval_seconds=int(params.get("interval_seconds", 3600)),
+                    target_files=params.get("target_files"),
+                )
+            elif action == "delete_schedule":
+                sid = str(params.get("schedule_id") or "")
+                res = {"ok": True, "deleted": orch.delete_schedule(sid), "schedule_id": sid}
+            elif action == "list_runs":
+                res = {"ok": True, "runs": orch.list_runs()}
+            elif action == "get_run":
+                rid = str(params.get("run_id") or "")
+                res = orch.get_run(rid) or {"error": f"Run '{rid}' not found"}
+            elif action == "run_now":
+                res = await orch.execute_pipeline_run(
+                    workspace_dir=str(params.get("workspace_dir") or "."),
+                    prompt=str(params.get("prompt") or ""),
+                    target_files=params.get("target_files"),
+                    run_pytest=bool(params.get("run_pytest", False)),
+                )
+            elif action == "approve":
+                res = orch.approve_run(str(params.get("run_id") or ""))
+            elif action == "reject":
+                res = orch.reject_run(str(params.get("run_id") or ""), reason=str(params.get("reason") or ""))
+            elif action == "sync_cloud":
+                res = await orch.sync_cloud_scheduled_actions(client=client)
+            else:
+                return ([{"type": "text", "text": f"Unsupported action '{action}'"}], True)
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as exc:
+            return ([{"type": "text", "text": f"Error in gemini_task_pipeline: {exc}"}], True)
 
 
