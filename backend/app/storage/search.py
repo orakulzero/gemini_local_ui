@@ -11,7 +11,6 @@ from collections import OrderedDict
 import logging
 import re
 import time
-from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.storage.database import Database
@@ -76,8 +75,8 @@ class SearchEngine:
         self.cache_size = cache_size
         self.cache_ttl = cache_ttl
         self._generation: int = 0
-        self._cache: OrderedDict[str, Tuple[float, List[SearchResult]]] = OrderedDict()
-        self._inflight: Dict[str, asyncio.Future] = {}
+        self._cache: OrderedDict[str, tuple[float, list[SearchResult]]] = OrderedDict()
+        self._inflight: dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
 
         # Subscribe to database mutation events for zero-lag cache invalidation
@@ -94,8 +93,8 @@ class SearchEngine:
         query: str,
         limit: int = 20,
         offset: int = 0,
-        conversation_id: Optional[str] = None,
-    ) -> List[SearchResult]:
+        conversation_id: str | None = None,
+    ) -> list[SearchResult]:
         """
         Searches chat history across content and thinking reasoning traces.
         Coalesces concurrent identical in-flight queries and serves cached results when valid.
@@ -113,8 +112,7 @@ class SearchEngine:
                 if time.time() - ts <= self.cache_ttl:
                     self._cache.move_to_end(cache_key)
                     return cached_res
-                else:
-                    del self._cache[cache_key]
+                del self._cache[cache_key]
 
             if cache_key in self._inflight:
                 # Another coroutine is already executing this exact query; await its result
@@ -161,7 +159,7 @@ class SearchEngine:
 
         try:
             rows = await self.db.fetch_all(sql, params)
-            results: List[SearchResult] = []
+            results: list[SearchResult] = []
             for r in rows:
                 content_snip = r.get("content_snippet") or ""
                 thoughts_snip = r.get("thoughts_snippet") or ""
