@@ -171,25 +171,100 @@ class EcosystemIntelligenceScout:
             active_lanes = list(self.SUPPORTED_LANES)
 
         synthesis_notes = ""
+        live_discovered: list[dict[str, Any]] = []
+        existing_titles = {str(f.get("title", "")).strip() for f in self._state["findings"].values()}
         if client is not None and hasattr(client, "generate_stream"):
+            known_str = ", ".join(sorted(existing_titles)[:15]) or "None"
             prompt = (
                 f"Perform an Ecosystem Intelligence Sweep across lanes {active_lanes}. "
-                f"Focus query: {focus_query or 'Antigravity ecosystem optimization'}."
+                f"Focus query: {focus_query or 'Antigravity Next-Gen Agentic IDE & Multi-Repo Tooling'}.\n"
+                f"Do NOT repeat these already-implemented findings: {known_str}.\n"
+                "Output a valid ```json code block containing a JSON array of 4 to 8 NEW findings, where each object has keys:\n"
+                '{"lane": "repo_solutions|cross_ide_skills|forum_pain_points|emerging_tech", '
+                '"title": "...", "source_url": "https://...", '
+                '"target_agy_repo": "gemini_local_ui|agy-golden-stack|agy-doctor-mux|agy-brain-memory|agy-federation-mesh|agy-computer-use|eskd-vision-station|pe-reversing-lab|agy-lsrpc-bridge|agy-secret-shield|iso9000-agentops", '
+                '"summary": "...", "integration_proposal": "...", '
+                '"impact_score": 9.3, "feasibility_score": 9.1, '
+                '"skill_name": "optional-kebab-skill-name-for-cross_ide_skills", '
+                '"source_ide": "cursor|windsurf|claude|aider|zed"}\n'
+                "Keep 100% English-only text."
             )
             parts: list[str] = []
-            async for chunk in client.generate_stream(prompt=prompt, model="gemini-4-argon"):
-                if getattr(chunk, "type", "") == "text" and getattr(chunk, "delta", ""):
-                    parts.append(str(chunk.delta))
+            try:
+                async for chunk in client.generate_stream(prompt=prompt, model="gemini-3.8-flash"):
+                    piece = getattr(chunk, "text_delta", "") or getattr(chunk, "delta", "")
+                    if piece and getattr(chunk, "type", "text") in ("text", "delta", ""):
+                        parts.append(str(piece))
+                    if getattr(chunk, "type", "") == "done":
+                        break
+            except Exception as sweep_err:
+                if not parts:
+                    logger.warning("Live scout stream warning: %s", sweep_err)
             synthesis_notes = "".join(parts).strip()
+            json_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", synthesis_notes, re.DOTALL)
+            raw_json = json_match.group(1) if json_match else (
+                synthesis_notes if synthesis_notes.startswith("[") else ""
+            )
+            if raw_json:
+                try:
+                    parsed_items = json.loads(raw_json)
+                    if isinstance(parsed_items, list):
+                        for item in parsed_items:
+                            if isinstance(item, dict) and item.get("title") and item.get("lane") in active_lanes:
+                                live_discovered.append(item)
+                except Exception as parse_err:
+                    logger.debug("Scout JSON parse fallback: %s", parse_err)
 
         sweep_id = f"swp_{uuid.uuid4().hex[:10]}"
         now_iso = datetime.now(timezone.utc).isoformat()
         findings_out: list[dict[str, Any]] = []
         lane_counts: dict[str, int] = {ln: 0 for ln in active_lanes}
 
+        for item in live_discovered:
+            lane = str(item.get("lane", "repo_solutions"))
+            if lane not in active_lanes:
+                continue
+            title_str = CYRILLIC_RE.sub("", str(item.get("title", ""))).strip()
+            if not title_str or title_str in existing_titles:
+                continue
+            existing_titles.add(title_str)
+            fid = f"fnd_{uuid.uuid4().hex[:10]}"
+            impact = float(item.get("impact_score", 9.0))
+            feasibility = float(item.get("feasibility_score", 8.8))
+            priority = round(impact * 0.6 + feasibility * 0.4, 2)
+            finding = {
+                "finding_id": fid,
+                "sweep_id": sweep_id,
+                "lane": lane,
+                "title": title_str,
+                "source_url": str(item.get("source_url", "https://github.com")),
+                "target_agy_repo": str(item.get("target_agy_repo", "gemini_local_ui")),
+                "summary": CYRILLIC_RE.sub("", str(item.get("summary", ""))).strip(),
+                "integration_proposal": CYRILLIC_RE.sub("", str(item.get("integration_proposal", ""))).strip(),
+                "impact_score": impact,
+                "feasibility_score": feasibility,
+                "priority_score": float(priority),
+                "status": "DISCOVERED",
+                "created_at": now_iso,
+            }
+            self._state["findings"][fid] = finding
+            findings_out.append(finding)
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+            if lane == "cross_ide_skills" or item.get("skill_name"):
+                sk_name = str(item.get("skill_name") or re.sub(r"[^a-z0-9]+", "-", title_str.lower()).strip("-"))[:42]
+                src_ide = str(item.get("source_ide", "cursor"))
+                self.adapt_skill_to_antigravity(
+                    source_ide=src_ide,
+                    skill_name=sk_name,
+                    raw_content=f"{finding['summary']}\n\n- {finding['integration_proposal']}",
+                    target_plugin=finding["target_agy_repo"],
+                )
+
         for lane in active_lanes:
             templates = LANE_TEMPLATES.get(lane, [])
             for tpl in templates:
+                if live_discovered and str(tpl["title"]) in existing_titles:
+                    continue
                 fid = f"fnd_{uuid.uuid4().hex[:10]}"
                 impact = float(tpl["impact_score"])
                 feasibility = float(tpl["feasibility_score"])
