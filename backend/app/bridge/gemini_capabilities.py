@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 from urllib.parse import urlparse
 import uuid
 
@@ -29,7 +29,7 @@ _URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
 _NUMBERED_LINE_RE = re.compile(r"^\s*(?:\d+[\.\)]|[-*])\s+(.+)$")
 
 
-def _get_live_client_if_available() -> Optional[Any]:
+def _get_live_client_if_available() -> Any | None:
     """Attempts to build a GeminiWebClient from main.session_manager if authenticated."""
     try:
         from backend.app import main as _main
@@ -43,13 +43,13 @@ def _get_live_client_if_available() -> Optional[Any]:
     return None
 
 
-def _exec_local_python_fallback(code: str) -> Dict[str, str]:
+def _exec_local_python_fallback(code: str) -> dict[str, str]:
     """Executes deterministic Python snippet in an isolated buffer when cloud stream is offline."""
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     outcome = "OUTCOME_OK"
     try:
-        safe_globals: Dict[str, Any] = {"__builtins__": __builtins__}
+        safe_globals: dict[str, Any] = {"__builtins__": __builtins__}
         with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
             exec(code, safe_globals, {})
     except Exception as exc:
@@ -64,12 +64,12 @@ def _exec_local_python_fallback(code: str) -> Dict[str, str]:
 
 async def run_cloud_python_sandbox(
     code: str,
-    prompt: Optional[str] = None,
-    client: Optional[Any] = None,
-    cid: Optional[str] = None,
-    rid: Optional[str] = None,
-    rcid: Optional[str] = None,
-) -> Dict[str, Any]:
+    prompt: str | None = None,
+    client: Any | None = None,
+    cid: str | None = None,
+    rid: str | None = None,
+    rcid: str | None = None,
+) -> dict[str, Any]:
     """
     REQ-CAP-01: Dispatches Python code execution to Gemini's Cloud Python Sandbox
     and extracts structured stdout, stderr, and outcome metadata.
@@ -143,21 +143,21 @@ class CanvasSessionManager:
     """
 
     def __init__(self) -> None:
-        self._documents: Dict[str, Dict[str, Any]] = {}
+        self._documents: dict[str, dict[str, Any]] = {}
 
     def create_document(
         self,
         filename: str,
         content: str,
-        cid: Optional[str] = None,
-        rid: Optional[str] = None,
-        rcid: Optional[str] = None,
+        cid: str | None = None,
+        rid: str | None = None,
+        rcid: str | None = None,
         language: str = "python",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-CAP-02: Creates a new versioned Canvas document."""
         doc_id = f"canvas_{uuid.uuid4().hex[:10]}"
         now_ts = time.time()
-        doc: Dict[str, Any] = {
+        doc: dict[str, Any] = {
             "doc_id": doc_id,
             "filename": filename,
             "content": content,
@@ -173,12 +173,12 @@ class CanvasSessionManager:
         self._documents[doc_id] = doc
         return dict(doc)
 
-    def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
+    def get_document(self, doc_id: str) -> dict[str, Any] | None:
         """REQ-CAP-02: Retrieves a Canvas document by doc_id."""
         doc = self._documents.get(doc_id)
         return dict(doc) if doc is not None else None
 
-    def list_documents(self) -> List[Dict[str, Any]]:
+    def list_documents(self) -> list[dict[str, Any]]:
         """REQ-CAP-02: Lists all active Canvas documents."""
         return [dict(d) for d in self._documents.values()]
 
@@ -188,8 +188,8 @@ class CanvasSessionManager:
         start_line: int,
         end_line: int,
         replacement_content: str,
-        instruction: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        instruction: str | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-02: Applies a 1-indexed inclusive line-range replacement and increments version."""
         if doc_id not in self._documents:
             raise KeyError(f"Canvas document '{doc_id}' not found")
@@ -230,9 +230,9 @@ class DeepResearchEngine:
     """
 
     def __init__(self) -> None:
-        self._plans: Dict[str, Dict[str, Any]] = {}
+        self._plans: dict[str, dict[str, Any]] = {}
 
-    def get_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+    def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         """REQ-CAP-03: Returns a stored research plan or completed report by plan_id."""
         p = self._plans.get(plan_id)
         return dict(p) if p is not None else None
@@ -240,8 +240,8 @@ class DeepResearchEngine:
     async def generate_research_plan(
         self,
         topic: str,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-03: Phase 1 - Generates a multi-point Deep Research plan for a topic."""
         owned_client = False
         if client is None:
@@ -260,7 +260,7 @@ class DeepResearchEngine:
                     f"Create a structured Deep Research plan for the topic: {topic}\n"
                     "List 3 to 5 numbered research sub-questions."
                 )
-                parts: List[str] = []
+                parts: list[str] = []
                 async for chunk in client.generate_stream(prompt=prompt, model="gemini-4-argon"):
                     if chunk.type == "text":
                         parts.append(chunk.delta)
@@ -278,7 +278,7 @@ class DeepResearchEngine:
                 if owned_client and hasattr(client, "close"):
                     await client.close()
 
-        sub_questions: List[str] = []
+        sub_questions: list[str] = []
         for line in raw_text.splitlines():
             m = _NUMBERED_LINE_RE.match(line)
             if m:
@@ -290,7 +290,7 @@ class DeepResearchEngine:
                 f"Recent peer-reviewed standards and reference implementations of {topic}",
             ]
 
-        plan: Dict[str, Any] = {
+        plan: dict[str, Any] = {
             "plan_id": plan_id,
             "topic": topic,
             "sub_questions": sub_questions,
@@ -309,8 +309,8 @@ class DeepResearchEngine:
     async def execute_research_plan(
         self,
         plan_id: str,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-03: Phase 2 - Approves and executes a Deep Research plan with grounded citations."""
         if plan_id not in self._plans:
             raise KeyError(f"Research plan '{plan_id}' not found")
@@ -322,8 +322,8 @@ class DeepResearchEngine:
             owned_client = client is not None
 
         report_md = ""
-        citations: List[Dict[str, Any]] = []
-        grounding_sources: List[Dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
+        grounding_sources: list[dict[str, Any]] = []
 
         if client is not None:
             try:
@@ -332,7 +332,7 @@ class DeepResearchEngine:
                     f"Approve and execute the Deep Research plan for '{plan['topic']}':\n"
                     f"{questions_block}\n\nSynthesize a comprehensive report with grounded citations."
                 )
-                text_parts: List[str] = []
+                text_parts: list[str] = []
                 async for chunk in client.generate_stream(
                     prompt=exec_prompt,
                     model="gemini-4-argon",
@@ -385,8 +385,8 @@ class DeepResearchEngine:
         self,
         topic: str,
         auto_approve: bool = True,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-03: Runs Phase 1 plan generation and optionally auto-executes Phase 2."""
         plan = await self.generate_research_plan(topic=topic, client=client)
         if auto_approve:
@@ -399,9 +399,9 @@ class SavedInfoManager:
     REQ-CAP-04: Saved Info (Long-Term Account Memory) CRUD & Local Markdown Rules Synchronizer.
     """
 
-    def __init__(self, storage_path: Optional[Union[Path, str]] = None) -> None:
+    def __init__(self, storage_path: Path | str | None = None) -> None:
         self._storage_path = Path(storage_path) if storage_path else None
-        self._memories: Dict[str, Dict[str, Any]] = {}
+        self._memories: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -430,8 +430,8 @@ class SavedInfoManager:
         self,
         content: str,
         category: str = "engineering_rule",
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-04: Adds or deduplicates a long-term account memory rule."""
         clean = content.strip()
         for existing in self._memories.values():
@@ -439,7 +439,7 @@ class SavedInfoManager:
                 return dict(existing)
 
         mem_id = f"mem_{uuid.uuid4().hex[:10]}"
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "memory_id": mem_id,
             "content": clean,
             "category": category,
@@ -450,11 +450,11 @@ class SavedInfoManager:
         self._save()
         return dict(entry)
 
-    def list_memories(self) -> List[Dict[str, Any]]:
+    def list_memories(self) -> list[dict[str, Any]]:
         """REQ-CAP-04: Lists all stored long-term account memories."""
         return [dict(m) for m in self._memories.values()]
 
-    def delete_memory(self, memory_id: str, client: Optional[Any] = None) -> bool:
+    def delete_memory(self, memory_id: str, client: Any | None = None) -> bool:
         """REQ-CAP-04: Deletes a long-term memory entry by ID."""
         if memory_id in self._memories:
             del self._memories[memory_id]
@@ -464,10 +464,10 @@ class SavedInfoManager:
 
     def sync_rules_file(
         self,
-        file_path: Union[Path, str],
+        file_path: Path | str,
         category: str = "engineering_rule",
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-04: Parses bullet rules from a Markdown file and syncs deduplicated entries."""
         p = Path(file_path)
         if not p.exists():
@@ -496,9 +496,9 @@ class CloudScheduleRPCManager:
     REQ-CAP-05: Native Cloud Scheduled Actions CRUD Manager wrapping Google RPCs MaZiqc & hNvQHb.
     """
 
-    def __init__(self, storage_path: Optional[Union[Path, str]] = None) -> None:
+    def __init__(self, storage_path: Path | str | None = None) -> None:
         self._storage_path = Path(storage_path) if storage_path else None
-        self._schedules: Dict[str, Dict[str, Any]] = {}
+        self._schedules: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -529,11 +529,11 @@ class CloudScheduleRPCManager:
         prompt: str,
         cron_expr: str,
         timezone: str = "UTC",
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-05: Creates a native cloud scheduled action (RPC MaZiqc / hNvQHb)."""
         sched_id = f"csched_{uuid.uuid4().hex[:10]}"
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "schedule_id": sched_id,
             "name": name,
             "prompt": prompt,
@@ -551,8 +551,8 @@ class CloudScheduleRPCManager:
         self,
         schedule_id: str,
         paused: bool = True,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-05: Pauses or resumes a cloud scheduled action."""
         if schedule_id not in self._schedules:
             raise KeyError(f"Cloud schedule '{schedule_id}' not found")
@@ -561,11 +561,11 @@ class CloudScheduleRPCManager:
         self._save()
         return dict(self._schedules[schedule_id])
 
-    def list_cloud_schedules(self, client: Optional[Any] = None) -> List[Dict[str, Any]]:
+    def list_cloud_schedules(self, client: Any | None = None) -> list[dict[str, Any]]:
         """REQ-CAP-05: Lists all cloud scheduled actions."""
         return [dict(s) for s in self._schedules.values()]
 
-    def delete_cloud_schedule(self, schedule_id: str, client: Optional[Any] = None) -> bool:
+    def delete_cloud_schedule(self, schedule_id: str, client: Any | None = None) -> bool:
         """REQ-CAP-05: Deletes a cloud scheduled action by ID."""
         if schedule_id in self._schedules:
             del self._schedules[schedule_id]
@@ -582,14 +582,14 @@ class ResponseQualityEngine:
 
     def select_best_draft(
         self,
-        draft_candidates: List[Dict[str, Any]],
+        draft_candidates: list[dict[str, Any]],
         criterion: str = "completeness",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-CAP-06: Scores multi-draft candidates and selects the best rcid."""
         if not draft_candidates:
             return {"rcid": "", "text": "", "score": 0.0, "criterion": criterion}
 
-        best_cand: Dict[str, Any] = draft_candidates[0]
+        best_cand: dict[str, Any] = draft_candidates[0]
         best_score = -1.0
         for idx, cand in enumerate(draft_candidates):
             txt = str(cand.get("text", ""))
@@ -624,11 +624,11 @@ class ResponseQualityEngine:
     async def double_check_response(
         self,
         text: str,
-        cid: Optional[str] = None,
-        rid: Optional[str] = None,
-        rcid: Optional[str] = None,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        cid: str | None = None,
+        rid: str | None = None,
+        rcid: str | None = None,
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-06: Verifies factual claims against grounded search sources and computes trust_score."""
         owned_client = False
         if client is None:
@@ -638,7 +638,7 @@ class ResponseQualityEngine:
         out_cid = cid or f"c_dc_{uuid.uuid4().hex[:8]}"
         out_rid = rid or f"r_dc_{uuid.uuid4().hex[:8]}"
         out_rcid = rcid or f"rc_dc_{uuid.uuid4().hex[:8]}"
-        citations: List[Dict[str, Any]] = []
+        citations: list[dict[str, Any]] = []
 
         if client is not None:
             try:
@@ -679,7 +679,7 @@ class ResponseQualityEngine:
         if not sentences and text.strip():
             sentences = [text.strip()]
 
-        verified_claims: List[Dict[str, Any]] = []
+        verified_claims: list[dict[str, Any]] = []
         for idx, sent in enumerate(sentences):
             src_url = citations[0]["url"] if citations else (urls[0] if urls else "https://www.google.com/search")
             verified_claims.append(
@@ -707,11 +707,11 @@ class ResponseQualityEngine:
         self,
         text: str,
         modifier: str = "concise",
-        cid: Optional[str] = None,
-        rid: Optional[str] = None,
-        rcid: Optional[str] = None,
-        client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        cid: str | None = None,
+        rid: str | None = None,
+        rcid: str | None = None,
+        client: Any | None = None,
+    ) -> dict[str, Any]:
         """REQ-CAP-07: Rewrites a response with the requested tone or length modifier."""
         norm_mod = modifier.strip().lower()
         if norm_mod not in ("shorter", "longer", "simpler", "professional", "concise"):
@@ -730,7 +730,7 @@ class ResponseQualityEngine:
         if client is not None:
             try:
                 prompt = f"Rewrite the following response to be more {norm_mod}:\n\n{text}"
-                parts: List[str] = []
+                parts: list[str] = []
                 async for chunk in client.generate_stream(
                     prompt=prompt,
                     model="gemini-4-argon",
