@@ -6,7 +6,7 @@ Pydantic v2 models conforming to OpenAI Chat Completions and Models specificatio
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -25,7 +25,7 @@ class ModelPermission(BaseModel):
     allow_view: bool = True
     allow_fine_tuning: bool = False
     organization: str = "*"
-    group: Optional[str] = None
+    group: str | None = None
     is_blocking: bool = False
 
     model_config = ConfigDict(extra="ignore")
@@ -36,16 +36,16 @@ class OpenAIModel(BaseModel):
     object: str = "model"
     created: int = Field(default_factory=lambda: 1700000000)
     owned_by: str = "google-gemini"
-    permission: List[ModelPermission] = Field(default_factory=list)
-    root: Optional[str] = None
-    parent: Optional[str] = None
+    permission: list[ModelPermission] = Field(default_factory=list)
+    root: str | None = None
+    parent: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
 
 class OpenAIModelList(BaseModel):
     object: str = "list"
-    data: List[OpenAIModel]
+    data: list[OpenAIModel]
 
     model_config = ConfigDict(extra="ignore")
 
@@ -56,49 +56,49 @@ class OpenAIModelList(BaseModel):
 
 class ImageUrlDetail(BaseModel):
     url: str
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Literal["auto", "low", "high"] | None = "auto"
 
     model_config = ConfigDict(extra="ignore")
 
 
 class ContentPart(BaseModel):
     type: Literal["text", "image_url"]
-    text: Optional[str] = None
-    image_url: Optional[Union[str, ImageUrlDetail]] = None
+    text: str | None = None
+    image_url: str | ImageUrlDetail | None = None
 
     model_config = ConfigDict(extra="ignore")
 
 
 class ChatCompletionMessageParam(BaseModel):
     role: Literal["system", "developer", "user", "assistant", "tool", "function"]
-    content: Optional[Union[str, List[Union[ContentPart, Dict[str, Any], str]]]] = None
-    name: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    tool_call_id: Optional[str] = None
+    content: str | list[ContentPart | dict[str, Any] | str] | None = None
+    name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
 
 class ChatCompletionRequest(BaseModel):
     model: str
-    messages: List[ChatCompletionMessageParam]
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
-    n: Optional[int] = 1
-    stream: Optional[bool] = False
-    stop: Optional[Union[str, List[str]]] = None
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
-    presence_penalty: Optional[float] = 0.0
-    frequency_penalty: Optional[float] = 0.0
-    user: Optional[str] = None
-    response_format: Optional[Dict[str, Any]] = None
-    tools: Optional[List[Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
-    account_id: Optional[str] = None
-    feature_mode: Optional[str] = None
-    gem_id: Optional[str] = None
-    extensions: Optional[List[str]] = None
+    messages: list[ChatCompletionMessageParam]
+    temperature: float | None = 1.0
+    top_p: float | None = 1.0
+    n: int | None = 1
+    stream: bool | None = False
+    stop: str | list[str] | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    presence_penalty: float | None = 0.0
+    frequency_penalty: float | None = 0.0
+    user: str | None = None
+    response_format: dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    account_id: str | None = None
+    feature_mode: str | None = None
+    gem_id: str | None = None
+    extensions: list[str] | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -117,8 +117,8 @@ class ChatCompletionUsage(BaseModel):
 
 class ChatCompletionResponseMessage(BaseModel):
     role: str = "assistant"
-    content: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -126,7 +126,7 @@ class ChatCompletionResponseMessage(BaseModel):
 class ChatCompletionChoice(BaseModel):
     index: int = 0
     message: ChatCompletionResponseMessage
-    finish_reason: Optional[Literal["stop", "length", "content_filter", "tool_calls"]] = "stop"
+    finish_reason: Literal["stop", "length", "content_filter", "tool_calls"] | None = "stop"
 
     model_config = ConfigDict(extra="ignore")
 
@@ -136,7 +136,7 @@ class ChatCompletionResponse(BaseModel):
     object: str = "chat.completion"
     created: int
     model: str
-    choices: List[ChatCompletionChoice]
+    choices: list[ChatCompletionChoice]
     usage: ChatCompletionUsage
 
     model_config = ConfigDict(extra="ignore")
@@ -147,9 +147,9 @@ class ChatCompletionResponse(BaseModel):
 # ============================================================================
 
 class ChatCompletionChunkDelta(BaseModel):
-    role: Optional[str] = None
-    content: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    role: str | None = None
+    content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -157,7 +157,7 @@ class ChatCompletionChunkDelta(BaseModel):
 class ChatCompletionChunkChoice(BaseModel):
     index: int = 0
     delta: ChatCompletionChunkDelta
-    finish_reason: Optional[Literal["stop", "length", "content_filter", "tool_calls"]] = None
+    finish_reason: Literal["stop", "length", "content_filter", "tool_calls"] | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -167,7 +167,7 @@ class ChatCompletionChunk(BaseModel):
     object: str = "chat.completion.chunk"
     created: int
     model: str
-    choices: List[ChatCompletionChunkChoice]
+    choices: list[ChatCompletionChunkChoice]
 
     model_config = ConfigDict(extra="ignore")
 
@@ -179,8 +179,8 @@ class ChatCompletionChunk(BaseModel):
 class OpenAIErrorDetail(BaseModel):
     message: str
     type: str = "invalid_request_error"
-    param: Optional[str] = None
-    code: Optional[str] = None
+    param: str | None = None
+    code: str | None = None
 
 
 class OpenAIErrorResponse(BaseModel):
