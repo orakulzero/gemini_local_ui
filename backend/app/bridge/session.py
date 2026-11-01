@@ -17,11 +17,13 @@ import logging
 import random
 import re
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any
+from collections.abc import Awaitable, Callable
 import uuid
 import httpx
 
 from backend.app.bridge.exceptions import AuthenticationError
+import contextlib
 
 logger = logging.getLogger("gemini_bridge.session")
 
@@ -51,10 +53,10 @@ HARVESTED_COOKIE_NAMES = {
 
 @dataclass
 class SessionContext:
-    cookies: Dict[str, str] = field(default_factory=dict)
-    access_token: Optional[str] = None                                # SNlM0e ('at')
+    cookies: dict[str, str] = field(default_factory=dict)
+    access_token: str | None = None                                # SNlM0e ('at')
     build_label: str = "boq_assistant-bard-web-server_20261017.00_p0" # cfb2h ('bl')
-    session_id: Optional[str] = None                                  # FdrFJe ('f.sid')
+    session_id: str | None = None                                  # FdrFJe ('f.sid')
     push_id: str = "feeds/mcudyrk2a4khkz"                             # qKIAYe
     language: str = "en"                                              # TuX5cc ('hl')
     session_uuid: str = field(default_factory=lambda: str(uuid.uuid4()).upper())
@@ -62,11 +64,11 @@ class SessionContext:
     account_tier: str = "free"
     status: SessionHealthStatus = SessionHealthStatus.UNAUTHENTICATED
     last_refresh: float = field(default_factory=time.time)
-    last_error: Optional[str] = None
+    last_error: str | None = None
     passive_rotation: bool = False
-    account_id: Optional[str] = None
+    account_id: str | None = None
     vault: Any = None
-    on_credentials_updated: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None
+    on_credentials_updated: Callable[[dict[str, str]], Awaitable[None]] | None = None
 
     @property
     def at_token(self) -> str:
@@ -85,7 +87,7 @@ class SessionHealthReport:
     last_refresh_timestamp: float
     next_refresh_seconds: float
     account_tier: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
     passive_rotation: bool = False
 
 
@@ -95,10 +97,10 @@ class AccountSession:
     profile: Any  # AccountProfile from vault
     context: SessionContext
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    rotation_task: Optional[asyncio.Task] = None
-    cooldown_until: Optional[float] = None
-    cooldown_models: Dict[str, float] = field(default_factory=dict)  # model_id -> expire_timestamp
-    last_error: Optional[str] = None
+    rotation_task: asyncio.Task | None = None
+    cooldown_until: float | None = None
+    cooldown_models: dict[str, float] = field(default_factory=dict)  # model_id -> expire_timestamp
+    last_error: str | None = None
 
 
 class SessionManager:
@@ -113,11 +115,11 @@ class SessionManager:
     def __init__(
         self,
         base_url: str = "https://gemini.google.com",
-        rotate_url: Optional[str] = None,
-        on_credentials_updated: Optional[Callable[[Dict[str, str]], Awaitable[None]]] = None,
+        rotate_url: str | None = None,
+        on_credentials_updated: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         rotation_interval_seconds: float = 540.0,
         rotation_jitter_seconds: float = 30.0,
-        http_client: Optional[httpx.AsyncClient] = None,
+        http_client: httpx.AsyncClient | None = None,
         vault: Any = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -133,7 +135,7 @@ class SessionManager:
         self.rotation_jitter = rotation_jitter_seconds
         self.vault = vault
 
-        self.sessions: Dict[str, AccountSession] = {}
+        self.sessions: dict[str, AccountSession] = {}
         if self.vault:
             try:
                 self.active_account_id = self.vault.get_active_account_id() or "default"
@@ -174,33 +176,33 @@ class SessionManager:
         else:
             self._fallback_context = new_ctx
 
-    def get_cookies(self, account_id: Optional[str] = None) -> Dict[str, str]:
+    def get_cookies(self, account_id: str | None = None) -> dict[str, str]:
         """Returns a copy of cookies for the given or active account."""
         sess = self.get_account_session(account_id)
         if sess:
             return dict(sess.context.cookies)
         return dict(self.context.cookies)
 
-    def next_req_id(self, account_id: Optional[str] = None) -> int:
+    def next_req_id(self, account_id: str | None = None) -> int:
         """Thread-safe incrementing sequence counter for _reqid query parameter."""
         sess = self.get_account_session(account_id)
         ctx = sess.context if sess else self.context
         ctx.req_id += random.randint(1000, 9999)
         return ctx.req_id
 
-    def get_account_session(self, account_id: Optional[str] = None) -> Optional[AccountSession]:
+    def get_account_session(self, account_id: str | None = None) -> AccountSession | None:
         """Resolves target AccountSession by ID, defaulting to active_account_id."""
         target_id = account_id or self.active_account_id
         return self.sessions.get(target_id)
 
-    def get_session_context(self, account_id: Optional[str] = None) -> SessionContext:
+    def get_session_context(self, account_id: str | None = None) -> SessionContext:
         """Returns SessionContext for the specified account or active account."""
         sess = self.get_account_session(account_id)
         if sess:
             return sess.context
         return self.context
 
-    def get_account_tier(self, account_id: Optional[str] = None) -> str:
+    def get_account_tier(self, account_id: str | None = None) -> str:
         """Returns the tier string ('free', 'pro', 'ultra') for account."""
         sess = self.get_account_session(account_id)
         if sess and sess.profile:
@@ -209,10 +211,10 @@ class SessionManager:
 
     async def init_session(
         self,
-        cookies: Optional[Dict[str, str]] = None,
-        account_id: Optional[str] = None,
-        xsrf_token: Optional[str] = None,
-        gemini_bl: Optional[str] = None,
+        cookies: dict[str, str] | None = None,
+        account_id: str | None = None,
+        xsrf_token: str | None = None,
+        gemini_bl: str | None = None,
     ) -> SessionContext:
         """Initializes or updates session for given account_id, scrapes tokens (or applies pre-extracted tokens), and starts rotation."""
         from backend.app.storage.vault import AccountProfile
@@ -390,7 +392,7 @@ class SessionManager:
             self.active_account_id,
         )
 
-    async def recover_from_vault_backup(self, account_id: Optional[str] = None) -> bool:
+    async def recover_from_vault_backup(self, account_id: str | None = None) -> bool:
         """
         Attempts to rollback and recover session state from the latest confirmed
         healthy vault backup snapshot (vault.enc.bak).
@@ -440,14 +442,13 @@ class SessionManager:
             if scraped and ctx.status == SessionHealthStatus.HEALTHY:
                 logger.info("Session for account '%s' successfully recovered from vault backup snapshot", target_acc_id)
                 return True
-            else:
-                logger.warning("Scrape with restored backup credentials failed for account '%s'", target_acc_id)
-                return False
+            logger.warning("Scrape with restored backup credentials failed for account '%s'", target_acc_id)
+            return False
         except Exception as e:
             logger.error("Exception during session rollback attempt for %s: %s", target_acc_id, e)
             return False
 
-    async def scrape_tokens(self, account_id: Optional[str] = None, allow_rollback: bool = True) -> bool:
+    async def scrape_tokens(self, account_id: str | None = None, allow_rollback: bool = True) -> bool:
         """Fetches /app and extracts SNlM0e, cfb2h, FdrFJe, qKIAYe for given account."""
         sess = self.get_account_session(account_id)
         ctx = sess.context if sess else self.context
@@ -539,19 +540,18 @@ class SessionManager:
                     sess.profile.tux5cc = ctx.language
                     sess.profile.last_rotated_at = time.time()
                 return True
+            if ctx.cookies.get("__Secure-1PSID"):
+                # Attempt rollback from vault backup before declaring total loss
+                if allow_rollback and self.vault and hasattr(self.vault, "rollback_from_backup"):
+                    recovered = await self.recover_from_vault_backup(account_id)
+                    if recovered:
+                        return True
+                ctx.status = SessionHealthStatus.EXPIRED
+                ctx.last_error = f"Authentication token SNlM0e missing; cookies expired (HTTP {resp.status_code})"
             else:
-                if ctx.cookies.get("__Secure-1PSID"):
-                    # Attempt rollback from vault backup before declaring total loss
-                    if allow_rollback and self.vault and hasattr(self.vault, "rollback_from_backup"):
-                        recovered = await self.recover_from_vault_backup(account_id)
-                        if recovered:
-                            return True
-                    ctx.status = SessionHealthStatus.EXPIRED
-                    ctx.last_error = f"Authentication token SNlM0e missing; cookies expired (HTTP {resp.status_code})"
-                else:
-                    ctx.status = SessionHealthStatus.UNAUTHENTICATED
-                    ctx.last_error = "No cookies provided; unauthenticated guest mode"
-                return False
+                ctx.status = SessionHealthStatus.UNAUTHENTICATED
+                ctx.last_error = "No cookies provided; unauthenticated guest mode"
+            return False
 
         except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError) as net_err:
             logger.warning("Transient network error scraping Gemini tokens for %s: %s", account_id, net_err)
@@ -571,7 +571,7 @@ class SessionManager:
             ctx.last_error = str(e)
             return False
 
-    async def rotate_cookies(self, account_id: Optional[str] = None) -> bool:
+    async def rotate_cookies(self, account_id: str | None = None) -> bool:
         """Executes RotateCookies request for specified or active account."""
         sess = self.get_account_session(account_id)
         if not sess:
@@ -590,10 +590,9 @@ class SessionManager:
                     ctx.status = SessionHealthStatus.HEALTHY
                     ctx.last_error = None
                     return True
-                else:
-                    ctx.status = SessionHealthStatus.EXPIRED
-                    ctx.last_error = "Session cookies missing under passive rotation"
-                    return False
+                ctx.status = SessionHealthStatus.EXPIRED
+                ctx.last_error = "Session cookies missing under passive rotation"
+                return False
 
             prev_status = ctx.status
             ctx.status = SessionHealthStatus.REFRESHING
@@ -652,10 +651,9 @@ class SessionManager:
                             account_id or self.active_account_id,
                         )
                         return True
-                    else:
-                        ctx.status = SessionHealthStatus.EXPIRED
-                        ctx.last_error = "RotateCookies returned HTTP 405 and session cookies invalid"
-                        return False
+                    ctx.status = SessionHealthStatus.EXPIRED
+                    ctx.last_error = "RotateCookies returned HTTP 405 and session cookies invalid"
+                    return False
 
                 if resp.status_code in (401, 403):
                     ctx.status = SessionHealthStatus.UNAUTHENTICATED
@@ -753,7 +751,7 @@ class SessionManager:
         if not raw_cookie_headers:
             return
 
-        harvested: Dict[str, str] = {}
+        harvested: dict[str, str] = {}
         for header in raw_cookie_headers:
             parts = header.split(";")
             if not parts:
@@ -808,7 +806,7 @@ class SessionManager:
                     await self.vault.update_account_cookies_async(acc_id, harvested)
                     logger.info("Persisted passively harvested cookies for account '%s' to DPAPI vault asynchronously", acc_id)
                     return
-                elif acc_id and hasattr(self.vault, "save_account_async"):
+                if acc_id and hasattr(self.vault, "save_account_async"):
                     profile = self.vault.get_account(acc_id)
                     if profile:
                         if hasattr(profile, "cookies") and isinstance(profile.cookies, dict):
@@ -852,7 +850,7 @@ class SessionManager:
                 return
         await self._rotation_loop(account_id)
 
-    async def _rotation_loop(self, account_id: Optional[str] = None) -> None:
+    async def _rotation_loop(self, account_id: str | None = None) -> None:
         """
         Background keepalive loop executing periodic cookie rotation and token refresh:
         - Runs every 8-10 minutes (default 540s with +/-30s jitter).
@@ -950,7 +948,7 @@ class SessionManager:
                     consecutive_failures,
                 )
 
-    def get_health(self, account_id: Optional[str] = None) -> SessionHealthReport:
+    def get_health(self, account_id: str | None = None) -> SessionHealthReport:
         """Returns diagnostic session health information for given or active account."""
         sess = self.get_account_session(account_id)
         ctx = sess.context if sess else self.context
@@ -975,14 +973,14 @@ class SessionManager:
             passive_rotation=bool(getattr(ctx, "passive_rotation", False)),
         )
 
-    def get_all_health(self) -> Dict[str, SessionHealthReport]:
+    def get_all_health(self) -> dict[str, SessionHealthReport]:
         """Returns diagnostic health reports for all managed accounts."""
         if not self.sessions:
             return {self.active_account_id: self.get_health()}
         return {acc_id: self.get_health(acc_id) for acc_id in self.sessions}
 
     async def update_cookies(
-        self, new_cookies: Dict[str, str], account_id: Optional[str] = None
+        self, new_cookies: dict[str, str], account_id: str | None = None
     ) -> SessionContext:
         """Hot-swaps session cookies for an account and immediately re-scrapes tokens."""
         sess = self.get_account_session(account_id)
@@ -991,10 +989,9 @@ class SessionManager:
                 sess.context.cookies = dict(new_cookies)
             await self.scrape_tokens(sess.account_id)
             return sess.context
-        else:
-            self.context.cookies = dict(new_cookies)
-            await self.scrape_tokens()
-            return self.context
+        self.context.cookies = dict(new_cookies)
+        await self.scrape_tokens()
+        return self.context
 
     def activate_account(self, account_id: str) -> bool:
         """Sets the active primary account ID in memory and in vault."""
@@ -1010,7 +1007,7 @@ class SessionManager:
         return False
 
     async def add_or_update_account(
-        self, profile: Any, cookies: Optional[Dict[str, str]] = None
+        self, profile: Any, cookies: dict[str, str] | None = None
     ) -> AccountSession:
         """Registers a new account profile, starts its rotation loop, and persists to vault."""
         if cookies:
@@ -1044,10 +1041,8 @@ class SessionManager:
         sess = self.sessions.pop(account_id, None)
         if sess and sess.rotation_task and not sess.rotation_task.done():
             sess.rotation_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await sess.rotation_task
-            except asyncio.CancelledError:
-                pass
 
         deleted = False
         if self.vault:
@@ -1061,9 +1056,9 @@ class SessionManager:
     def mark_cooldown(
         self,
         account_id: str,
-        model_id: Optional[str] = None,
+        model_id: str | None = None,
         duration_seconds: float = 3600.0,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> None:
         """Marks account (or specific model on account) in cooldown."""
         expire_time = time.time() + duration_seconds
@@ -1078,13 +1073,12 @@ class SessionManager:
 
         if self.vault:
             prof = self.vault.get_account(account_id)
-            if prof:
-                if not model_id:
-                    prof.cooldown_until = expire_time
-                    prof.cooldown_reason = reason
-                    self.vault.save_account(prof)
+            if prof and not model_id:
+                prof.cooldown_until = expire_time
+                prof.cooldown_reason = reason
+                self.vault.save_account(prof)
 
-    def is_in_cooldown(self, account_id: str, model_id: Optional[str] = None) -> bool:
+    def is_in_cooldown(self, account_id: str, model_id: str | None = None) -> bool:
         """Checks if account or model is currently in active cooldown."""
         now = time.time()
         sess = self.get_account_session(account_id)
@@ -1101,7 +1095,7 @@ class SessionManager:
         target_model_id: str,
         failed_account_id: str,
         required_tier: str = "free",
-    ) -> Optional[AccountSession]:
+    ) -> AccountSession | None:
         """
         Selects next healthy backup account eligible for model/tier execution
         based on priority ranking and cooldown checks.
@@ -1157,10 +1151,8 @@ class SessionManager:
         for sess in self.sessions.values():
             if sess.rotation_task and not sess.rotation_task.done():
                 sess.rotation_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await sess.rotation_task
-                except asyncio.CancelledError:
-                    pass
                 sess.rotation_task = None
 
         if self._owns_client and not self._client.is_closed:
