@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, List, Optional
+from typing import Any
+from collections.abc import AsyncIterator
 import uuid
 
 from backend.app.bridge.streaming_parser import StreamChunk, sanitize_surrogate_text
@@ -44,7 +45,7 @@ async def stream_openai_sse(
     request_id: str,
     model_name: str,
     created_at: int,
-    stop_sequences: Optional[List[str]] = None,
+    stop_sequences: list[str] | None = None,
     has_tools: bool = False,
 ) -> AsyncIterator[str]:
     """
