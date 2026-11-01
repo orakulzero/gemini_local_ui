@@ -12,8 +12,8 @@ from __future__ import annotations
 from dataclasses import asdict
 import logging
 import os
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from backend.app.bridge.exceptions import AuthenticationError, GeminiBridgeError
@@ -43,8 +43,8 @@ def get_notebooklm_client(request: Request) -> NotebookLMClient:
         import backend.app.main as main_mod
         sm = getattr(main_mod, "session_manager", None)
 
-    cookies: Dict[str, str] = {}
-    at_token: Optional[str] = None
+    cookies: dict[str, str] = {}
+    at_token: str | None = None
 
     target_account = request.headers.get("X-Gemini-Account")
     if sm:
@@ -82,33 +82,33 @@ class RenameNotebookRequest(BaseModel):
 
 class AttachContextRequest(BaseModel):
     notebook_id: str
-    source_ids: Optional[List[str]] = None
-    note_ids: Optional[List[str]] = None
+    source_ids: list[str] | None = None
+    note_ids: list[str] | None = None
     include_notes: bool = True
 
 
 class ExportRequest(BaseModel):
-    notebook_id: Optional[str] = None
-    new_notebook_title: Optional[str] = None
-    conversation_id: Optional[str] = None
-    message_ids: Optional[List[int]] = None
-    title: Optional[str] = None
-    content: Optional[str] = None
+    notebook_id: str | None = None
+    new_notebook_title: str | None = None
+    conversation_id: str | None = None
+    message_ids: list[int] | None = None
+    title: str | None = None
+    content: str | None = None
 
 
 class AddUrlSourceRequest(BaseModel):
     url: str = Field(..., min_length=1, description="Web URL or YouTube URL to ingest as a source")
-    title: Optional[str] = None
+    title: str | None = None
 
 
 class StudyGuideRequest(BaseModel):
     guide_type: str = Field("study_guide", description="study_guide | briefing_doc | faq | timeline")
-    source_ids: Optional[List[str]] = None
+    source_ids: list[str] | None = None
 
 
 class MindMapRequest(BaseModel):
-    topic: Optional[str] = None
-    source_ids: Optional[List[str]] = None
+    topic: str | None = None
+    source_ids: list[str] | None = None
 
 
 class AudioOverviewRequest(BaseModel):
@@ -121,7 +121,7 @@ class RepoSyncRequest(BaseModel):
         "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f",
         description="Target NotebookLM notebook ID for repository RAG sync",
     )
-    paths: Optional[List[str]] = Field(
+    paths: list[str] | None = Field(
         None,
         description="Relative file paths or glob patterns to sync; defaults to core project docs & .claude specs",
     )
@@ -135,7 +135,7 @@ class RepoSyncRequest(BaseModel):
     )
 
 
-DEFAULT_REPO_SYNC_PATTERNS: List[str] = [
+DEFAULT_REPO_SYNC_PATTERNS: list[str] = [
     "CLAUDE.md",
     "README.md",
     ".claude/agents/*.md",
@@ -144,10 +144,10 @@ DEFAULT_REPO_SYNC_PATTERNS: List[str] = [
 ]
 
 # Maps "{notebook_id}:{rel_posix_path}" -> sha256 hex digest of last synced content
-_REPO_SYNC_HASHES: Dict[str, str] = {}
+_REPO_SYNC_HASHES: dict[str, str] = {}
 
 
-_LOCAL_FALLBACK_NOTEBOOKS: Dict[str, Dict[str, Any]] = {
+_LOCAL_FALLBACK_NOTEBOOKS: dict[str, dict[str, Any]] = {
     "nb_8a9b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d": {
         "id": "nb_8a9b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d",
         "title": "SSB & FPGA DSP Architecture Research",
@@ -209,7 +209,7 @@ _LOCAL_FALLBACK_NOTEBOOKS: Dict[str, Dict[str, Any]] = {
 
 
 @router.get("/status")
-async def get_status(request: Request) -> Dict[str, Any]:
+async def get_status(request: Request) -> dict[str, Any]:
     """Returns NotebookLM bridge availability and session health."""
     client = get_notebooklm_client(request)
     try:
@@ -225,7 +225,7 @@ async def get_status(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/notebooks")
-async def list_notebooks(request: Request) -> List[Dict[str, Any]]:
+async def list_notebooks(request: Request) -> list[dict[str, Any]]:
     """Lists all user notebooks."""
     client = get_notebooklm_client(request)
     try:
@@ -251,7 +251,7 @@ async def list_notebooks(request: Request) -> List[Dict[str, Any]]:
 
 
 @router.get("/notebooks/{notebook_id}")
-async def get_notebook(notebook_id: str, request: Request) -> Dict[str, Any]:
+async def get_notebook(notebook_id: str, request: Request) -> dict[str, Any]:
     """Fetches details for a specific notebook including its sources and notes."""
     client = get_notebooklm_client(request)
     try:
@@ -277,7 +277,7 @@ async def get_notebook(notebook_id: str, request: Request) -> Dict[str, Any]:
 
 
 @router.post("/notebooks", status_code=status.HTTP_201_CREATED)
-async def create_notebook(req: CreateNotebookRequest, request: Request) -> Dict[str, Any]:
+async def create_notebook(req: CreateNotebookRequest, request: Request) -> dict[str, Any]:
     """Creates a new empty notebook."""
     client = get_notebooklm_client(request)
     try:
@@ -293,7 +293,7 @@ async def create_notebook(req: CreateNotebookRequest, request: Request) -> Dict[
 
 
 @router.delete("/notebooks/{notebook_id}")
-async def delete_notebook(notebook_id: str, request: Request) -> Dict[str, Any]:
+async def delete_notebook(notebook_id: str, request: Request) -> dict[str, Any]:
     """Deletes an existing notebook."""
     client = get_notebooklm_client(request)
     try:
@@ -311,7 +311,7 @@ async def delete_notebook(notebook_id: str, request: Request) -> Dict[str, Any]:
 
 
 @router.patch("/notebooks/{notebook_id}")
-async def rename_notebook(notebook_id: str, req: RenameNotebookRequest, request: Request) -> Dict[str, Any]:
+async def rename_notebook(notebook_id: str, req: RenameNotebookRequest, request: Request) -> dict[str, Any]:
     """Renames an existing notebook."""
     client = get_notebooklm_client(request)
     try:
@@ -329,7 +329,7 @@ async def rename_notebook(notebook_id: str, req: RenameNotebookRequest, request:
 
 
 @router.post("/attach-context")
-async def attach_context(req: AttachContextRequest, request: Request) -> Dict[str, Any]:
+async def attach_context(req: AttachContextRequest, request: Request) -> dict[str, Any]:
     """
     Formats selected notebook sources and notes into a structured XML-like
     <notebooklm_reference> block suitable for injecting into Gemini chat prompts.
@@ -359,7 +359,7 @@ async def attach_context(req: AttachContextRequest, request: Request) -> Dict[st
             selected_sources = [s for s in detail.sources if s.id in source_set]
 
         # Filter notes
-        selected_notes: List[Any] = []
+        selected_notes: list[Any] = []
         if req.include_notes:
             selected_notes = detail.notes
             if req.note_ids is not None:
@@ -407,7 +407,7 @@ async def attach_context(req: AttachContextRequest, request: Request) -> Dict[st
 
 
 @router.post("/export")
-async def export_to_notebook(req: ExportRequest, request: Request) -> Dict[str, Any]:
+async def export_to_notebook(req: ExportRequest, request: Request) -> dict[str, Any]:
     """
     Exports conversation turns or custom text into a NotebookLM notebook as a new text source.
     If notebook_id is not specified, a new notebook will be created using new_notebook_title.
@@ -484,7 +484,7 @@ async def add_url_source_endpoint(
     req: AddUrlSourceRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ingests a Web URL or YouTube video as a grounded source into the specified notebook."""
     try:
         src = await client.add_url_source(notebook_id=notebook_id, url=req.url, title=req.title)
@@ -520,7 +520,7 @@ async def add_youtube_source_endpoint(
     req: AddUrlSourceRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ingests a YouTube video transcript as a grounded source into the specified notebook."""
     try:
         src = await client.add_youtube_source(notebook_id=notebook_id, youtube_url=req.url, title=req.title)
@@ -550,7 +550,7 @@ async def delete_source_endpoint(
     source_id: str,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Deletes a source from a NotebookLM notebook."""
     try:
         await client.delete_source(notebook_id=notebook_id, source_id=source_id)
@@ -572,7 +572,7 @@ async def generate_study_guide_endpoint(
     req: StudyGuideRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generates a Studio Study Guide, Briefing Document, FAQ, or Timeline from notebook sources."""
     try:
         note = await client.generate_study_guide(
@@ -615,7 +615,7 @@ async def generate_mind_map_endpoint(
     req: MindMapRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generates a hierarchical Mind Map (JSON tree + Mermaid diagram) for a notebook."""
     try:
         mm = await client.generate_mind_map(
@@ -650,7 +650,7 @@ async def generate_audio_overview_endpoint(
     req: AudioOverviewRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Triggers or retrieves a Deep Dive Audio Overview for the notebook."""
     try:
         audio = await client.generate_audio_overview(
@@ -677,12 +677,12 @@ async def generate_audio_overview_endpoint(
 
 async def sync_repo_to_notebooklm(
     notebook_id: str = "nb_2f3e4d5c-6b7a-8c9d-0e1f-2a3b4c5d6e7f",
-    paths: Optional[List[str]] = None,
+    paths: list[str] | None = None,
     generate_briefing: bool = False,
     force: bool = False,
-    client: Optional[NotebookLMClient] = None,
-    root_dir: Optional[Any] = None,
-) -> Dict[str, Any]:
+    client: NotebookLMClient | None = None,
+    root_dir: Any | None = None,
+) -> dict[str, Any]:
     """
     Incrementally synchronizes repository files (CLAUDE.md, README.md, .claude/ specs, or custom paths)
     into a NotebookLM notebook using SHA-256 content deduplication.
@@ -698,7 +698,7 @@ async def sync_repo_to_notebooklm(
     workspace_root = (Path(root_dir) if root_dir else Path.cwd()).resolve()
     patterns = paths if paths else list(DEFAULT_REPO_SYNC_PATTERNS)
 
-    matched_files: List[Path] = []
+    matched_files: list[Path] = []
     seen_paths = set()
     for pat in patterns:
         norm_pat = str(pat).replace("\\", "/").lstrip("/")
@@ -736,8 +736,8 @@ async def sync_repo_to_notebooklm(
         }
 
     nb_entry = _LOCAL_FALLBACK_NOTEBOOKS[notebook_id]
-    synced_files: List[str] = []
-    skipped_files: List[str] = []
+    synced_files: list[str] = []
+    skipped_files: list[str] = []
 
     for fpath in matched_files:
         rf = fpath.resolve()
@@ -802,7 +802,7 @@ async def sync_repo_to_notebooklm(
         _REPO_SYNC_HASHES[cache_key] = digest
         synced_files.append(rel_posix)
 
-    briefing_note: Optional[Dict[str, Any]] = None
+    briefing_note: dict[str, Any] | None = None
     if generate_briefing:
         bullets = [f"- **{s['title']}**: {s.get('summary', '')}" for s in nb_entry.get("sources", [])]
         briefing_content = (
@@ -843,7 +843,7 @@ async def sync_repo_endpoint(
     req: RepoSyncRequest,
     request: Request,
     client: NotebookLMClient = Depends(get_notebooklm_client),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Incrementally syncs workspace files into a NotebookLM notebook with SHA-256 deduplication."""
     try:
         return await sync_repo_to_notebooklm(
