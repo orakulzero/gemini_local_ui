@@ -14,15 +14,15 @@ Architectural adaptations from open-source educational video lecture repositorie
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
 import shutil
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Self
 
 # ============================================================================
 # R1. BOOKMARK-DRIVEN AUDIO-VISUAL SYNC (manim-voiceover + motion-canvas)
@@ -60,7 +60,7 @@ class VoiceoverBookmark:
     def ratio(self) -> float:
         return self.word_ratio
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["id"] = self.mark
         d["ratio"] = self.word_ratio
@@ -91,9 +91,9 @@ class BookmarkParseResult(tuple):
 
     clean_text: str
     text: str
-    bookmarks: List[VoiceoverBookmark]
+    bookmarks: list[VoiceoverBookmark]
 
-    def __new__(cls, clean_text: str, bookmarks: List[VoiceoverBookmark]) -> "BookmarkParseResult":
+    def __new__(cls, clean_text: str, bookmarks: list[VoiceoverBookmark]) -> Self:
         instance = super().__new__(cls, (clean_text, bookmarks))
         instance.clean_text = clean_text
         instance.text = clean_text
@@ -116,7 +116,7 @@ class BookmarkParseResult(tuple):
             return self.bookmarks
         return default
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "clean_text": self.clean_text,
             "bookmarks": [b.to_dict() for b in self.bookmarks],
@@ -145,8 +145,8 @@ def parse_voiceover_bookmarks(text: str) -> BookmarkParseResult:
         return BookmarkParseResult("", [])
 
     raw = str(text)
-    raw_marks: List[Tuple[str, int, int]] = []
-    clean_parts: List[str] = []
+    raw_marks: list[tuple[str, int, int]] = []
+    clean_parts: list[str] = []
     last_pos = 0
     words_so_far = 0
     chars_so_far = 0
@@ -175,7 +175,7 @@ def parse_voiceover_bookmarks(text: str) -> BookmarkParseResult:
     all_clean_words = [w for w in clean_joined.split() if w.strip()]
     total_words = max(1, len(all_clean_words))
 
-    bookmarks: List[VoiceoverBookmark] = []
+    bookmarks: list[VoiceoverBookmark] = []
     prev_ratio = 0.0
     for mark_id, w_idx, c_off in raw_marks:
         clamped_idx = max(0, min(total_words, w_idx))
@@ -215,7 +215,7 @@ class ResolvedBookmarkFloat(float):
         word_ratio: float = 0.0,
         timestamp_ms: int = 0,
         frame_offset: int = 0,
-    ) -> "ResolvedBookmarkFloat":
+    ) -> Self:
         obj = super().__new__(cls, value)
         obj.mark = mark
         obj.word_ratio = word_ratio
@@ -243,7 +243,7 @@ class ResolvedBookmarkFloat(float):
         except KeyError:
             return default
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "mark": self.mark,
             "word_ratio": self.word_ratio,
@@ -259,9 +259,9 @@ class ResolvedBookmarkMap(dict):
     integer indexing `resolved[0]` in bookmark order and `.items_list`.
     """
 
-    def __init__(self, ordered_items: List[ResolvedBookmarkFloat]) -> None:
+    def __init__(self, ordered_items: list[ResolvedBookmarkFloat]) -> None:
         super().__init__((item.mark, item) for item in ordered_items)
-        self.items_list: List[ResolvedBookmarkFloat] = ordered_items
+        self.items_list: list[ResolvedBookmarkFloat] = ordered_items
 
     def __getitem__(self, key: Any) -> Any:
         if isinstance(key, int):
@@ -270,15 +270,15 @@ class ResolvedBookmarkMap(dict):
 
 
 def _normalize_acoustic_segments(
-    acoustic_segments: Optional[Sequence[Any]],
+    acoustic_segments: Sequence[Any] | None,
     total_duration_sec: float,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     if not acoustic_segments:
         return []
-    spans: List[Tuple[float, float]] = []
+    spans: list[tuple[float, float]] = []
     for seg in acoustic_segments:
-        s_val: Optional[float] = None
-        e_val: Optional[float] = None
+        s_val: float | None = None
+        e_val: float | None = None
         if isinstance(seg, (tuple, list)) and len(seg) >= 2:
             s_val, e_val = float(seg[0]), float(seg[1])
         elif isinstance(seg, dict):
@@ -303,9 +303,9 @@ def _normalize_acoustic_segments(
 
 
 def resolve_bookmark_timestamps(
-    bookmarks: Union[BookmarkParseResult, Sequence[Any]],
+    bookmarks: BookmarkParseResult | Sequence[Any],
     total_duration_sec: float,
-    acoustic_segments: Optional[Sequence[Any]] = None,
+    acoustic_segments: Sequence[Any] | None = None,
     fps: int = 15,
 ) -> ResolvedBookmarkMap:
     """
@@ -313,7 +313,7 @@ def resolve_bookmark_timestamps(
     and frame offsets in `[0, total_frames]`, optionally aligned against acoustic VAD segments.
     """
     dur = max(0.0, float(total_duration_sec))
-    total_frames = max(1, int(round(dur * max(1, fps))))
+    total_frames = max(1, round(dur * max(1, fps)))
 
     if isinstance(bookmarks, BookmarkParseResult):
         bm_seq: Sequence[Any] = bookmarks.bookmarks
@@ -330,7 +330,7 @@ def resolve_bookmark_timestamps(
     spans = _normalize_acoustic_segments(acoustic_segments, dur)
     total_voiced = sum(e - s for s, e in spans)
 
-    ordered: List[ResolvedBookmarkFloat] = []
+    ordered: list[ResolvedBookmarkFloat] = []
     prev_t = 0.0
 
     for idx, bm in enumerate(bm_seq):
@@ -363,8 +363,8 @@ def resolve_bookmark_timestamps(
         resolved_t = max(prev_t, min(dur, round(resolved_t, 4)))
         prev_t = resolved_t
 
-        ms_val = int(round(resolved_t * 1000.0))
-        frame_val = max(0, min(total_frames, int(round(resolved_t * max(1, fps)))))
+        ms_val = round(resolved_t * 1000.0)
+        frame_val = max(0, min(total_frames, round(resolved_t * max(1, fps))))
 
         if isinstance(bm, VoiceoverBookmark):
             bm.timestamp_sec = resolved_t
@@ -453,8 +453,8 @@ class CursorGroundingEngine:
         self,
         frame_idx: int,
         total_frames: int,
-        cues: Optional[Sequence[Dict[str, Any]]] = None,
-        pz_bbox: Optional[Sequence[float]] = None,
+        cues: Sequence[dict[str, Any]] | None = None,
+        pz_bbox: Sequence[float] | None = None,
         callout_label: str = "",
     ) -> CursorFrameState:
         tot = max(1, int(total_frames))
@@ -535,7 +535,7 @@ class CursorGroundingEngine:
         laser_x = max(0.0, min(float(self.source_width), laser_norm_x * self.source_width))
         laser_y = max(0.0, min(float(self.source_height), laser_norm_y * self.source_height))
 
-        trail: List[Tuple[float, float]] = []
+        trail: list[tuple[float, float]] = []
         for step_back in range(1, 6):
             t_back = max(0.0, cue_t - step_back * 0.035)
             lx_b = rx0 + (rx1 - rx0) * (0.12 + 0.76 * (0.5 + 0.5 * math.sin(t_back * math.pi * 2.0 - math.pi / 2.0)))
@@ -557,7 +557,7 @@ class CursorGroundingEngine:
 
         # Typing-effect callout text (pdf2video style)
         full_callout = active_label or "Coursework Focus Region"
-        typed_chars = max(1, int(math.ceil(len(full_callout) * min(1.0, cue_t * 1.35))))
+        typed_chars = max(1, math.ceil(len(full_callout) * min(1.0, cue_t * 1.35)))
         callout_typed = full_callout[:typed_chars]
 
         return CursorFrameState(
@@ -577,10 +577,10 @@ class CursorGroundingEngine:
             trail=trail,
             focus_bbox=[rx0, ry0, rx1, ry1],
             crop_box=(
-                max(0, int(round(crop_x0))),
-                max(0, int(round(crop_y0))),
-                min(self.source_width, max(1, int(round(crop_x1)))),
-                min(self.source_height, max(1, int(round(crop_y1)))),
+                max(0, round(crop_x0)),
+                max(0, round(crop_y0)),
+                min(self.source_width, max(1, round(crop_x1))),
+                min(self.source_height, max(1, round(crop_y1))),
             ),
             callout_full=full_callout,
             callout_typed=callout_typed,
@@ -592,7 +592,7 @@ class CursorGroundingEngine:
 # ============================================================================
 
 
-def _default_sim_preset_for_page(page_num: int) -> Dict[str, Any]:
+def _default_sim_preset_for_page(page_num: int) -> dict[str, Any]:
     if page_num in (10, 25, 26, 27, 28, 29, 30):
         return {"mode": "filter", "p1": 10.0, "p2": 16, "description": "Cauer N=11 IIR & Q15 Pole-Zero Preset"}
     if page_num in (24, 31, 32, 33, 38, 39, 40, 41):
@@ -600,7 +600,7 @@ def _default_sim_preset_for_page(page_num: int) -> Dict[str, Any]:
     return {"mode": "hw", "p1": 10.0, "p2": 16, "description": "Sallen-Key 25.03 kHz & 0-WS Timing Preset"}
 
 
-def build_openmaic_lecture_actions(page_num: int) -> Dict[str, Any]:
+def build_openmaic_lecture_actions(page_num: int) -> dict[str, Any]:
     """
     Build structured OpenMAIC classroom actions (`ShowSheet`, `ZoomBBox`, `LaserPoint`,
     `RunSimPreset`, `QuizCheckpoint`) and `manim-slides` step segments for any sheet `1..45`.
@@ -622,7 +622,7 @@ def build_openmaic_lecture_actions(page_num: int) -> Dict[str, Any]:
         sheet_title = f"Coursework Sheet p. {page_num}/43"
 
     # Gather matching scenes/cues from dsp_defense_cycles if available
-    matched_cues: List[Dict[str, Any]] = []
+    matched_cues: list[dict[str, Any]] = []
     matched_title = sheet_title
     try:
         from src.dsp_defense_cycles import DSP_DEFENSE_CYCLES, DSP_SCENE_CONCEPT_CUES
@@ -634,8 +634,7 @@ def build_openmaic_lecture_actions(page_num: int) -> Dict[str, Any]:
                 if int(sc.get("pz_page", -1)) == effective_pz:
                     matched_title = str(sc.get("title", sheet_title)).replace("+", "")
                     cues = DSP_SCENE_CONCEPT_CUES.get(g_idx, sc.get("concept_cues", []))
-                    for c in cues:
-                        matched_cues.append(c)
+                    matched_cues.extend(cues)
     except Exception:
         pass
 
@@ -663,7 +662,7 @@ def build_openmaic_lecture_actions(page_num: int) -> Dict[str, Any]:
     secondary_bbox = matched_cues[-1].get("focus_bbox", [0.10, 0.50, 0.90, 0.86])
     sim_preset = _default_sim_preset_for_page(effective_pz)
 
-    actions: List[Dict[str, Any]] = [
+    actions: list[dict[str, Any]] = [
         {
             "action_id": f"p{page_num:02d}_act01_show",
             "type": "ShowSheet",
@@ -741,7 +740,7 @@ def build_openmaic_lecture_actions(page_num: int) -> Dict[str, Any]:
         },
     ]
 
-    slides_segments: List[Dict[str, Any]] = []
+    slides_segments: list[dict[str, Any]] = []
     for idx, act in enumerate(actions):
         slides_segments.append(
             {
@@ -788,7 +787,7 @@ class SceneRenderCache:
 
     def __init__(
         self,
-        cache_dir: Optional[Union[str, Path]] = None,
+        cache_dir: str | Path | None = None,
         renderer_version: str = DEFAULT_RENDERER_VERSION,
     ) -> None:
         base_root = Path(__file__).resolve().parent.parent
@@ -803,11 +802,11 @@ class SceneRenderCache:
         scene_or_id: Any = "",
         narration_text: str = "",
         pz_page: int = 1,
-        pz_bbox: Optional[Sequence[float]] = None,
-        concept_cues: Optional[Sequence[Dict[str, Any]]] = None,
+        pz_bbox: Sequence[float] | None = None,
+        concept_cues: Sequence[dict[str, Any]] | None = None,
         visual_type: str = "split_screen_live_sync",
         tts_wav_sha256: str = "",
-        renderer_version: Optional[str] = None,
+        renderer_version: str | None = None,
     ) -> str:
         """Compute deterministic 64-char SHA-256 hex digest for a scene configuration."""
         if not isinstance(scene_or_id, str) and (
@@ -868,7 +867,7 @@ class SceneRenderCache:
         p = self._entry_mp4_path(key)
         return p.is_file() and p.stat().st_size > 64
 
-    def get_cached_path(self, key: str) -> Optional[Path]:
+    def get_cached_path(self, key: str) -> Path | None:
         """Return cached MP4 Path on hit (incrementing `hits`), or None on miss (incrementing `misses`)."""
         p = self._entry_mp4_path(key)
         if p.is_file() and p.stat().st_size > 64:
@@ -877,11 +876,11 @@ class SceneRenderCache:
         self.misses += 1
         return None
 
-    def get_cached_bytes(self, key: str) -> Optional[bytes]:
+    def get_cached_bytes(self, key: str) -> bytes | None:
         p = self.get_cached_path(key)
         return p.read_bytes() if p is not None else None
 
-    def get(self, key: str, dest_path: Optional[Union[str, Path]] = None) -> Optional[Path]:
+    def get(self, key: str, dest_path: str | Path | None = None) -> Path | None:
         """Lookup a scene digest in `.scene_cache/`. Optionally copies cached MP4 to `dest_path`."""
         cached_p = self.get_cached_path(key)
         if cached_p is None:
@@ -897,8 +896,8 @@ class SceneRenderCache:
     def put(
         self,
         key: str,
-        mp4_source: Union[str, Path, bytes],
-        metadata: Optional[Dict[str, Any]] = None,
+        mp4_source: str | Path | bytes,
+        metadata: dict[str, Any] | None = None,
     ) -> Path:
         """Store a rendered MP4 segment (from Path or raw bytes) in `.scene_cache/` under `key`."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -919,7 +918,7 @@ class SceneRenderCache:
     # Alias for callers expecting store(...)
     store = put
 
-    def get_telemetry(self) -> Dict[str, Any]:
+    def get_telemetry(self) -> dict[str, Any]:
         total = self.hits + self.misses
         return {
             "cache_dir": str(self.cache_dir),
