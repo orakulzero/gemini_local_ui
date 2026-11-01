@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import codecs
 from dataclasses import dataclass, field
-import difflib
 import json
 import logging
 import re
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any
+from collections.abc import AsyncIterator
 from urllib.parse import urlparse
 
 from backend.app.bridge.exceptions import map_google_error_code
@@ -38,7 +38,7 @@ class StreamChunk:
     """
     type: str  # "text" | "thought" | "grounding" | "citation" | "done"
     delta: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class StreamingFrameParser:
@@ -62,7 +62,7 @@ class StreamingFrameParser:
         self._xssi_stripped: bool = False
         self._utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors=self._utf8_errors)
 
-    def feed(self, chunk: Union[str, bytes]) -> List[List[Any]]:
+    def feed(self, chunk: str | bytes) -> list[list[Any]]:
         """
         Feeds a chunk of text or bytes into the parser buffer and returns
         any fully completed JSON envelope frames.
@@ -73,7 +73,7 @@ class StreamingFrameParser:
             chunk_str = chunk
 
         self._buffer += chunk_str
-        completed_frames: List[List[Any]] = []
+        completed_frames: list[list[Any]] = []
 
         # 1. Strip Anti-XSSI prefix if not already stripped
         if not self._xssi_stripped:
@@ -180,7 +180,7 @@ class StreamingFrameParser:
 
         return completed_frames
 
-    async def afeed(self, chunk_stream: AsyncIterator[Union[str, bytes]]) -> AsyncIterator[List[Any]]:
+    async def afeed(self, chunk_stream: AsyncIterator[str | bytes]) -> AsyncIterator[list[Any]]:
         """Asynchronously consumes string/bytes chunks and yields JSON envelope frames."""
         async for chunk in chunk_stream:
             for frame in self.feed(chunk):
@@ -188,13 +188,13 @@ class StreamingFrameParser:
 
 
 def extract_task_thoughts_and_immersive(
-    candidate: List[Any], raw_thoughts: str, raw_text: str
-) -> Tuple[str, str]:
+    candidate: list[Any], raw_thoughts: str, raw_text: str
+) -> tuple[str, str]:
     """
     Extracts Tasks / Spark mode (featureMode=40) agency steps & plans from candidate[12] ("56", "58")
     and immersive Markdown documents from candidate[30][0][4].
     """
-    extra_thought_parts: List[str] = []
+    extra_thought_parts: list[str] = []
 
     # 1. Extract Task Plan ("56") and Agency Progress Steps ("58") from candidate[12]
     if len(candidate) > 12 and isinstance(candidate[12], dict):
@@ -240,7 +240,7 @@ def extract_task_thoughts_and_immersive(
 
     # 2. Extract Immersive / Task Markdown report from candidate[30]
     if len(candidate) > 30 and isinstance(candidate[30], list) and len(candidate[30]) > 0:
-        immersive_docs: List[str] = []
+        immersive_docs: list[str] = []
         for imm in candidate[30]:
             if isinstance(imm, list) and len(imm) > 4 and isinstance(imm[4], str) and imm[4].strip():
                 imm_title = str(imm[2]).strip() if len(imm) > 2 and imm[2] else ""
@@ -316,10 +316,7 @@ def sanitize_and_buffer_surrogates(text: str, is_final: bool) -> str:
     if not text:
         return text
 
-    if not is_final and is_high_surrogate(text[-1]):
-        text_to_clean = text[:-1]
-    else:
-        text_to_clean = text
+    text_to_clean = text[:-1] if not is_final and is_high_surrogate(text[-1]) else text
 
     clean = sanitize_surrogate_text(text_to_clean)
 
@@ -349,22 +346,22 @@ class StreamingDeltaAccumulator:
         self.last_sent_thoughts: str = ""
         self.full_raw_text: str = ""
         self.full_raw_thoughts: str = ""
-        self.cid: Optional[str] = None
-        self.rid: Optional[str] = None
-        self.rcid: Optional[str] = None
-        self.continuation_token: Optional[str] = None
+        self.cid: str | None = None
+        self.rid: str | None = None
+        self.rcid: str | None = None
+        self.continuation_token: str | None = None
         self.is_completed: bool = False
         self._done_emitted: bool = False
-        self.citations: List[Any] = []
-        self.images: List[Any] = []
-        self.grounding_sources: List[Dict[str, Any]] = []
-        self.grounding_queries: List[str] = []
-        self.youtube_videos: List[Dict[str, Any]] = []
+        self.citations: list[Any] = []
+        self.images: list[Any] = []
+        self.grounding_sources: list[dict[str, Any]] = []
+        self.grounding_queries: list[str] = []
+        self.youtube_videos: list[dict[str, Any]] = []
         self._seen_youtube_ids: set[str] = set()
-        self.answered_by: Optional[str] = None
+        self.answered_by: str | None = None
         self.speculative_tail_buffer: int = 12
 
-    def _normalize_citations(self, raw: Any) -> List[Any]:
+    def _normalize_citations(self, raw: Any) -> list[Any]:
         if not raw or not isinstance(raw, list):
             return []
         result = []
@@ -391,7 +388,7 @@ class StreamingDeltaAccumulator:
                 })
         return result
 
-    def _normalize_images(self, raw: Any) -> List[Any]:
+    def _normalize_images(self, raw: Any) -> list[Any]:
         if not raw or not isinstance(raw, list):
             return []
         # Unwrap nested outer list if candidate[12][7] is [ [gen1, gen2, ...] ]
@@ -478,7 +475,7 @@ class StreamingDeltaAccumulator:
         last_sent: str,
         is_final: bool,
         tail_buffer_size: int = 0,
-    ) -> Tuple[str, str]:
+    ) -> tuple[str, str]:
         """
         Computes incremental delta between last sent value and newly arrived cumulative value.
         Buffers incomplete high surrogates at delta boundaries until low surrogate arrives.
@@ -517,7 +514,7 @@ class StreamingDeltaAccumulator:
             return ensure_utf8_clean(delta), candidate
 
         # Fallback: retroactive server mutation or fence adjustment (LCP resolution)
-        lcp_len = longest_common_prefix_length(last_sent, candidate)
+        longest_common_prefix_length(last_sent, candidate)
 
         # If candidate grew past last_sent despite slight drift at tail, emit the new suffix
         if len(candidate) > len(last_sent):
@@ -528,11 +525,11 @@ class StreamingDeltaAccumulator:
         return "", last_sent
 
 
-    def process_frame(self, frame: List[Any]) -> List[StreamChunk]:
+    def process_frame(self, frame: list[Any]) -> list[StreamChunk]:
         """
         Processes a single Stage 1 frame envelope and returns any resulting StreamChunks.
         """
-        chunks: List[StreamChunk] = []
+        chunks: list[StreamChunk] = []
 
         entries = frame
         while len(entries) == 1 and isinstance(entries[0], list) and len(entries[0]) > 0 and isinstance(entries[0][0], list):
@@ -542,7 +539,7 @@ class StreamingDeltaAccumulator:
             if not isinstance(entry, list) or len(entry) < 3:
                 continue
 
-            envelope_type, rpcid, inner_json_str = entry[0], entry[1], entry[2]
+            _envelope_type, _rpcid, inner_json_str = entry[0], entry[1], entry[2]
 
             # Check for error in envelope entry[5]
             if len(entry) > 5 and entry[5] is not None:
@@ -690,8 +687,8 @@ class StreamingDeltaAccumulator:
 
                         # Extract Grounding Queries & Sources (Fields 16, 23, 27)
                         if isinstance(rich, dict):
-                            g_queries: List[str] = list(self.grounding_queries)
-                            g_sources: List[Dict[str, Any]] = list(self.grounding_sources)
+                            g_queries: list[str] = list(self.grounding_queries)
+                            g_sources: list[dict[str, Any]] = list(self.grounding_sources)
                             g_changed = False
                             for fk in ("16", "23", "27"):
                                 if fk in rich and rich[fk]:
