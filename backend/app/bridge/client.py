@@ -16,7 +16,8 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any
+from collections.abc import AsyncIterator
 import uuid
 import threading
 import httpx
@@ -33,7 +34,7 @@ class CacheEntry:
     failure_count: int = 1
     is_half_open: bool = False
 
-    def is_expired(self, now: Optional[float] = None) -> bool:
+    def is_expired(self, now: float | None = None) -> bool:
         current_time = now if now is not None else time.time()
         return current_time >= self.expires_at
 
@@ -88,12 +89,12 @@ class GeminiWebClient:
 
     def __init__(
         self,
-        session_context: Optional[Any] = None,
+        session_context: Any | None = None,
         base_url: str = DEFAULT_BASE_URL,
-        cookies: Optional[Dict[str, str]] = None,
+        cookies: dict[str, str] | None = None,
         timeout: float = 360.0,
-        vault: Optional[Any] = None,
-        account_id: Optional[str] = None,
+        vault: Any | None = None,
+        account_id: str | None = None,
     ) -> None:
         if session_context is not None:
             self.ctx = session_context
@@ -107,7 +108,7 @@ class GeminiWebClient:
         self.vault = vault or getattr(self.ctx, "vault", None)
         self.account_id = account_id or getattr(self.ctx, "account_id", None)
         self._reqid_counter: int = random.randint(100000, 999999)
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -148,7 +149,7 @@ class GeminiWebClient:
         if not raw_cookie_headers:
             return
 
-        harvested: Dict[str, str] = {}
+        harvested: dict[str, str] = {}
         for header in raw_cookie_headers:
             parts = header.split(";")
             if not parts:
@@ -191,7 +192,7 @@ class GeminiWebClient:
                     await vault.update_account_cookies_async(acc_id, harvested)
                     logger.info("Persisted passively harvested cookies for account '%s' to DPAPI vault asynchronously", acc_id)
                     return
-                elif acc_id and hasattr(vault, "save_account_async"):
+                if acc_id and hasattr(vault, "save_account_async"):
                     profile = vault.get_account(acc_id)
                     if profile:
                         if hasattr(profile, "cookies") and isinstance(profile.cookies, dict):
@@ -237,7 +238,7 @@ class GeminiWebClient:
         return self._reqid_counter
 
     # Shared across all GeminiWebClient instances: account_key -> CacheEntry or float
-    _feature_mode_40_unsupported: Dict[str, Union[CacheEntry, float]] = {}
+    _feature_mode_40_unsupported: dict[str, CacheEntry | float] = {}
     _cache_lock: threading.Lock = threading.Lock()
 
     def _get_account_key(self) -> str:
@@ -341,20 +342,20 @@ class GeminiWebClient:
     def _build_81_element_envelope(
         self,
         prompt: str,
-        cid: Optional[str] = None,
-        rid: Optional[str] = None,
-        rcid: Optional[str] = None,
-        gem_id: Optional[str] = None,
-        attachments: Optional[List[Any]] = None,
+        cid: str | None = None,
+        rid: str | None = None,
+        rcid: str | None = None,
+        gem_id: str | None = None,
+        attachments: list[Any] | None = None,
         model_number: int = 1,
         thinking_flag: int = 1,
         incognito: bool = False,
         feature_mode: int = 0,
-        mode_tag: Optional[str] = None,
-        extensions: Optional[List[str]] = None,
-    ) -> List[Any]:
+        mode_tag: str | None = None,
+        extensions: list[str] | None = None,
+    ) -> list[Any]:
         """Constructs the canonical 81-element inner request envelope."""
-        inner: List[Any] = [None] * 81
+        inner: list[Any] = [None] * 81
 
         # Normalize Workspace extensions (@YouTube, @Gmail, @Google Drive, @Google Docs, etc.)
         norm_prompt, _ = WorkspaceExtensionRegistry.normalize_prompt_and_extensions(prompt, extensions)
@@ -426,7 +427,7 @@ class GeminiWebClient:
 
         return inner
 
-    async def call_batchexecute(self, rpc_id: str, payload: List[Any]) -> Any:
+    async def call_batchexecute(self, rpc_id: str, payload: list[Any]) -> Any:
         """
         Executes a unary batchexecute RPC and returns the unpacked inner JSON response.
         """
@@ -496,12 +497,12 @@ class GeminiWebClient:
         return None
 
     # Unary RPC implementations
-    async def get_user_status(self) -> Dict[str, Any]:
+    async def get_user_status(self) -> dict[str, Any]:
         """RPC otAQ7b: Discovers models, account tier, and quotas."""
         raw = await self.call_batchexecute("otAQ7b", [])
         return {"raw": raw}
 
-    async def list_models(self) -> List[ModelInfo]:
+    async def list_models(self) -> list[ModelInfo]:
         """Discovers available models via otAQ7b or falls back to known defaults."""
         try:
             status = await self.get_user_status()
@@ -514,7 +515,7 @@ class GeminiWebClient:
                     self.ctx.account_tier = "free"
 
             if raw and isinstance(raw, list) and len(raw) > 15 and isinstance(raw[15], list):
-                discovered: List[ModelInfo] = []
+                discovered: list[ModelInfo] = []
                 for idx, item in enumerate(raw[15]):
                     if isinstance(item, list) and len(item) >= 2:
                         m_id = str(item[0])
@@ -556,15 +557,15 @@ class GeminiWebClient:
 
         return list(DEFAULT_MODELS.values())
 
-    async def list_conversations(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
         """RPC MaZiqc: Lists sidebar conversation history."""
         payload = [limit, None, [0, None, 1]]
         raw = await self.call_batchexecute("MaZiqc", payload)
-        conversations: List[Dict[str, Any]] = []
+        conversations: list[dict[str, Any]] = []
         if not raw or not isinstance(raw, list):
             return conversations
 
-        conv_items: List[Any] = []
+        conv_items: list[Any] = []
         if len(raw) > 0 and isinstance(raw[0], list):
             conv_items = raw[0]
         elif len(raw) > 2 and isinstance(raw[2], list):
@@ -597,12 +598,12 @@ class GeminiWebClient:
     # Alias aligned with PROJECT.md Interface Contract 1
     list_remote_conversations = list_conversations
 
-    async def get_conversation_turns(self, cid: str, limit: int = 100) -> List[Any]:
+    async def get_conversation_turns(self, cid: str, limit: int = 100) -> list[Any]:
         """RPC hNvQHb: Fetches turns within a conversation."""
         payload = [cid, limit]
         return await self.call_batchexecute("hNvQHb", payload)
 
-    async def list_gems(self, gem_type: int = 2) -> List[Gem]:
+    async def list_gems(self, gem_type: int = 2) -> list[Gem]:
         """RPC CNgdBe: Lists Custom Gems (2=custom, 3=system)."""
         lang = getattr(self.ctx, "language", "en")
         is_custom = (gem_type == 2)
@@ -610,7 +611,7 @@ class GeminiWebClient:
         raw = await self.call_batchexecute("CNgdBe", payload)
         return GemSerializer.parse_list_response(raw, is_builtin=not is_custom)
 
-    async def get_gem(self, gem_id: str) -> Optional[Gem]:
+    async def get_gem(self, gem_id: str) -> Gem | None:
         """Fetches a single Gem by ID or name across Custom (2) and System (3) Gems."""
         for g_type in (2, 3):
             try:
@@ -709,14 +710,14 @@ class GeminiWebClient:
         self,
         prompt: str,
         model: str = "gemini-2.0-flash",
-        gem_id: Optional[str] = None,
-        cid: Optional[str] = None,
-        rid: Optional[str] = None,
-        rcid: Optional[str] = None,
-        attachments: Optional[List[Any]] = None,
+        gem_id: str | None = None,
+        cid: str | None = None,
+        rid: str | None = None,
+        rcid: str | None = None,
+        attachments: list[Any] | None = None,
         incognito: bool = False,
-        history: Optional[List[Any]] = None,
-        extensions: Optional[List[str]] = None,
+        history: list[Any] | None = None,
+        extensions: list[str] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
         """
@@ -752,9 +753,7 @@ class GeminiWebClient:
                     if part.startswith("gem="):
                         gem_id = part.split("=", 1)[1].strip()
                         break
-            elif model.startswith("gem:"):
-                gem_id = model[4:].split("@")[0].strip()
-            elif model.startswith("gem/"):
+            elif model.startswith(("gem:", "gem/")):
                 gem_id = model[4:].split("@")[0].strip()
 
         # Derive conversation context from history if cid/rid/rcid not explicit
@@ -771,7 +770,7 @@ class GeminiWebClient:
                 if cid:
                     break
             if not cid:
-                hist_lines: List[str] = []
+                hist_lines: list[str] = []
                 for turn in history:
                     if isinstance(turn, dict) and turn.get("content"):
                         r_lbl = turn.get("role", "user")
