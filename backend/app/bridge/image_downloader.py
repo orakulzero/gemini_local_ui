@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 import httpx
 
 from backend.app.bridge.models import HeaderBuilder
@@ -38,7 +38,7 @@ _REAL_GUSER_URL_RE = re.compile(
 )
 
 
-def filter_fife_cookies(cookies: Optional[Dict[str, str]]) -> Dict[str, str]:
+def filter_fife_cookies(cookies: dict[str, str] | None) -> dict[str, str]:
     """
     Removes foreign Google service cookies (Gmail OSID, Accounts LSID) that cause
     HTTP 403 Forbidden on work.fife.usercontent.google.com during image downloads.
@@ -52,7 +52,7 @@ def filter_fife_cookies(cookies: Optional[Dict[str, str]]) -> Dict[str, str]:
     }
 
 
-def resolve_image_placeholders(text: str, raw_or_urls: Union[str, List[str]]) -> str:
+def resolve_image_placeholders(text: str, raw_or_urls: str | list[str]) -> str:
     """
     Replaces `http://googleusercontent.com/image_generation_content/<idx>` placeholders
     in response text with actual `googleusercontent.com` URLs extracted from the frame.
@@ -60,7 +60,7 @@ def resolve_image_placeholders(text: str, raw_or_urls: Union[str, List[str]]) ->
     if not text:
         return text
 
-    real_urls: List[str] = []
+    real_urls: list[str] = []
     if isinstance(raw_or_urls, str):
         for url in _REAL_GUSER_URL_RE.findall(raw_or_urls):
             if "image_generation_content" not in url and url not in real_urls:
@@ -86,7 +86,7 @@ def resolve_image_placeholders(text: str, raw_or_urls: Union[str, List[str]]) ->
     return _PLACEHOLDER_RE.sub(_replace, text)
 
 
-def _nested(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
+def _nested(obj: Any, path: list[int | str], default: Any = None) -> Any:
     cur = obj
     for key in path:
         try:
@@ -96,13 +96,13 @@ def _nested(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
     return cur
 
 
-def parse_generated_images_from_raw(raw: str) -> List[Dict[str, str]]:
+def parse_generated_images_from_raw(raw: str) -> list[dict[str, str]]:
     """
     Extracts generated image descriptors `{cid, rid, rcid, image_id, url}`
     from raw StreamGenerate wrb.fr lines.
     """
-    results: List[Dict[str, str]] = []
-    seen: set[Tuple[str, str]] = set()
+    results: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for line in raw.splitlines():
         if '"wrb.fr"' not in line or "gg-dl" not in line:
             continue
@@ -157,11 +157,11 @@ class GeminiImageDownloader:
         self.bridge_client = client
         self.timeout = timeout
 
-    def get_clean_cookies(self) -> Dict[str, str]:
+    def get_clean_cookies(self) -> dict[str, str]:
         raw = getattr(self.ctx, "cookies", {}) if self.ctx else {}
         return filter_fife_cookies(raw)
 
-    async def get_full_size_url(self, meta: Dict[str, str]) -> str:
+    async def get_full_size_url(self, meta: dict[str, str]) -> str:
         """Calls `c8o8Fe` (GetFullSizeImage) RPC via `bridge_client` if available."""
         if not self.bridge_client or not hasattr(self.bridge_client, "get_full_size_image_url"):
             return ""
@@ -182,8 +182,8 @@ class GeminiImageDownloader:
         self,
         start_url: str,
         max_hops: int = 6,
-        http_client: Optional[httpx.AsyncClient] = None,
-    ) -> Tuple[Optional[bytes], Optional[str]]:
+        http_client: httpx.AsyncClient | None = None,
+    ) -> tuple[bytes | None, str | None]:
         """
         Follows the `=d-I?alr=yes` text-redirect chain where intermediate HTTP 200
         responses have `Content-Type: text/plain` containing the next signed URL,
@@ -232,9 +232,9 @@ class GeminiImageDownloader:
 
     async def download_image(
         self,
-        meta: Dict[str, str],
-        http_client: Optional[httpx.AsyncClient] = None,
-    ) -> Tuple[Optional[bytes], Optional[str]]:
+        meta: dict[str, str],
+        http_client: httpx.AsyncClient | None = None,
+    ) -> tuple[bytes | None, str | None]:
         """
         Downloads a generated image:
         1. Attempts full-size resolution via `c8o8Fe` RPC + `=d-I?alr=yes` chain.
