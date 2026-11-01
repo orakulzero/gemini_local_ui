@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 import uuid
 
 from backend.app.bridge.gemini_capabilities import _get_live_client_if_available
@@ -37,9 +37,9 @@ class UltraSubscriptionManager:
 
     DEFAULT_MONTHLY_CREDITS = 5000
 
-    def __init__(self, storage_path: Optional[Union[Path, str]] = None) -> None:
+    def __init__(self, storage_path: Path | str | None = None) -> None:
         self.storage_path = Path(storage_path) if storage_path else None
-        self._accounts: Dict[str, Dict[str, Any]] = {}
+        self._accounts: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -62,7 +62,7 @@ class UltraSubscriptionManager:
             except Exception as exc:
                 logger.debug("UltraSubscriptionManager save warning: %s", exc)
 
-    def _ensure_account(self, account_id: str) -> Dict[str, Any]:
+    def _ensure_account(self, account_id: str) -> dict[str, Any]:
         if account_id not in self._accounts:
             self._accounts[account_id] = {
                 "account_id": account_id,
@@ -78,7 +78,7 @@ class UltraSubscriptionManager:
         self,
         policy_str: str = "launch_ultra_5x_family_member_policy",
         account_id: str = "acc_21aac20f",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-ULTRA-01: Parses launch_ultra_5x_family_member_policy and returns 5x telemetry thresholds."""
         self._ensure_account(account_id)
         is_family = "family" in policy_str.lower() or True
@@ -95,7 +95,7 @@ class UltraSubscriptionManager:
             "policy_string": policy_str,
         }
 
-    def get_family_credits_telemetry(self, account_id: str = "acc_21aac20f") -> Dict[str, Any]:
+    def get_family_credits_telemetry(self, account_id: str = "acc_21aac20f") -> dict[str, Any]:
         """REQ-ULTRA-01: Returns shared family AI credits pool telemetry for Veo/Flow/Whisk."""
         acc = self._ensure_account(account_id)
         return {
@@ -113,7 +113,7 @@ class UltraSubscriptionManager:
         amount: int,
         feature: str,
         account_id: str = "acc_21aac20f",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-ULTRA-01: Deducts AI credits from the shared family pool and logs the transaction."""
         acc = self._ensure_account(account_id)
         deduct = max(0, int(amount))
@@ -135,9 +135,9 @@ class UltraSubscriptionManager:
 async def run_deep_think_reasoning(
     prompt: str,
     branch_count: int = 3,
-    client: Optional[Any] = None,
-    cid: Optional[str] = None,
-) -> Dict[str, Any]:
+    client: Any | None = None,
+    cid: str | None = None,
+) -> dict[str, Any]:
     """
     REQ-ULTRA-02: Executes Gemini 4 Argon Deep Think (thinking_flag=3) parallel hypothesis
     tree exploration and synthesizes verified branches.
@@ -150,8 +150,8 @@ async def run_deep_think_reasoning(
     out_cid = cid or f"c_dt_{uuid.uuid4().hex[:8]}"
     out_rid = f"r_dt_{uuid.uuid4().hex[:8]}"
     out_rcid = f"rc_dt_{uuid.uuid4().hex[:8]}"
-    text_parts: List[str] = []
-    thought_parts: List[str] = []
+    text_parts: list[str] = []
+    thought_parts: list[str] = []
     full_text = ""
 
     if client is not None:
@@ -184,7 +184,7 @@ async def run_deep_think_reasoning(
             if owned_client and hasattr(client, "close"):
                 await client.close()
 
-    branches: List[str] = []
+    branches: list[str] = []
     for line in full_text.splitlines():
         m = _BRANCH_LINE_RE.match(line)
         if m:
@@ -214,16 +214,16 @@ async def run_deep_think_reasoning(
 
 
 def pack_ultra_2m_repository_context(
-    workspace_dir: Union[Path, str],
+    workspace_dir: Path | str,
     max_total_bytes: int = 7_500_000,
     max_file_bytes: int = 1_000_000,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     REQ-ULTRA-03: Walks workspace_dir and packs source/documentation files into a single
     structured bundle up to the 2,000,000-token (~7.5 MB) Ultra context capacity.
     """
     root = Path(workspace_dir)
-    blocks: List[str] = []
+    blocks: list[str] = []
     file_count = 0
     total_lines = 0
     total_bytes = 0
@@ -269,8 +269,8 @@ async def analyze_ultra_media_with_timecodes(
     media_bytes: bytes,
     filename: str = "video.mp4",
     prompt: str = "Extract key timestamps",
-    client: Optional[Any] = None,
-) -> Dict[str, Any]:
+    client: Any | None = None,
+) -> dict[str, Any]:
     """
     REQ-ULTRA-03: Analyzes long-form video or audio payloads in the 2M-token Ultra context
     window and extracts structured [HH:MM:SS] or [MM:SS] timecodes.
@@ -295,7 +295,7 @@ async def analyze_ultra_media_with_timecodes(
     summary_text = ""
     if client is not None:
         try:
-            parts: List[str] = []
+            parts: list[str] = []
             media_prompt = (
                 f"Analyze media '{filename}' ({mime_type}, {len(media_bytes)} bytes). "
                 f"{prompt}. Include [HH:MM:SS] timestamps."
@@ -314,7 +314,7 @@ async def analyze_ultra_media_with_timecodes(
             if owned_client and hasattr(client, "close"):
                 await client.close()
 
-    timecodes: List[Dict[str, str]] = []
+    timecodes: list[dict[str, str]] = []
     for match in _TIMECODE_RE.finditer(summary_text):
         timecodes.append({"timecode": match.group(1).strip(), "label": match.group(2).strip()})
 
@@ -345,16 +345,16 @@ class VeoUltraStudioEngine:
     first/last frame interpolation, and scene extension.
     """
 
-    SUPPORTED_MODELS: List[str] = [
+    SUPPORTED_MODELS: list[str] = [
         "veo_3_1_t2v_hq_1080p_audio",
         "veo_3_1_i2v_first_last_frame",
         "veo_3_1_video_extend",
         "veo_3_1_t2v_fast_audio",
     ]
 
-    def __init__(self, storage_path: Optional[Union[Path, str]] = None) -> None:
+    def __init__(self, storage_path: Path | str | None = None) -> None:
         self.storage_path = Path(storage_path) if storage_path else None
-        self._scenes: Dict[str, Dict[str, Any]] = {}
+        self._scenes: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -382,15 +382,15 @@ class VeoUltraStudioEngine:
         prompt: str,
         model_key: str = "veo_3_1_t2v_hq_1080p_audio",
         resolution: str = "1080p",
-        first_frame_b64: Optional[str] = None,
-        last_frame_b64: Optional[str] = None,
-        extend_from_scene_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        first_frame_b64: str | None = None,
+        last_frame_b64: str | None = None,
+        extend_from_scene_id: str | None = None,
+    ) -> dict[str, Any]:
         """REQ-ULTRA-04: Renders a Veo 3.1 Ultra scene with HQ 1080p, interpolation, or extension."""
         eff_model = model_key if model_key in self.SUPPORTED_MODELS else "veo_3_1_t2v_hq_1080p_audio"
         credits_used = 20 if "hq_1080p" in eff_model else 15
         scene_id = f"veo_scene_{uuid.uuid4().hex[:10]}"
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "ok": True,
             "scene_id": scene_id,
             "prompt": prompt,
@@ -421,13 +421,13 @@ class NotebookLMUltraEngine:
     async def sync_ultra_repo_sources(
         self,
         notebook_id: str,
-        workspace_dir: Union[Path, str],
+        workspace_dir: Path | str,
         max_sources: int = 300,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-ULTRA-05: Scans workspace_dir and ingests up to 300 sources into a NotebookLM Ultra notebook."""
         root = Path(workspace_dir)
         cap = min(int(max_sources), self.MAX_SOURCES_PER_NOTEBOOK)
-        sources: List[Dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
 
         if root.exists():
             for dirpath, dirnames, filenames in os.walk(root):
@@ -463,7 +463,7 @@ class NotebookLMUltraEngine:
         mode: str = "deep_dive",
         instructions: str = "",
         language: str = "ru",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """REQ-ULTRA-05: Synthesizes Critique, Debate, Deep-Dive, or Brief Audio Overview."""
         norm_mode = mode.strip().lower()
         if norm_mode not in self.SUPPORTED_AUDIO_MODES:
