@@ -740,13 +740,17 @@ class TaskPipelineOrchestrator:
             att_list: list[dict[str, Any]] | None = None
             full_prompt = prompt
             if is_first_turn and bundle.get("zip_bytes"):
-                uploader = GeminiUploader(session_context=sm.context, base_url=sm.base_url)
-                uri = await uploader.upload_file(
-                    data=bundle["zip_bytes"],
-                    filename=bundle["zip_filename"],
-                    mime_type="application/zip",
-                )
-                att_list = [{"uri": uri, "filename": bundle["zip_filename"], "scotty": True}]
+                try:
+                    uploader = GeminiUploader(session_context=sm.context, base_url=sm.base_url)
+                    uri = await uploader.upload_file(
+                        data=bundle["zip_bytes"],
+                        filename=bundle["zip_filename"],
+                        mime_type="application/zip",
+                    )
+                    att_list = [{"uri": uri, "filename": bundle["zip_filename"], "scotty": True}]
+                except Exception as up_err:
+                    logger.debug("Scotty zip upload skipped (using inline Ultra 2M AST context): %s", up_err)
+                    att_list = None
                 contracts_summary = "\n".join(
                     f"# {k}\n{v}" for k, v in list(bundle.get("ast_contracts", {}).items())[:15]
                 )
