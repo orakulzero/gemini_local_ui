@@ -11,7 +11,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 import os
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any
+from collections.abc import AsyncIterator
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,7 +31,7 @@ from backend.app.api.task_pipeline import router as task_pipeline_router
 from backend.routes.stations import legacy_router as stations_legacy_router, router as stations_router
 from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
-from backend.app.bridge.session import SessionHealthReport, SessionHealthStatus, SessionManager
+from backend.app.bridge.session import SessionHealthStatus, SessionManager
 from backend.app.anthropic.routes import router as anthropic_router
 from backend.app.mcp.routes import router as mcp_router
 from backend.app.mcp.server import MCPServer
@@ -44,7 +45,7 @@ logger = logging.getLogger("gemini_backend")
 
 # Global singletons
 vault: CredentialVault = CredentialVault()
-session_manager: Optional[SessionManager] = None
+session_manager: SessionManager | None = None
 db: Database = Database()
 repository: ConversationRepository = ConversationRepository(db)
 search_engine: SearchEngine = SearchEngine(db)
@@ -175,17 +176,17 @@ async def enforce_local_host(request: Request, call_next: Any) -> Response:
 
 # Request / Response Schemas
 class CredentialsRequest(BaseModel):
-    cookies: Optional[str] = None
+    cookies: str | None = None
     auto_import: bool = False
 
 
 class AdminSessionRequest(BaseModel):
-    cookie: Optional[str] = None
-    sapisid: Optional[str] = None
-    auth_user: Optional[Any] = None
-    xsrf_token: Optional[str] = None
-    gemini_bl: Optional[str] = None
-    account_id: Optional[str] = None
+    cookie: str | None = None
+    sapisid: str | None = None
+    auth_user: Any | None = None
+    xsrf_token: str | None = None
+    gemini_bl: str | None = None
+    account_id: str | None = None
 
 
 FOREIGN_SERVICE_COOKIES = {"OSID", "__Secure-OSID", "LSID", "__Host-1PLSID", "__Host-3PLSID"}
@@ -203,7 +204,7 @@ async def health_check() -> HealthResponse:
 
 
 @app.get("/api/session/status")
-async def get_session_status() -> Dict[str, Any]:
+async def get_session_status() -> dict[str, Any]:
     """Returns the current Gemini web session authentication and health diagnostics."""
     if not session_manager:
         raise HTTPException(status_code=500, detail="Session manager not initialized")
@@ -245,7 +246,7 @@ async def get_session_status() -> Dict[str, Any]:
 
 
 @app.post("/api/session/credentials")
-async def set_credentials(req: CredentialsRequest) -> Dict[str, Any]:
+async def set_credentials(req: CredentialsRequest) -> dict[str, Any]:
     """
     Ingests session credentials either via auto-extraction from installed browsers
     or from manual paste (raw Cookie header or JSON).
@@ -253,7 +254,7 @@ async def set_credentials(req: CredentialsRequest) -> Dict[str, Any]:
     if not session_manager:
         raise HTTPException(status_code=500, detail="Session manager not initialized")
 
-    cookies_dict: Dict[str, str] = {}
+    cookies_dict: dict[str, str] = {}
     source = "manual"
 
     if req.auto_import:
@@ -279,7 +280,7 @@ async def set_credentials(req: CredentialsRequest) -> Dict[str, Any]:
 
     # Update active session
     target_account_id = session_manager.active_account_id or (vault.get_active_account_id() if vault else "default")
-    ctx = await session_manager.init_session(cookies_dict, account_id=target_account_id)
+    await session_manager.init_session(cookies_dict, account_id=target_account_id)
     health = session_manager.get_health()
 
     if health.is_authenticated:
@@ -315,7 +316,7 @@ async def set_credentials(req: CredentialsRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/session/rotate")
-async def rotate_session() -> Dict[str, Any]:
+async def rotate_session() -> dict[str, Any]:
     """Manually triggers a RotateCookies token refresh."""
     if not session_manager:
         raise HTTPException(status_code=500, detail="Session manager not initialized")
@@ -325,7 +326,7 @@ async def rotate_session() -> Dict[str, Any]:
 
 
 @app.delete("/api/session/credentials")
-async def clear_credentials() -> Dict[str, Any]:
+async def clear_credentials() -> dict[str, Any]:
     """Clears stored credentials and resets active session."""
     if not session_manager:
         raise HTTPException(status_code=500, detail="Session manager not initialized")
@@ -336,7 +337,7 @@ async def clear_credentials() -> Dict[str, Any]:
 
 
 @app.get("/admin/session")
-async def get_admin_session_status() -> Dict[str, Any]:
+async def get_admin_session_status() -> dict[str, Any]:
     """Returns current session status for the Gemini Cookie Sync browser extension."""
     if not session_manager:
         raise HTTPException(status_code=500, detail="Session manager not initialized")
@@ -442,7 +443,7 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
 
 
 @app.get("/api/models")
-async def list_models() -> Dict[str, Any]:
+async def list_models() -> dict[str, Any]:
     """Lists available model definitions, combining live otAQ7b account models with Gemini 3.x/4 catalog."""
     from backend.app.bridge.client import GeminiWebClient
     from backend.app.bridge.models import UI_PRIMARY_MODEL_IDS
@@ -501,8 +502,8 @@ async def search_messages(
     q: str = "",
     limit: int = 20,
     offset: int = 0,
-    conversation_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
     """Instant FTS5 full-text search across messages and thinking traces."""
     results = await search_engine.search(
         query=q,
@@ -518,7 +519,7 @@ async def search_messages(
 
 
 @app.post("/api/sync")
-async def sync_remote_alias() -> Dict[str, Any]:
+async def sync_remote_alias() -> dict[str, Any]:
     """Alias for POST /api/conversations/sync."""
     if not session_manager or not session_manager.get_health().is_authenticated:
         raise HTTPException(status_code=401, detail="Not authenticated with Google Gemini")
@@ -538,10 +539,10 @@ async def sync_remote_alias() -> Dict[str, Any]:
 
 class ImageDownloadRequest(BaseModel):
     url: str
-    image_id: Optional[str] = None
-    cid: Optional[str] = None
-    rid: Optional[str] = None
-    rcid: Optional[str] = None
+    image_id: str | None = None
+    cid: str | None = None
+    rid: str | None = None
+    rcid: str | None = None
     format: str = "base64"
 
 
