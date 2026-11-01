@@ -20,7 +20,9 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
+from collections.abc import Sequence
+import contextlib
 
 logger = logging.getLogger("gemini_openai.conversation_cache")
 
@@ -56,7 +58,7 @@ def _normalize_content(content: Any) -> Any:
     return str(content)
 
 
-def _normalize_message(msg: Any) -> Dict[str, Any]:
+def _normalize_message(msg: Any) -> dict[str, Any]:
     """Converts a Pydantic ChatCompletionMessageParam or dict into a canonical dict for hashing."""
     if hasattr(msg, "model_dump"):
         raw = msg.model_dump(exclude_none=True)
@@ -68,7 +70,7 @@ def _normalize_message(msg: Any) -> Dict[str, Any]:
             "content": getattr(msg, "content", ""),
         }
 
-    norm: Dict[str, Any] = {
+    norm: dict[str, Any] = {
         "role": str(raw.get("role", "user")),
         "content": _normalize_content(raw.get("content")),
     }
@@ -91,13 +93,13 @@ def _normalize_message(msg: Any) -> Dict[str, Any]:
 
 def history_key(
     messages: Sequence[Any],
-    model: Optional[str] = None,
-    account: Optional[str] = None,
+    model: str | None = None,
+    account: str | None = None,
 ) -> str:
     """Computes a deterministic SHA-256 hex digest for a sequence of OpenAI/Anthropic messages, optionally scoped by model/account."""
     normalized = [_normalize_message(m) for m in messages]
     if model or account:
-        envelope: Dict[str, Any] = {
+        envelope: dict[str, Any] = {
             "messages": normalized,
             "model": str(model or ""),
             "account": str(account or ""),
@@ -117,14 +119,14 @@ class ConversationCache:
     def __init__(
         self,
         max_size: int = MAX_CONVERSATIONS,
-        db_path: Optional[Union[str, Path]] = None,
+        db_path: str | Path | None = None,
         ttl: float = DEFAULT_CACHE_TTL,
     ) -> None:
         self.max_size = max_size
         self.ttl = ttl
-        self._cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._lock = threading.Lock()
-        self.db_path: Optional[Path] = Path(db_path) if db_path else None
+        self.db_path: Path | None = Path(db_path) if db_path else None
         if self.db_path is not None:
             self._init_db()
 
@@ -151,7 +153,7 @@ class ConversationCache:
         except Exception as e:
             logger.warning("Failed initializing SQLite conversation cache at %s: %s", self.db_path, e)
 
-    def _db_lookup(self, candidate_keys: List[str]) -> Dict[str, Dict[str, Any]]:
+    def _db_lookup(self, candidate_keys: list[str]) -> dict[str, dict[str, Any]]:
         if self.db_path is None or not candidate_keys:
             return {}
         try:
@@ -178,7 +180,7 @@ class ConversationCache:
             logger.debug("SQLite conversation cache lookup error: %s", e)
             return {}
 
-    def _db_upsert(self, key: str, entry: Dict[str, Any]) -> None:
+    def _db_upsert(self, key: str, entry: dict[str, Any]) -> None:
         if self.db_path is None:
             return
         try:
@@ -210,10 +212,8 @@ class ConversationCache:
                         )
                     conn.execute("COMMIT;")
                 except Exception:
-                    try:
+                    with contextlib.suppress(Exception):
                         conn.execute("ROLLBACK;")
-                    except Exception:
-                        pass
                     raise
         except Exception as e:
             logger.debug("SQLite conversation cache upsert error: %s", e)
@@ -228,16 +228,14 @@ class ConversationCache:
                     conn.execute("DELETE FROM conversation_prefix_cache")
                     conn.execute("COMMIT;")
                 except Exception:
-                    try:
+                    with contextlib.suppress(Exception):
                         conn.execute("ROLLBACK;")
-                    except Exception:
-                        pass
                     raise
         except Exception as e:
             logger.debug("SQLite conversation cache clear error: %s", e)
 
     @staticmethod
-    def _clean_entry(entry: Dict[str, Any]) -> Dict[str, str]:
+    def _clean_entry(entry: dict[str, Any]) -> dict[str, str]:
         return {
             "cid": str(entry.get("cid", "")),
             "rid": str(entry.get("rid", "")),
@@ -247,9 +245,9 @@ class ConversationCache:
     def find(
         self,
         messages: Sequence[Any],
-        model: Optional[str] = None,
-        account: Optional[str] = None,
-    ) -> Tuple[int, Optional[Dict[str, str]]]:
+        model: str | None = None,
+        account: str | None = None,
+    ) -> tuple[int, dict[str, str] | None]:
         """
         Searches for the longest prefix `messages[:n]` (for n from len(messages)-1 down to 1)
         that matches a cached Gemini conversation state in RAM or SQLite.
@@ -261,7 +259,7 @@ class ConversationCache:
         if total < 2:
             return 0, None
 
-        prefix_keys: List[Tuple[int, str]] = [
+        prefix_keys: list[tuple[int, str]] = [
             (n, history_key(messages[:n], model=model, account=account))
             for n in range(total - 1, 0, -1)
         ]
@@ -294,11 +292,11 @@ class ConversationCache:
     def remember(
         self,
         messages: Sequence[Any],
-        reply: Union[str, Dict[str, Any], Any],
-        chat: Optional[Dict[str, Any]],
-        model: Optional[str] = None,
-        account: Optional[str] = None,
-    ) -> Optional[str]:
+        reply: str | dict[str, Any] | Any,
+        chat: dict[str, Any] | None,
+        model: str | None = None,
+        account: str | None = None,
+    ) -> str | None:
         """
         Records `messages + [assistant_reply]` mapped to `chat` (`{"cid": ..., "rid": ..., "rcid": ...}`).
         Returns the SHA-256 key if stored, or None if `chat` lacks a valid `cid`.
@@ -307,7 +305,7 @@ class ConversationCache:
             return None
 
         if isinstance(reply, str):
-            reply_msg: Dict[str, Any] = {"role": "assistant", "content": reply}
+            reply_msg: dict[str, Any] = {"role": "assistant", "content": reply}
         elif hasattr(reply, "model_dump"):
             reply_msg = reply.model_dump(exclude_none=True)
         elif isinstance(reply, dict):
@@ -351,19 +349,19 @@ default_cache = ConversationCache(max_size=MAX_CONVERSATIONS, db_path=DEFAULT_CA
 
 def find(
     messages: Sequence[Any],
-    model: Optional[str] = None,
-    account: Optional[str] = None,
-) -> Tuple[int, Optional[Dict[str, str]]]:
+    model: str | None = None,
+    account: str | None = None,
+) -> tuple[int, dict[str, str] | None]:
     return default_cache.find(messages, model=model, account=account)
 
 
 def remember(
     messages: Sequence[Any],
-    reply: Union[str, Dict[str, Any], Any],
-    chat: Optional[Dict[str, Any]],
-    model: Optional[str] = None,
-    account: Optional[str] = None,
-) -> Optional[str]:
+    reply: str | dict[str, Any] | Any,
+    chat: dict[str, Any] | None,
+    model: str | None = None,
+    account: str | None = None,
+) -> str | None:
     return default_cache.remember(messages, reply, chat, model=model, account=account)
 
 
