@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 import uuid
 
 
@@ -43,7 +43,7 @@ class ModelInfo:
     tier: ModelTier = ModelTier.FREE
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     is_default: bool = False
-    mode_tag: Optional[str] = None  # e.g. "Argon4p0" for 4 Argon
+    mode_tag: str | None = None  # e.g. "Argon4p0" for 4 Argon
     feature_mode: int = 0           # 0: Chat, 40: Task (Spark/Remy Task mode)
 
     @property
@@ -51,7 +51,7 @@ class ModelInfo:
         return self.capabilities.supports_thinking or self.thinking_flag in (2, 4)
 
 
-DEFAULT_MODELS: Dict[str, ModelInfo] = {
+DEFAULT_MODELS: dict[str, ModelInfo] = {
     "8c46e95b1a07cecc": ModelInfo(
         id="8c46e95b1a07cecc",
         display_name="3.5 Flash-Lite",
@@ -226,14 +226,14 @@ DEFAULT_MODELS: Dict[str, ModelInfo] = {
     ),
 }
 
-UI_PRIMARY_MODEL_IDS: List[str] = [
+UI_PRIMARY_MODEL_IDS: list[str] = [
     "8c46e95b1a07cecc",
     "56fdd199312815e2",
     "e6fa609c3fa255c0",
     "95a4c0abcba24364",
 ]
 
-OPENAI_MODEL_ALIASES: Dict[str, str] = {
+OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gpt-4o": "gemini-2.5-pro",
     "gpt-4-turbo": "gemini-2.5-pro",
     "gpt-4": "gemini-2.5-pro",
@@ -270,7 +270,7 @@ OPENAI_MODEL_ALIASES: Dict[str, str] = {
 def resolve_model(model_name: str) -> ModelInfo:
     """Resolves an alias or canonical model string into a ModelInfo instance."""
     clean_name = model_name.strip()
-    override_thinking: Optional[int] = None
+    override_thinking: int | None = None
     override_feature_mode: int = 0
 
     if "@" in clean_name:
@@ -340,12 +340,12 @@ class Gem:
     name: str
     description: str
     prompt: str
-    icon: Optional[str] = None
+    icon: str | None = None
     is_builtin: bool = False
-    created_at: Optional[int] = None
-    updated_at: Optional[int] = None
+    created_at: int | None = None
+    updated_at: int | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -370,9 +370,9 @@ class GemSerializer:
         return [mode, [language], 0]
 
     @staticmethod
-    def parse_list_response(response_data: Any, is_builtin: bool = False) -> List[Gem]:
+    def parse_list_response(response_data: Any, is_builtin: bool = False) -> list[Gem]:
         """Parses decoded response from CNgdBe into a list of Gem objects."""
-        gems: List[Gem] = []
+        gems: list[Gem] = []
         if not response_data or not isinstance(response_data, list):
             return gems
 
@@ -486,12 +486,12 @@ class HeaderBuilder:
     DEFAULT_SEC_CH_UA_PLATFORM = '"Windows"'
 
     @classmethod
-    def format_cookies(cls, cookies: Dict[str, str]) -> str:
+    def format_cookies(cls, cookies: dict[str, str]) -> str:
         """Formats dictionary into an HTTP Cookie header string."""
         return "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
 
     @classmethod
-    def extract_sapisid(cls, cookies: Dict[str, str]) -> Optional[str]:
+    def extract_sapisid(cls, cookies: dict[str, str]) -> str | None:
         """Extracts SAPISID (or __Secure-1PAPISID / __Secure-3PAPISID) from cookies dict."""
         if not cookies or not isinstance(cookies, dict):
             return None
@@ -506,11 +506,11 @@ class HeaderBuilder:
         cls,
         sapisid: str,
         origin: str = "https://gemini.google.com",
-        timestamp: Optional[int] = None,
+        timestamp: int | None = None,
     ) -> str:
         """Computes Google Authorization SAPISIDHASH header (`SAPISIDHASH {ts}_{sha1}`)."""
         ts = int(timestamp if timestamp is not None else time.time())
-        digest = hashlib.sha1(f"{ts} {sapisid.strip()} {origin}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(f"{ts} {sapisid.strip()} {origin}".encode()).hexdigest()
         return f"SAPISIDHASH {ts}_{digest}"
 
     @classmethod
@@ -536,8 +536,8 @@ class HeaderBuilder:
         cls,
         model: ModelInfo | str,
         session_uuid: str,
-        thinking_flag: Optional[int] = None,
-        model_number: Optional[int] = None,
+        thinking_flag: int | None = None,
+        model_number: int | None = None,
     ) -> str:
         """Synthesizes x-goog-ext-525001261-jspb JSON envelope (17 or 25 elements for Argon4p0)."""
         info = resolve_model(model) if isinstance(model, str) else model
@@ -574,7 +574,7 @@ class HeaderBuilder:
         session_context: Any,
         model: ModelInfo | str,
         origin_host: str = "gemini.google.com",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Headers for StreamGenerate endpoint."""
         info = resolve_model(model) if isinstance(model, str) else model
         session_uuid = getattr(session_context, "session_uuid", str(uuid.uuid4()).upper())
@@ -611,7 +611,7 @@ class HeaderBuilder:
         cls,
         session_context: Any,
         origin_host: str = "gemini.google.com",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Headers for batchexecute RPC endpoint."""
         cookies = getattr(session_context, "cookies", {})
         headers = {
@@ -641,7 +641,7 @@ class HeaderBuilder:
         cls,
         session_context: Any,
         push_host: str = "content-push.googleapis.com",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Headers for content-push file upload endpoint."""
         cookies = getattr(session_context, "cookies", {})
         push_id = getattr(session_context, "push_id", "feeds/mcudyrk2a4khkz")
@@ -674,7 +674,7 @@ KNOWN_MODEL_LABELS: set[str] = {
 }
 
 
-def _find_model_label_in_tree(node: Any, labels: set[str] = KNOWN_MODEL_LABELS) -> Optional[str]:
+def _find_model_label_in_tree(node: Any, labels: set[str] = KNOWN_MODEL_LABELS) -> str | None:
     if isinstance(node, str):
         return node if node in labels else None
     if isinstance(node, list):
@@ -685,7 +685,7 @@ def _find_model_label_in_tree(node: Any, labels: set[str] = KNOWN_MODEL_LABELS) 
     return None
 
 
-def extract_answered_by_label(inner: Any) -> Optional[str]:
+def extract_answered_by_label(inner: Any) -> str | None:
     """
     Extracts the picker model label Google stamped on a StreamGenerate reply
     (e.g. '4 Argon', '3.8 Flash', '3.5 Flash-Lite', '3.1 Pro') from candidate metadata.
@@ -709,9 +709,9 @@ class WorkspaceExtension:
     name: str
     tag: str
     description: str
-    aliases: Tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -727,7 +727,7 @@ class WorkspaceExtensionRegistry:
     (@YouTube, @Gmail, @Google Drive, @Google Docs, @Google Flights, @Google Hotels, @Google Maps).
     """
 
-    EXTENSIONS: Tuple[WorkspaceExtension, ...] = (
+    EXTENSIONS: tuple[WorkspaceExtension, ...] = (
         WorkspaceExtension(
             id="youtube",
             name="YouTube",
@@ -786,7 +786,7 @@ class WorkspaceExtensionRegistry:
         ),
     )
 
-    _INLINE_PATTERNS: Tuple[Tuple[re.Pattern[str], WorkspaceExtension], ...] = (
+    _INLINE_PATTERNS: tuple[tuple[re.Pattern[str], WorkspaceExtension], ...] = (
         (re.compile(r"(?<!\w)@youtube\b", re.IGNORECASE), EXTENSIONS[0]),
         (re.compile(r"(?<!\w)@gmail\b", re.IGNORECASE), EXTENSIONS[1]),
         (re.compile(r"(?<!\w)@(?:google\s+drive|googledrive|drive)\b", re.IGNORECASE), EXTENSIONS[2]),
@@ -798,12 +798,12 @@ class WorkspaceExtensionRegistry:
     )
 
     @classmethod
-    def list_all(cls) -> List[Dict[str, Any]]:
+    def list_all(cls) -> list[dict[str, Any]]:
         """Returns all registered Workspace extensions as dictionaries."""
         return [ext.to_dict() for ext in cls.EXTENSIONS]
 
     @classmethod
-    def resolve(cls, key: str) -> Optional[WorkspaceExtension]:
+    def resolve(cls, key: str) -> WorkspaceExtension | None:
         """Resolves an extension ID, name, or @-tag to its canonical WorkspaceExtension."""
         if not key or not isinstance(key, str):
             return None
@@ -817,8 +817,8 @@ class WorkspaceExtensionRegistry:
     def normalize_prompt_and_extensions(
         cls,
         prompt: str,
-        extensions: Optional[List[str]] = None,
-    ) -> Tuple[str, List[str]]:
+        extensions: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
         """
         Normalizes inline @-mentions (e.g. `@Drive` -> `@Google Drive`, `@docs` -> `@Google Docs`)
         and prepends any explicitly requested `extensions` as canonical `@Tag ` prefixes
@@ -826,7 +826,7 @@ class WorkspaceExtensionRegistry:
         Returns `(normalized_prompt, active_extension_ids)`.
         """
         text = prompt or ""
-        active_ids: List[str] = []
+        active_ids: list[str] = []
 
         # 1. Normalize inline @-tags in text
         for pattern, ext in cls._INLINE_PATTERNS:
@@ -836,7 +836,7 @@ class WorkspaceExtensionRegistry:
                     active_ids.append(ext.id)
 
         # 2. Apply explicit extensions list
-        prefix_tags: List[str] = []
+        prefix_tags: list[str] = []
         if extensions:
             for item in extensions:
                 ext_obj = cls.resolve(item)
