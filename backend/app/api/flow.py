@@ -11,7 +11,7 @@ import json
 import os
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -55,7 +55,7 @@ except ImportError:
         VOICE_GENDER = "female"
         VOICE_PROFILE = "dummy-female-narrator-v1"
         def __init__(self, *args: Any, **kwargs: Any) -> None: pass
-        def optimize_script(self, narration: str = "", voice_gender: str = "female") -> Dict[str, Any]:
+        def optimize_script(self, narration: str = "", voice_gender: str = "female") -> dict[str, Any]:
             return {
                 "voice_gender": "female",
                 "voice_profile": self.VOICE_PROFILE,
@@ -67,7 +67,7 @@ except ImportError:
 
     class DummyVideoAssembler:
         def __init__(self, *args: Any, **kwargs: Any) -> None: pass
-        def concat_scene_mp4_clips(self, scene_clips: Any = None, title: str = "Lesson") -> Dict[str, Any]:
+        def concat_scene_mp4_clips(self, scene_clips: Any = None, title: str = "Lesson") -> dict[str, Any]:
             return {
                 "ok": True,
                 "total_bytes": sum(len(c) for c in (scene_clips or [])) if scene_clips else 0,
@@ -77,7 +77,7 @@ except ImportError:
 
     class DummyLiveRPCBridge:
         def __init__(self, *args: Any, **kwargs: Any) -> None: pass
-        def render_scene(self, **kwargs: Any) -> Dict[str, Any]:
+        def render_scene(self, **kwargs: Any) -> dict[str, Any]:
             return {"ok": True, "mp4_bytes": b"", "scene_title": kwargs.get("scene_title", "")}
 
     FemaleVoiceoverOptimizer = DummyVoiceoverOptimizer  # type: ignore[misc,assignment]
@@ -115,7 +115,7 @@ class StoryboardCreateRequest(BaseModel):
     language: str = "en"
     target_audience: str = "intermediate"
     aspect_ratio: str = "16:9"
-    source_context: Optional[str] = None
+    source_context: str | None = None
     model_key: str = "veo_3_1_t2v_fast_audio"
     voice_persona: str = "Kore"
     voice_style: str = DEFAULT_VOICE_STYLE
@@ -123,28 +123,28 @@ class StoryboardCreateRequest(BaseModel):
 
 
 class ScenePatchRequest(BaseModel):
-    title: Optional[str] = None
-    visual_prompt: Optional[str] = None
-    narration_text: Optional[str] = None
-    duration_sec: Optional[int] = None
-    camera_motion: Optional[str] = None
-    on_screen_bullets: Optional[List[str]] = None
-    voice_persona: Optional[str] = None
-    voice_style: Optional[str] = None
-    native_veo_audio: Optional[bool] = None
-    formula_expression: Optional[str] = None
-    diagram_spec: Optional[Dict[str, Any]] = None
-    first_frame_path: Optional[str] = None
-    last_frame_path: Optional[str] = None
-    timecoded_directives: Optional[List[Dict[str, str]]] = None
-    pedagogical_phase: Optional[str] = None
-    learning_objective: Optional[str] = None
+    title: str | None = None
+    visual_prompt: str | None = None
+    narration_text: str | None = None
+    duration_sec: int | None = None
+    camera_motion: str | None = None
+    on_screen_bullets: list[str] | None = None
+    voice_persona: str | None = None
+    voice_style: str | None = None
+    native_veo_audio: bool | None = None
+    formula_expression: str | None = None
+    diagram_spec: dict[str, Any] | None = None
+    first_frame_path: str | None = None
+    last_frame_path: str | None = None
+    timecoded_directives: list[dict[str, str]] | None = None
+    pedagogical_phase: str | None = None
+    learning_objective: str | None = None
 
 
 class SceneGenerateRequest(BaseModel):
-    prompt_override: Optional[str] = None
-    aspect_ratio: Optional[str] = None
-    use_cloud: Optional[bool] = None
+    prompt_override: str | None = None
+    aspect_ratio: str | None = None
+    use_cloud: bool | None = None
     compose_educational: bool = False
 
 
@@ -171,7 +171,7 @@ class RenderLessonRequest(BaseModel):
 
 
 class BatchLessonsRequest(BaseModel):
-    topics: List[str]
+    topics: list[str]
     scene_count: int = Field(default=2, ge=1, le=12)
     audience: str = "Engineers"
     duration_per_scene_sec: int = Field(default=6, ge=2, le=30)
@@ -180,8 +180,8 @@ class BatchLessonsRequest(BaseModel):
 class RootReportRequest(BaseModel):
     status: str = "PASS"
     summary: str
-    metrics: Optional[Dict[str, Any]] = None
-    root_brain_dir: Optional[str] = None
+    metrics: dict[str, Any] | None = None
+    root_brain_dir: str | None = None
 
 
 class ManimGXSceneRequest(BaseModel):
@@ -196,24 +196,24 @@ class ManimGXSceneRequest(BaseModel):
 
 
 class DiffTourValidateRequest(BaseModel):
-    tour: Optional[Dict[str, Any]] = None
-    repo_path: Optional[str] = None
+    tour: dict[str, Any] | None = None
+    repo_path: str | None = None
     base: str = "HEAD"
     head: str = "HEAD"
-    title: Optional[str] = None
+    title: str | None = None
 
 
 class DiffTourRenderRequest(BaseModel):
-    tour: Optional[Dict[str, Any]] = None
-    repo_path: Optional[str] = None
+    tour: dict[str, Any] | None = None
+    repo_path: str | None = None
     base: str = "HEAD"
     head: str = "HEAD"
-    title: Optional[str] = None
+    title: str | None = None
     language: str = "en"
     width: int = Field(default=640, ge=320, le=1920)
     height: int = Field(default=360, ge=180, le=1080)
     fps: int = Field(default=12, ge=5, le=60)
-    max_steps: Optional[int] = Field(default=None, ge=1, le=20)
+    max_steps: int | None = Field(default=None, ge=1, le=20)
 
 
 class IntensiveQuestionRequest(BaseModel):
@@ -227,11 +227,11 @@ class IntensiveQuestionRequest(BaseModel):
         default="pz_page_01.png",
         description="Asset filename or drawing identifier",
     )
-    topic_id: Optional[str] = Field(
+    topic_id: str | None = Field(
         default=None,
         description="Active topic or scene identifier, e.g. cycle1_sc02",
     )
-    topic_title: Optional[str] = Field(
+    topic_title: str | None = Field(
         default=None,
         description="Human readable topic title",
     )
@@ -239,11 +239,11 @@ class IntensiveQuestionRequest(BaseModel):
         default="text_highlight",
         description="Type of selection: 'text_highlight', 'image_crop', or 'general_inquiry'",
     )
-    bbox: Optional[List[float]] = Field(
+    bbox: list[float] | None = Field(
         default=None,
         description="Normalized bounding box [rx0, ry0, rx1, ry1] in range [0.0, 1.0]",
     )
-    selected_text: Optional[str] = Field(
+    selected_text: str | None = Field(
         default=None,
         description="Highlighted text or equation content from the intensive pane",
     )
@@ -251,11 +251,11 @@ class IntensiveQuestionRequest(BaseModel):
         default="",
         description="Student question or note regarding the selected element",
     )
-    image_base64: Optional[str] = Field(
+    image_base64: str | None = Field(
         default=None,
         description="Cropped sheet region as base64 PNG data URL or raw base64 string",
     )
-    timestamp: Optional[str] = Field(
+    timestamp: str | None = Field(
         default=None,
         description="ISO 8601 UTC timestamp of question creation",
     )
@@ -264,14 +264,14 @@ class IntensiveQuestionRequest(BaseModel):
 class IntensiveQuestionResponse(BaseModel):
     ok: bool = True
     json_path: str
-    crop_path: Optional[str] = None
+    crop_path: str | None = None
     saved_at: str
     message: str
 
 
 def _get_flow_client(request: Request) -> FlowClient:
     session_mgr = getattr(request.app.state, "session_manager", None)
-    cookies: Dict[str, str] = {}
+    cookies: dict[str, str] = {}
     if session_mgr and getattr(session_mgr, "context", None):
         cookies = dict(getattr(session_mgr.context, "cookies", {}) or {})
     return FlowClient(cookies=cookies)
@@ -284,7 +284,7 @@ async def _execute_full_lesson_render(
     audience: str = "Engineers",
     duration_per_scene_sec: int = 6,
     aspect_ratio: str = "16:9",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     project = await client.generate_educational_storyboard(
         topic=topic,
         scene_count=scene_count,
@@ -295,8 +295,8 @@ async def _execute_full_lesson_render(
         native_veo_audio=True,
     )
 
-    scene_clips: List[bytes] = []
-    scenes_out: List[Dict[str, Any]] = []
+    scene_clips: list[bytes] = []
+    scenes_out: list[dict[str, Any]] = []
     for scene in project.scenes:
         scene.duration_sec = duration_per_scene_sec
         opt = _VOICE_OPTIMIZER.optimize_script(
@@ -345,7 +345,7 @@ async def _execute_full_lesson_render(
 
 
 @router.get("/status")
-async def get_flow_status(request: Request) -> Dict[str, Any]:
+async def get_flow_status(request: Request) -> dict[str, Any]:
     """Return Google Flow (Veo 3.1) session status and supported studio capabilities."""
     client = _get_flow_client(request)
     return {
@@ -365,7 +365,7 @@ async def get_flow_status(request: Request) -> Dict[str, Any]:
 @router.post("/render-lesson")
 async def render_full_lesson_endpoint(
     req: RenderLessonRequest, request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """End-to-end L4 render pipeline: storyboard -> female prosody -> scene clips -> MP4 concat + subtitles."""
     clean_topic = (req.topic or "").strip()
     if not clean_topic:
@@ -384,14 +384,14 @@ async def render_full_lesson_endpoint(
 @router.post("/batch")
 async def render_batch_lessons_endpoint(
     req: BatchLessonsRequest, request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Batch-render multiple educational lessons with locked female narrator prosody."""
     clean_topics = [t.strip() for t in (req.topics or []) if t and t.strip()]
     if not clean_topics:
         raise HTTPException(status_code=400, detail="topics list must not be empty")
 
     client = _get_flow_client(request)
-    projects: List[Dict[str, Any]] = []
+    projects: list[dict[str, Any]] = []
     for top in clean_topics:
         rendered = await _execute_full_lesson_render(
             client=client,
@@ -411,7 +411,7 @@ async def render_batch_lessons_endpoint(
 
 
 @router.post("/manimgx/inspect")
-async def inspect_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> Dict[str, Any]:
+async def inspect_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> dict[str, Any]:
     """Run headless ManimGX 2D layout diagnostics (`cutoff`, `overlap`, `crossing`, `tiny`) on a mathematical scene."""
     clean_topic = (req.topic or "").strip()
     if not clean_topic:
@@ -435,7 +435,7 @@ async def inspect_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> Dict[str, 
 
 
 @router.post("/manimgx/render")
-async def render_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> Dict[str, Any]:
+async def render_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> dict[str, Any]:
     """Render a ManimGX LaTeX/Typst mathematical scene with word-synced female voiceover to H.264 + AAC MP4."""
     clean_topic = (req.topic or "").strip()
     if not clean_topic:
@@ -477,7 +477,7 @@ async def render_manimgx_scene_endpoint(req: ManimGXSceneRequest) -> Dict[str, A
 
 
 @router.post("/diff-tour/validate")
-async def validate_diff_tour_endpoint(req: DiffTourValidateRequest) -> Dict[str, Any]:
+async def validate_diff_tour_endpoint(req: DiffTourValidateRequest) -> dict[str, Any]:
     """Validate a `diff-tour` v1 JSON payload and optionally verify `CodeRef` lines against git."""
     repo_root = Path(req.repo_path).resolve() if req.repo_path else Path(__file__).resolve().parent.parent
     tour_doc = req.tour or build_diff_tour_from_git_range(
@@ -499,7 +499,7 @@ async def validate_diff_tour_endpoint(req: DiffTourValidateRequest) -> Dict[str,
 
 
 @router.post("/diff-tour/render")
-async def render_diff_tour_endpoint(req: DiffTourRenderRequest) -> Dict[str, Any]:
+async def render_diff_tour_endpoint(req: DiffTourRenderRequest) -> dict[str, Any]:
     """Render a `diff-tour` v1 JSON guided tour into a split-screen Senior Engineer Code Walkthrough MP4."""
     import tempfile
 
@@ -512,7 +512,7 @@ async def render_diff_tour_endpoint(req: DiffTourRenderRequest) -> Dict[str, Any
     )
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_mp4 = Path(tmp_dir) / "diff_tour_walkthrough.mp4"
-        rendered = render_diff_tour_to_mp4(
+        return render_diff_tour_to_mp4(
             tour_doc,
             out_mp4,
             repo_path=repo_root,
@@ -522,11 +522,10 @@ async def render_diff_tour_endpoint(req: DiffTourRenderRequest) -> Dict[str, Any
             language=req.language,
             max_steps=req.max_steps,
         )
-    return rendered
 
 
 @router.post("/report-to-root")
-async def report_to_root_session_endpoint(req: RootReportRequest) -> Dict[str, Any]:
+async def report_to_root_session_endpoint(req: RootReportRequest) -> dict[str, Any]:
     """Write structured JSONL & Markdown handoff telemetry to the Root Architecture Session brain directory."""
     root_conv_id = "a6e93033-0846-422c-a4e2-dfc7274efe0d"
     if req.root_brain_dir:
@@ -578,7 +577,7 @@ async def report_to_root_session_endpoint(req: RootReportRequest) -> Dict[str, A
 @router.post("/projects/storyboard")
 async def create_educational_storyboard(
     req: StoryboardCreateRequest, request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create a multi-scene educational video storyboard for a topic."""
     client = _get_flow_client(request)
     try:
@@ -604,7 +603,7 @@ async def create_educational_storyboard(
 
 
 @router.get("/projects")
-async def list_flow_projects(request: Request) -> Dict[str, Any]:
+async def list_flow_projects(request: Request) -> dict[str, Any]:
     """List all Flow educational video projects in the current workspace."""
     client = _get_flow_client(request)
     projects = [p.to_dict() for p in client.list_projects()]
@@ -616,7 +615,7 @@ async def list_flow_projects(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/projects/{project_id}")
-async def get_flow_project(project_id: str, request: Request) -> Dict[str, Any]:
+async def get_flow_project(project_id: str, request: Request) -> dict[str, Any]:
     """Retrieve a specific Flow educational video project by ID."""
     client = _get_flow_client(request)
     project = client.get_project(project_id)
@@ -634,7 +633,7 @@ async def patch_flow_scene(
     scene_id: str,
     req: ScenePatchRequest,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Update a scene's title, visual prompt, narration script, or duration."""
     client = _get_flow_client(request)
     try:
@@ -668,7 +667,7 @@ async def generate_flow_scene_clip(
     scene_id: str,
     req: SceneGenerateRequest,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate a video clip for a single scene in a Flow educational project."""
     client = _get_flow_client(request)
     try:
@@ -687,7 +686,7 @@ async def generate_flow_scene_clip(
 @router.post("/projects/{project_id}/compose-educational")
 async def compose_educational_flow_project(
     project_id: str, request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Render all scenes via FlowEducationalCompositor (720p HD + Studio TTS + animated plots) and assemble lesson."""
     client = _get_flow_client(request)
     try:
@@ -702,7 +701,7 @@ async def compose_educational_flow_project(
 async def render_cloud_veo_scene_endpoint(
     req: CloudVeoSceneRequest,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Execute 100% cloud Veo 3.1 (models/omni_1p2_pro_gemini_app) video + audio generation."""
     client = _get_flow_client(request)
     res = await client.generate_cloud_video_via_gemini_web(
@@ -726,7 +725,7 @@ async def render_cloud_veo_scene_endpoint(
 
 
 @router.post("/projects/{project_id}/assemble")
-async def assemble_flow_project(project_id: str, request: Request) -> Dict[str, Any]:
+async def assemble_flow_project(project_id: str, request: Request) -> dict[str, Any]:
     """Render any pending scenes, synthesize WebVTT/SRT subtitles, and assemble the full MP4 lesson."""
     client = _get_flow_client(request)
     try:
@@ -772,7 +771,7 @@ async def serve_flow_media(media_name: str, request: Request) -> Response:
 
 
 @router.post("/intensive-question", response_model=IntensiveQuestionResponse)
-async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dict[str, Any]:
+async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> dict[str, Any]:
     """
     Persist student question, context metadata, and cropped canvas PNG to disk
     under output/user_questions/ for immediate consumption by the studio agent.
@@ -782,7 +781,7 @@ async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dic
     user_q_dir.mkdir(parents=True, exist_ok=True)
 
     now_iso = req.timestamp or datetime.datetime.now(timezone.utc).isoformat()
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "timestamp": now_iso,
         "page_number": req.page_number,
         "sheet_name": req.sheet_name,
@@ -798,7 +797,7 @@ async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dic
     json_path = user_q_dir / "latest_question.json"
     json_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    crop_path: Optional[str] = None
+    crop_path: str | None = None
     if req.image_base64:
         raw_b64 = req.image_base64
         if "," in raw_b64:
@@ -830,7 +829,7 @@ async def save_intensive_question_endpoint(req: IntensiveQuestionRequest) -> Dic
 
 
 @router.get("/lecture-actions/{page_num}")
-async def get_lecture_actions_endpoint(page_num: int) -> Dict[str, Any]:
+async def get_lecture_actions_endpoint(page_num: int) -> dict[str, Any]:
     """
     Return the structured OpenMAIC classroom action script (`ShowSheet`, `ZoomBBox`,
     `LaserPoint`, `RunSimPreset`, `QuizCheckpoint`) and `manim-slides` segment metadata
