@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -22,28 +22,28 @@ router = APIRouter(prefix="/api/gems", tags=["gems"])
 extensions_router = APIRouter(prefix="/api/extensions", tags=["extensions"])
 
 # Local fallback cache for newly created/updated custom gems
-_LOCAL_CUSTOM_GEMS: Dict[str, Gem] = {}
+_LOCAL_CUSTOM_GEMS: dict[str, Gem] = {}
 
 
 class GemCreateRequest(BaseModel):
-    name: Optional[str] = None
-    title: Optional[str] = None
-    prompt: Optional[str] = None
-    system_prompt: Optional[str] = None
-    instructions: Optional[str] = None
+    name: str | None = None
+    title: str | None = None
+    prompt: str | None = None
+    system_prompt: str | None = None
+    instructions: str | None = None
     description: str = ""
 
 
 class GemUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    title: Optional[str] = None
-    prompt: Optional[str] = None
-    system_prompt: Optional[str] = None
-    instructions: Optional[str] = None
-    description: Optional[str] = None
+    name: str | None = None
+    title: str | None = None
+    prompt: str | None = None
+    system_prompt: str | None = None
+    instructions: str | None = None
+    description: str | None = None
 
 
-def get_optional_client(request: Request) -> Optional[GeminiWebClient]:
+def get_optional_client(request: Request) -> GeminiWebClient | None:
     """Dependency injection returning client if authenticated, else None."""
     session_mgr = getattr(request.app.state, "session_manager", None)
     if not session_mgr:
@@ -60,7 +60,7 @@ def get_optional_client(request: Request) -> Optional[GeminiWebClient]:
     )
 
 
-def _gem_to_dict(g: Gem) -> Dict[str, Any]:
+def _gem_to_dict(g: Gem) -> dict[str, Any]:
     if hasattr(g, "to_dict"):
         return g.to_dict()
     return {
@@ -77,14 +77,14 @@ def _gem_to_dict(g: Gem) -> Dict[str, Any]:
 @router.get("")
 async def list_gems(
     type: str = Query("all", pattern="^(all|custom|system)$"),
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """
     Lists Custom and/or System Gems for the authenticated Google account via RPC CNgdBe.
     2 = Custom Gems, 3 = System (Google Built-in) Gems.
     """
-    custom_gems: List[Gem] = []
-    system_gems: List[Gem] = []
+    custom_gems: list[Gem] = []
+    system_gems: list[Gem] = []
 
     if client:
         try:
@@ -125,8 +125,8 @@ async def list_gems(
 @router.post("")
 async def create_gem(
     req: GemCreateRequest,
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Creates a new Custom Gem via RPC oMH3Zd."""
     resolved_name = (req.name or req.title or "").strip()
     resolved_prompt = (req.prompt or req.system_prompt or req.instructions or "").strip()
@@ -174,8 +174,8 @@ async def create_gem(
 @router.get("/{gem_id}")
 async def get_gem(
     gem_id: str,
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Retrieves a single Custom or System Gem by ID."""
     if gem_id in _LOCAL_CUSTOM_GEMS:
         gem_dict = _gem_to_dict(_LOCAL_CUSTOM_GEMS[gem_id])
@@ -194,8 +194,8 @@ async def get_gem(
 async def update_gem(
     gem_id: str,
     req: GemUpdateRequest,
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Updates an existing Custom Gem via RPC kHv0Vd."""
     existing = _LOCAL_CUSTOM_GEMS.get(gem_id)
     if not existing and client:
@@ -256,8 +256,8 @@ async def update_gem(
 @router.delete("/{gem_id}")
 async def delete_gem(
     gem_id: str,
-    client: Optional[GeminiWebClient] = Depends(get_optional_client),
-) -> Dict[str, Any]:
+    client: GeminiWebClient | None = Depends(get_optional_client),
+) -> dict[str, Any]:
     """Deletes a Custom Gem via RPC UXcSJb."""
     if client:
         try:
@@ -270,7 +270,7 @@ async def delete_gem(
 
 
 @extensions_router.get("")
-async def list_workspace_extensions() -> Dict[str, Any]:
+async def list_workspace_extensions() -> dict[str, Any]:
     """Returns supported Google Workspace Extensions (@YouTube, @Gmail, @Google Drive, @Google Docs, etc.)."""
     extensions = WorkspaceExtensionRegistry.list_all()
     return {
