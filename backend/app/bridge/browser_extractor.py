@@ -7,18 +7,17 @@ Firefox moz_cookies reader, manual string/dict/extension JSON parser).
 from __future__ import annotations
 
 import base64
-import configparser
-from dataclasses import dataclass, field
-from enum import Enum
+import contextlib
 import json
 import logging
 import os
-from pathlib import Path
 import shutil
 import sqlite3
 import sys
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
 
 from backend.app.storage.vault import IS_WINDOWS, win32_unprotect_data
 
@@ -38,25 +37,22 @@ class CookieValidationResult:
     is_valid: bool
     has_psid: bool
     has_psidts: bool
-    missing_critical: List[str]
+    missing_critical: list[str]
     cookie_count: int
     source: BrowserType
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class BrowserExtractorError(Exception):
     """Base exception for cookie extraction failures."""
-    pass
 
 
 class AppBoundEncryptionError(BrowserExtractorError):
     """Raised when Chromium v20 App-Bound Encryption is detected."""
-    pass
 
 
 class ProfileNotFoundError(BrowserExtractorError):
     """Raised when browser user data or profile directory is not found."""
-    pass
 
 
 class BrowserCookieExtractor:
@@ -69,7 +65,7 @@ class BrowserCookieExtractor:
             raise ProfileNotFoundError(f"Chromium Local State file not found: {local_state_path}")
 
         try:
-            with open(local_state_path, "r", encoding="utf-8") as f:
+            with open(local_state_path, encoding="utf-8") as f:
                 state_data = json.load(f)
 
             encrypted_key_b64 = state_data.get("os_crypt", {}).get("encrypted_key")
@@ -84,8 +80,7 @@ class BrowserCookieExtractor:
             if not IS_WINDOWS:
                 raise BrowserExtractorError("DPAPI decryption is only supported on Windows")
 
-            master_key = win32_unprotect_data(dpapi_payload)
-            return master_key
+            return win32_unprotect_data(dpapi_payload)
         except Exception as e:
             if isinstance(e, BrowserExtractorError):
                 raise
@@ -96,7 +91,7 @@ class BrowserCookieExtractor:
         cls,
         user_data_path: Path,
         profile_name: str = "Default",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Extracts and decrypts Google cookies from a Chromium-based browser profile."""
         if not user_data_path.exists():
             raise ProfileNotFoundError(f"User data path does not exist: {user_data_path}")
@@ -116,7 +111,7 @@ class BrowserCookieExtractor:
 
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        extracted_cookies: Dict[str, str] = {}
+        extracted_cookies: dict[str, str] = {}
         has_v20 = False
 
         # SQLite concurrency isolation via temporary directory copy
@@ -148,7 +143,7 @@ class BrowserCookieExtractor:
                         continue
 
                     # Check prefix
-                    if enc_val.startswith(b"v10") or enc_val.startswith(b"v11"):
+                    if enc_val.startswith((b"v10", b"v11")):
                         try:
                             nonce = enc_val[3:15]
                             ciphertext = enc_val[15:]
@@ -160,10 +155,8 @@ class BrowserCookieExtractor:
                         has_v20 = True
                     else:
                         # Fallback for unencrypted values
-                        try:
+                        with contextlib.suppress(Exception):
                             extracted_cookies[name] = enc_val.decode("utf-8")
-                        except Exception:
-                            pass
             finally:
                 conn.close()
 
@@ -179,8 +172,8 @@ class BrowserCookieExtractor:
     @classmethod
     def extract_from_firefox(
         cls,
-        profiles_dir: Optional[Path] = None,
-    ) -> Dict[str, str]:
+        profiles_dir: Path | None = None,
+    ) -> dict[str, str]:
         """Extracts plaintext Google cookies from the freshest Firefox profile containing a valid session."""
         if profiles_dir is None:
             if IS_WINDOWS:
@@ -203,43 +196,40 @@ class BrowserCookieExtractor:
         if not candidate_profiles:
             raise ProfileNotFoundError("No valid Firefox profile with cookies.sqlite found")
 
-        best_cookies: Dict[str, str] = {}
-        best_score: Tuple[int, int, int] = (-1, -1, -1)
+        best_cookies: dict[str, str] = {}
+        best_score: tuple[int, int, int] = (-1, -1, -1)
 
         for profile_dir in candidate_profiles:
             cookies_db = profile_dir / "cookies.sqlite"
-            profile_cookies: Dict[str, str] = {}
+            profile_cookies: dict[str, str] = {}
             max_psid_access = 0
 
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_db = Path(tmp_dir) / "cookies.sqlite"
-                try:
+                with contextlib.suppress(Exception):
                     shutil.copy2(cookies_db, tmp_db)
-                except Exception:
+                if not (Path(tmp_dir) / "cookies.sqlite").exists():
                     continue
 
                 for ext in ("-wal", "-shm"):
                     wal_file = profile_dir / f"cookies.sqlite{ext}"
                     if wal_file.exists():
-                        try:
+                        with contextlib.suppress(Exception):
                             shutil.copy2(wal_file, Path(tmp_dir) / f"cookies.sqlite{ext}")
-                        except Exception:
-                            pass
 
                 conn = sqlite3.connect(f"file:{tmp_db.as_posix()}?mode=ro", uri=True)
                 try:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT name, value, lastAccessed FROM moz_cookies "
-                        "WHERE host LIKE '%google.com' ORDER BY lastAccessed ASC"
-                    )
-                    for name, val, last_accessed in cursor.fetchall():
-                        if val:
-                            profile_cookies[name] = val
-                            if name == "__Secure-1PSID" and isinstance(last_accessed, int):
-                                max_psid_access = max(max_psid_access, last_accessed)
-                except Exception:
-                    pass
+                    with contextlib.suppress(Exception):
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT name, value, lastAccessed FROM moz_cookies "
+                            "WHERE host LIKE '%google.com' ORDER BY lastAccessed ASC"
+                        )
+                        for name, val, last_accessed in cursor.fetchall():
+                            if val:
+                                profile_cookies[name] = val
+                                if name == "__Secure-1PSID" and isinstance(last_accessed, int):
+                                    max_psid_access = max(max_psid_access, last_accessed)
                 finally:
                     conn.close()
 
@@ -253,7 +243,7 @@ class BrowserCookieExtractor:
         return best_cookies
 
     @classmethod
-    def parse_manual(cls, raw_input: str) -> Dict[str, str]:
+    def parse_manual(cls, raw_input: str) -> dict[str, str]:
         """
         Parses raw Cookie headers, newline-delimited pairs, or JSON arrays/objects.
         Supports:
@@ -271,8 +261,8 @@ class BrowserCookieExtractor:
                 parsed = json.loads(raw)
                 if isinstance(parsed, dict):
                     return {str(k).strip(): str(v).strip() for k, v in parsed.items() if v is not None}
-                elif isinstance(parsed, list):
-                    result: Dict[str, str] = {}
+                if isinstance(parsed, list):
+                    result: dict[str, str] = {}
                     for item in parsed:
                         if isinstance(item, dict):
                             name = item.get("name")
@@ -307,7 +297,7 @@ class BrowserCookieExtractor:
         return result
 
     @classmethod
-    def auto_extract(cls) -> Tuple[Dict[str, str], BrowserType]:
+    def auto_extract(cls) -> tuple[dict[str, str], BrowserType]:
         """Attempts auto-extraction in priority order: Firefox -> Chrome -> Edge -> Brave."""
         # 1. Firefox
         try:
@@ -339,7 +329,7 @@ class BrowserCookieExtractor:
                 (BrowserType.BRAVE, Path.home() / ".config" / "BraveSoftware" / "Brave-Browser"),
             ]
 
-        for b_type, p_path in chromium_targets:
+        def try_extract(b_type, p_path):
             try:
                 cookies = cls.extract_from_chromium(p_path)
                 res = cls.validate_cookies(cookies, b_type)
@@ -349,20 +339,26 @@ class BrowserCookieExtractor:
                 logger.warning("%s has App-Bound Encryption enabled", b_type.value)
             except Exception as e:
                 logger.debug("%s cookie extraction skipped: %s", b_type.value, e)
+            return None, None
+
+        for b_type, p_path in chromium_targets:
+            c, b = try_extract(b_type, p_path)
+            if c is not None:
+                return c, b
 
         raise BrowserExtractorError("Could not automatically extract valid Google cookies from installed browsers")
 
     @classmethod
     def validate_cookies(
         cls,
-        cookies: Dict[str, str],
+        cookies: dict[str, str],
         source: BrowserType = BrowserType.MANUAL,
     ) -> CookieValidationResult:
         """Validates presence of essential Gemini tokens (__Secure-1PSID and __Secure-1PSIDTS)."""
         has_psid = bool(cookies.get("__Secure-1PSID"))
         has_psidts = bool(cookies.get("__Secure-1PSIDTS"))
 
-        missing: List[str] = []
+        missing: list[str] = []
         if not has_psid:
             missing.append("__Secure-1PSID")
         if not has_psidts:
