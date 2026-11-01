@@ -13,17 +13,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 import datetime
 import hashlib
-import json
-import math
 import os
-from pathlib import Path
-import re
 import struct
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import httpx
+import contextlib
 
 try:
     from backend.app.bridge.flow_repo_adaptations import (
@@ -42,17 +39,6 @@ try:
     )
 except ImportError:
     from .flow_repo_adaptations import (  # type: ignore[no-redef]
-        BookmarkParseResult,
-        CursorFrameState,
-        CursorGroundingEngine,
-        ResolvedBookmarkFloat,
-        ResolvedBookmarkMap,
-        SceneRenderCache,
-        VoiceoverBookmark,
-        build_openmaic_lecture_actions,
-        cubic_bezier_ease,
-        parse_voiceover_bookmarks,
-        resolve_bookmark_timestamps,
         strip_voiceover_bookmarks,
     )
 
@@ -129,8 +115,8 @@ class SubtitlePage:
     page_index: int
     start_ms: int
     end_ms: int
-    lines: List[Any] = field(default_factory=list)
-    words: List[WordTiming] = field(default_factory=list)
+    lines: list[Any] = field(default_factory=list)
+    words: list[WordTiming] = field(default_factory=list)
 
 
 @dataclass
@@ -138,8 +124,8 @@ class SceneCaptions:
     """Full word-level caption track for a scene."""
     scene_id: str
     duration_ms: int
-    pages: List[SubtitlePage] = field(default_factory=list)
-    all_words: List[WordTiming] = field(default_factory=list)
+    pages: list[SubtitlePage] = field(default_factory=list)
+    all_words: list[WordTiming] = field(default_factory=list)
 
 
 @dataclass
@@ -151,32 +137,32 @@ class FlowScene:
     visual_prompt: str
     duration_sec: int = 5
     camera_motion: str = "slow push-in"
-    on_screen_bullets: List[str] = field(default_factory=list)
+    on_screen_bullets: list[str] = field(default_factory=list)
     status: str = "pending"
-    clip_id: Optional[str] = None
-    video_url: Optional[str] = None
-    operation_name: Optional[str] = None
+    clip_id: str | None = None
+    video_url: str | None = None
+    operation_name: str | None = None
     voice_persona: str = "voice_y0joebp3bwta"
     voice_style: str = DEFAULT_VOICE_STYLE
     native_veo_audio: bool = True
-    veo_audio_prompt: Optional[str] = None
-    captions: Optional[Any] = None
-    tts_narration_text: Optional[str] = None
-    pz_page: Optional[int] = None
-    concept_cues: Optional[List[Dict[str, Any]]] = None
+    veo_audio_prompt: str | None = None
+    captions: Any | None = None
+    tts_narration_text: str | None = None
+    pz_page: int | None = None
+    concept_cues: list[dict[str, Any]] | None = None
     pedagogical_phase: str = "Hook & Core Phenomenon"
-    formula_expression: Optional[str] = None
-    diagram_spec: Optional[Dict[str, Any]] = None
-    first_frame_path: Optional[str] = None
-    last_frame_path: Optional[str] = None
-    timecoded_directives: List[Dict[str, str]] = field(default_factory=list)
-    learning_objective: Optional[str] = None
+    formula_expression: str | None = None
+    diagram_spec: dict[str, Any] | None = None
+    first_frame_path: str | None = None
+    last_frame_path: str | None = None
+    timecoded_directives: list[dict[str, str]] = field(default_factory=list)
+    learning_objective: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FlowScene":
+    def from_dict(cls, data: dict[str, Any]) -> FlowScene:
         known = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in data.items() if k in known}
         if "scene_id" not in kwargs:
@@ -261,17 +247,17 @@ class FlowEducationalProject:
     target_audience: str = "intermediate"
     aspect_ratio: str = "16:9"
     model_key: str = "veo_3_1_t2v_fast"
-    scenes: List[FlowScene] = field(default_factory=list)
+    scenes: list[FlowScene] = field(default_factory=list)
     status: str = "storyboard_ready"
-    assembled_video_url: Optional[str] = None
-    subtitles_vtt: Optional[str] = None
-    subtitles_srt: Optional[str] = None
-    source_context: Optional[str] = None
+    assembled_video_url: str | None = None
+    subtitles_vtt: str | None = None
+    subtitles_srt: str | None = None
+    source_context: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "project_id": self.project_id,
             "topic": self.topic,
@@ -290,8 +276,8 @@ class FlowEducationalProject:
 
 
 # Process-wide stores so API requests and FlowClient instances share project/media state
-_PROJECTS_STORE: Dict[str, FlowEducationalProject] = {}
-_MEDIA_STORE: Dict[str, bytes] = {}
+_PROJECTS_STORE: dict[str, FlowEducationalProject] = {}
+_MEDIA_STORE: dict[str, bytes] = {}
 
 
 def _mp4_box(box_type: bytes, payload: bytes) -> bytes:
@@ -354,7 +340,7 @@ def synthesize_minimal_mp4(title: str = "", duration_sec: int = 5) -> bytes:
     trak_box = _mp4_box(b"trak", _mp4_box(b"tkhd", tkhd_payload))
     moov_box = _mp4_box(b"moov", mvhd_box + trak_box)
 
-    meta_bytes = f"GoogleFlowVeo3.1|title={title}|duration={dur}s".encode("utf-8")
+    meta_bytes = f"GoogleFlowVeo3.1|title={title}|duration={dur}s".encode()
     mdat_box = _mp4_box(b"mdat", meta_bytes + (b"\x00" * 64))
     return ftyp_box + moov_box + mdat_box
 
@@ -371,7 +357,7 @@ def _format_srt_ts(total_seconds: float) -> str:
     return _format_vtt_ts(total_seconds).replace(".", ",")
 
 
-def build_webvtt_subtitles(scenes: List[FlowScene]) -> str:
+def build_webvtt_subtitles(scenes: list[FlowScene]) -> str:
     """
     Build a WebVTT (.vtt) subtitle track from ordered Flow educational scenes.
 
@@ -379,7 +365,7 @@ def build_webvtt_subtitles(scenes: List[FlowScene]) -> str:
     emits fine-grained phrase-level cues with intra-cue word timestamps (<hh:mm:ss.ttt>).
     Otherwise, falls back to scene-level cues for backwards compatibility.
     """
-    lines: List[str] = ["WEBVTT", ""]
+    lines: list[str] = ["WEBVTT", ""]
     cursor = 0.0
     cue_counter = 1
 
@@ -439,7 +425,7 @@ def build_webvtt_subtitles(scenes: List[FlowScene]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_srt_subtitles(scenes: List[FlowScene]) -> str:
+def build_srt_subtitles(scenes: list[FlowScene]) -> str:
     """
     Build a SubRip (.srt) subtitle track from ordered Flow educational scenes.
 
@@ -447,7 +433,7 @@ def build_srt_subtitles(scenes: List[FlowScene]) -> str:
     emits fine-grained phrase-level cues per subtitle page.
     Otherwise, falls back to scene-level cues for backwards compatibility.
     """
-    blocks: List[str] = []
+    blocks: list[str] = []
     cursor = 0.0
     cue_counter = 1
 
@@ -507,7 +493,7 @@ _CLOUD_VEO_RU_SANITIZE_MAP = (
 )
 
 
-def detect_local_proxy_url() -> Optional[str]:
+def detect_local_proxy_url() -> str | None:
     """Detect local HTTP/HTTPS proxy on 127.0.0.1 if configured or listening."""
     import socket
 
@@ -547,8 +533,8 @@ def build_cloud_veo_prompt(
     visual_prompt: str,
     narration_text: str,
     language: str = "ru",
-    formula_expression: Optional[str] = None,
-    timecoded_directives: Optional[List[Dict[str, str]]] = None,
+    formula_expression: str | None = None,
+    timecoded_directives: list[dict[str, str]] | None = None,
 ) -> str:
     """
     Build a classifier-clean English + quoted speech prompt for Google Cloud Veo 3.1
@@ -592,7 +578,7 @@ def build_cloud_veo_prompt(
     return f"Generate a short 5-second video: {clean_vis}.{formula_clause}{tc_clause}".strip()
 
 
-def extract_cloud_video_from_turns(turns: Any) -> Optional[Dict[str, Any]]:
+def extract_cloud_video_from_turns(turns: Any) -> dict[str, Any] | None:
     """
     Inspect batchexecute hNvQHb conversation turns for completed or failed
     Veo 3.1 / models/omni_1p2_pro_gemini_app video generation metadata (node '60').
@@ -655,19 +641,19 @@ class FlowClient:
 
     def __init__(
         self,
-        cookies: Optional[Dict[str, str]] = None,
-        bearer_token: Optional[str] = None,
+        cookies: dict[str, str] | None = None,
+        bearer_token: str | None = None,
         base_url: str = "https://labs.google/fx",
         sandbox_api_url: str = "https://aisandbox-pa.googleapis.com/v1",
     ) -> None:
-        self.cookies: Dict[str, str] = dict(cookies or {})
-        self.bearer_token: Optional[str] = bearer_token
+        self.cookies: dict[str, str] = dict(cookies or {})
+        self.bearer_token: str | None = bearer_token
         self.base_url = base_url.rstrip("/")
         self.sandbox_api_url = sandbox_api_url.rstrip("/")
 
     def build_sapisidhash_header(
         self, origin: str = "https://flow.google.com"
-    ) -> Optional[str]:
+    ) -> str | None:
         """Compute SAPISIDHASH authorization header for flow.google.com / aisandbox-pa.googleapis.com."""
         sapisid = (
             self.cookies.get("SAPISID")
@@ -678,7 +664,7 @@ class FlowClient:
             return None
         ts = int(time.time())
         digest = hashlib.sha1(
-            f"{ts} {str(sapisid).strip()} {origin}".encode("utf-8")
+            f"{ts} {str(sapisid).strip()} {origin}".encode()
         ).hexdigest()
         return f"SAPISIDHASH {ts}_{digest}"
 
@@ -692,7 +678,7 @@ class FlowClient:
                 return True
         return False
 
-    async def fetch_flow_bearer_token(self) -> Optional[str]:
+    async def fetch_flow_bearer_token(self) -> str | None:
         """Exchange NextAuth session cookie at labs.google/fx/api/auth/session for a bearer token."""
         if self.bearer_token and self.bearer_token.strip():
             return self.bearer_token
@@ -722,7 +708,7 @@ class FlowClient:
         language: str = "en",
         target_audience: str = "intermediate",
         aspect_ratio: str = "16:9",
-        source_context: Optional[str] = None,
+        source_context: str | None = None,
         model_key: str = "veo_3_1_t2v_fast_audio",
         voice_persona: str = "Kore",
         voice_style: str = DEFAULT_VOICE_STYLE,
@@ -793,7 +779,7 @@ class FlowClient:
                 "SNR_dB = 10 * log10(P_signal / P_noise)",
             ]
 
-        scenes: List[FlowScene] = []
+        scenes: list[FlowScene] = []
         for idx in range(1, count + 1):
             phase_title, phase_desc = PEDAGOGICAL_PHASES[
                 (idx - 1) % len(PEDAGOGICAL_PHASES)
@@ -949,35 +935,35 @@ class FlowClient:
         _PROJECTS_STORE[project_id] = project
         return project
 
-    def get_project(self, project_id: str) -> Optional[FlowEducationalProject]:
+    def get_project(self, project_id: str) -> FlowEducationalProject | None:
         return _PROJECTS_STORE.get(project_id)
 
-    def list_projects(self) -> List[FlowEducationalProject]:
+    def list_projects(self) -> list[FlowEducationalProject]:
         return list(_PROJECTS_STORE.values())
 
-    def get_media_bytes(self, media_name: str) -> Optional[bytes]:
+    def get_media_bytes(self, media_name: str) -> bytes | None:
         return _MEDIA_STORE.get(media_name)
 
     def update_scene(
         self,
         project_id: str,
         scene_id: str,
-        title: Optional[str] = None,
-        visual_prompt: Optional[str] = None,
-        narration_text: Optional[str] = None,
-        duration_sec: Optional[int] = None,
-        camera_motion: Optional[str] = None,
-        on_screen_bullets: Optional[List[str]] = None,
-        voice_persona: Optional[str] = None,
-        voice_style: Optional[str] = None,
-        native_veo_audio: Optional[bool] = None,
-        formula_expression: Optional[str] = None,
-        diagram_spec: Optional[Dict[str, Any]] = None,
-        first_frame_path: Optional[str] = None,
-        last_frame_path: Optional[str] = None,
-        timecoded_directives: Optional[List[Dict[str, str]]] = None,
-        pedagogical_phase: Optional[str] = None,
-        learning_objective: Optional[str] = None,
+        title: str | None = None,
+        visual_prompt: str | None = None,
+        narration_text: str | None = None,
+        duration_sec: int | None = None,
+        camera_motion: str | None = None,
+        on_screen_bullets: list[str] | None = None,
+        voice_persona: str | None = None,
+        voice_style: str | None = None,
+        native_veo_audio: bool | None = None,
+        formula_expression: str | None = None,
+        diagram_spec: dict[str, Any] | None = None,
+        first_frame_path: str | None = None,
+        last_frame_path: str | None = None,
+        timecoded_directives: list[dict[str, str]] | None = None,
+        pedagogical_phase: str | None = None,
+        learning_objective: str | None = None,
     ) -> FlowScene:
         project = _PROJECTS_STORE.get(project_id)
         if not project:
@@ -1034,10 +1020,10 @@ class FlowClient:
         language: str = "ru",
         poll_interval_sec: float = 6.0,
         timeout_sec: float = 180.0,
-        reference_image_path: Optional[str] = None,
-        formula_expression: Optional[str] = None,
-        timecoded_directives: Optional[List[Dict[str, str]]] = None,
-    ) -> Dict[str, Any]:
+        reference_image_path: str | None = None,
+        formula_expression: str | None = None,
+        timecoded_directives: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         """
         Execute 100% cloud video + native female audio generation via Google Gemini Ultra
         Web Bridge (models/omni_1p2_pro_gemini_app / Veo 3.1) using DPAPI CredentialVault,
@@ -1085,7 +1071,7 @@ class FlowClient:
             timecoded_directives=timecoded_directives,
         )
 
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: list[dict[str, Any]] | None = None
         if reference_image_path and Path(reference_image_path).is_file():
             try:
                 from backend.app.bridge.uploader import GeminiUploader
@@ -1155,8 +1141,8 @@ class FlowClient:
             url = f"{client.base_url}/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
             hc = await client._get_client()
             parser = StreamingFrameParser()
-            cid: Optional[str] = None
-            rid: Optional[str] = None
+            cid: str | None = None
+            rid: str | None = None
             guest_continuation: str = ""
             t0 = time.time()
 
@@ -1245,11 +1231,11 @@ class FlowClient:
         self,
         project_id: str,
         scene_id: str,
-        prompt_override: Optional[str] = None,
-        aspect_ratio: Optional[str] = None,
-        use_cloud: Optional[bool] = None,
+        prompt_override: str | None = None,
+        aspect_ratio: str | None = None,
+        use_cloud: bool | None = None,
         compose_educational: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate or synthesize an MP4 video clip for a specific scene in a Flow project."""
         project = _PROJECTS_STORE.get(project_id)
         if not project:
@@ -1270,7 +1256,7 @@ class FlowClient:
             voice_style=scene.voice_style,
         )
 
-        mp4_bytes: Optional[bytes] = None
+        mp4_bytes: bytes | None = None
         should_use_cloud = (
             bool(use_cloud)
             if use_cloud is not None
@@ -1294,7 +1280,7 @@ class FlowClient:
                         if scene.native_veo_audio and "audio" not in project.model_key
                         else project.model_key
                     )
-                    req_item: Dict[str, Any] = {
+                    req_item: dict[str, Any] = {
                         "aspectRatio": f"VIDEO_ASPECT_RATIO_{project.aspect_ratio.replace(':', '_')}",
                         "textInput": {"prompt": effective_prompt},
                         "videoModelKey": effective_model,
@@ -1398,9 +1384,9 @@ class FlowClient:
     async def assemble_educational_video(
         self,
         project_id: str,
-        use_cloud: Optional[bool] = None,
+        use_cloud: bool | None = None,
         compose_educational: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Ensure all scenes are generated, build WebVTT/SRT subtitles, and assemble the final MP4 lesson."""
         project = _PROJECTS_STORE.get(project_id)
         if not project:
@@ -1421,14 +1407,14 @@ class FlowClient:
         total_duration = sum(max(1, int(s.duration_sec)) for s in project.scenes)
         lesson_filename = f"{project_id}_lesson.mp4"
 
-        scene_blobs: List[bytes] = []
+        scene_blobs: list[bytes] = []
         for sc in project.scenes:
             clip_name = f"{project_id}_{sc.scene_id}.mp4"
             blob = _MEDIA_STORE.get(clip_name)
             if blob:
                 scene_blobs.append(blob)
 
-        lesson_bytes: Optional[bytes] = None
+        lesson_bytes: bytes | None = None
         if scene_blobs and all(len(b) > 10_000 for b in scene_blobs):
             if len(scene_blobs) == 1:
                 lesson_bytes = scene_blobs[0]
@@ -1442,7 +1428,7 @@ class FlowClient:
                     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_p = Path(tmp_dir)
-                        concat_lines: List[str] = []
+                        concat_lines: list[str] = []
                         for idx, blob in enumerate(scene_blobs):
                             part_p = tmp_p / f"scene_{idx:02d}.mp4"
                             part_p.write_bytes(blob)
@@ -1499,9 +1485,9 @@ class FlowClient:
     async def render_educational_lesson(
         self,
         project: FlowEducationalProject,
-        use_cloud: Optional[bool] = None,
+        use_cloud: bool | None = None,
         compose_educational: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Render all scenes of an educational project and return assembled MP4 + subtitles."""
         _PROJECTS_STORE[project.project_id] = project
         res = await self.assemble_educational_video(
@@ -1518,10 +1504,10 @@ class FlowClient:
         scene_count: int = 4,
         language: str = "ru",
         target_audience: str = "university",
-        source_context: Optional[str] = None,
-        output_dir: Optional[Any] = None,
+        source_context: str | None = None,
+        output_dir: Any | None = None,
         use_cloud: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         End-to-end Google Flow Educational Video Lesson Generator:
         1. Builds a multi-scene pedagogical storyboard with formulas, diagram specs,
@@ -1613,7 +1599,7 @@ class FlowEducationalCompositor:
     @staticmethod
     def _decode_cloud_plate_frames(
         mp4_path: Any, target_w: int = 536, target_h: int = 216, max_frames: int = 120
-    ) -> List[Any]:
+    ) -> list[Any]:
         """Decode RGB frames from a Cloud Flow Veo 3.1 MP4 clip for viewport embedding."""
         from pathlib import Path
         import subprocess
@@ -1646,7 +1632,7 @@ class FlowEducationalCompositor:
             raw = proc.stdout or b""
             frame_sz = target_w * target_h * 3
             count = len(raw) // frame_sz
-            frames: List[Any] = []
+            frames: list[Any] = []
             for i in range(count):
                 chunk = raw[i * frame_sz : (i + 1) * frame_sz]
                 frames.append(Image.frombytes("RGB", (target_w, target_h), chunk))
@@ -1672,7 +1658,7 @@ class FlowEducationalCompositor:
         total_w = float(sum(weights))
         usable_ms = max(600, dur_ms - 250)
         cursor_ms = 100
-        all_words: List[WordTiming] = []
+        all_words: list[WordTiming] = []
         for idx, (tok, w) in enumerate(zip(tokens, weights)):
             span = int(round((w / total_w) * usable_ms))
             s_ms = cursor_ms
@@ -1687,7 +1673,7 @@ class FlowEducationalCompositor:
                 )
             )
 
-        pages: List[SubtitlePage] = []
+        pages: list[SubtitlePage] = []
         chunk_size = 9
         for p_idx in range(0, len(all_words), chunk_size):
             w_slice = all_words[p_idx : p_idx + chunk_size]
@@ -1766,8 +1752,8 @@ class FlowEducationalCompositor:
         total_scenes: int,
         frame_idx: int,
         total_frames: int,
-        cloud_plate_frames: Optional[List[Any]] = None,
-        schematic_img: Optional[Any] = None,
+        cloud_plate_frames: list[Any] | None = None,
+        schematic_img: Any | None = None,
     ) -> bytes:
         """
         Render a single 1280x720 RGB24 educational frame combining:
@@ -1812,7 +1798,7 @@ class FlowEducationalCompositor:
         # Determine active concept cue
         cues = scene.concept_cues or []
         active_cue_idx = 0
-        active_cue: Dict[str, Any] = {}
+        active_cue: dict[str, Any] = {}
         for idx_c, c in enumerate(cues):
             sr = float(c.get("start_ratio", 0.0))
             er = float(c.get("end_ratio", 1.0))
@@ -1962,8 +1948,8 @@ class FlowEducationalCompositor:
             bx0, by0, bw, bh = pl_x0 + 42, pl_y0 + 44, pl_w - 68, pl_h - 68
             draw.line([bx0, by0, bx0, by0 + bh], fill=(100, 116, 139), width=2)
             draw.line([bx0, by0 + bh, bx0 + bw, by0 + bh], fill=(100, 116, 139), width=2)
-            pts_mag: List[Tuple[int, int]] = []
-            pts_phs: List[Tuple[int, int]] = []
+            pts_mag: list[tuple[int, int]] = []
+            pts_phs: list[tuple[int, int]] = []
             for i in range(120):
                 u = i / 119.0
                 x_pt = bx0 + int(u * bw)
@@ -2041,8 +2027,8 @@ class FlowEducationalCompositor:
             # Animated input noisy waveform vs clean filtered output waveform
             wx0, wy_mid, ww = pl_x0 + 24, pl_y0 + 202, pl_w - 48
             draw.line([wx0, wy_mid, wx0 + ww, wy_mid], fill=(51, 65, 85), width=1)
-            noisy_pts: List[Tuple[int, int]] = []
-            clean_pts: List[Tuple[int, int]] = []
+            noisy_pts: list[tuple[int, int]] = []
+            clean_pts: list[tuple[int, int]] = []
             phase_shift = p * math.pi * 6.0
             for i in range(140):
                 u = i / 139.0
@@ -2137,7 +2123,7 @@ class FlowEducationalCompositor:
         project: FlowEducationalProject,
         scene: FlowScene,
         total_scenes: int = 4,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Render a complete 1280x720 HD H.264 + AAC educational MP4 clip for `scene`."""
         from pathlib import Path
         import subprocess
@@ -2253,10 +2239,8 @@ class FlowEducationalCompositor:
                         proc.stdin.write(raw_rgb)
                     except (BrokenPipeError, OSError):
                         break
-                try:
+                with contextlib.suppress(Exception):
                     proc.stdin.close()
-                except Exception:
-                    pass
                 proc.wait(timeout=120)
             except Exception:
                 proc.kill()
@@ -2273,7 +2257,7 @@ class FlowEducationalCompositor:
     @staticmethod
     def build_contact_sheet(
         mp4_path: Any, out_png: Any, scene_count: int = 4
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Extract key frames across the assembled educational MP4 into a 2x2 contact sheet."""
         from pathlib import Path
         import subprocess
