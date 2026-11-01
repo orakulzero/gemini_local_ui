@@ -885,6 +885,9 @@ class StreamingDeltaAccumulator:
                         msg = err_node[1]
 
             if code is not None and isinstance(code, int):
+                if (self._done_emitted or self.full_raw_text.strip()) and code == 1096:
+                    logger.debug("Ignored trailing post-completion 1096 frame after stream finished")
+                    return
                 logger.error("ENVELOPE ERROR DETECTED: code=%s, msg=%s, raw_err_node=%s", code, msg, err_node)
                 map_google_error_code(code, msg)
         except (IndexError, TypeError, KeyError):

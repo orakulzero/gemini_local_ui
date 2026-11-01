@@ -490,10 +490,11 @@ def verify_five_quality_gates(
         root = Path(workspace_dir).resolve()
         with tempfile.TemporaryDirectory(prefix="m30_Verify_") as tmp_sandbox:
             sandbox_root = Path(tmp_sandbox) / "workspace"
+            sandbox_ignore = [d for d in PRUNED_DIRS if d != ".git"]
             shutil.copytree(
                 root,
                 sandbox_root,
-                ignore=shutil.ignore_patterns(*PRUNED_DIRS, "*.pyc", "*.pyo"),
+                ignore=shutil.ignore_patterns(*sandbox_ignore, "*.pyc", "*.pyo"),
                 dirs_exist_ok=True,
             )
             for rel_path, new_code in candidate_files.items():
@@ -704,21 +705,47 @@ class TaskPipelineOrchestrator:
         """
         from backend.app.bridge.client import GeminiWebClient
         from backend.app.bridge.gemini_capabilities import get_saved_info_manager
-        from backend.app.bridge.session import SessionManager
-        from backend.app.bridge.uploader import GeminiUploader
+        from backend.app.bridge.session import SessionContext, SessionHealthStatus, SessionManager
         from backend.app.storage.vault import CredentialVault
 
         vault = CredentialVault()
         sm = SessionManager(vault=vault)
         vdata = vault.load_vault_data()
+        ctx: SessionContext | None = None
+        active_acc_id: str | None = None
         if vdata and vdata.accounts:
-            await sm.initialize_all()
+            active_acc_id = (
+                vdata.active_account_id
+                if vdata.active_account_id in vdata.accounts
+                else next(iter(vdata.accounts.keys()))
+            )
+            prof = vdata.accounts[active_acc_id]
+            if prof.cookies.get("__Secure-1PSID") and prof.snlm0e:
+                ctx = SessionContext(
+                    cookies=dict(prof.cookies),
+                    access_token=prof.snlm0e,
+                    build_label=prof.cfb2h or "boq_gemini-web-uiserver_20261019.01_p0",
+                    session_id=prof.fdrfje,
+                    push_id=prof.qkiaye or "feeds/mcudyrk2a4khkz",
+                    language=prof.tux5cc or "en",
+                    account_tier=prof.tier or "ultra",
+                    status=SessionHealthStatus.HEALTHY,
+                    passive_rotation=True,
+                    account_id=active_acc_id,
+                    vault=vault,
+                )
+            else:
+                await sm.initialize_all()
+                if sm.get_health().is_authenticated:
+                    ctx = sm.context
         else:
             stored = vault.load_credentials()
             if stored and isinstance(stored, dict):
                 await sm.init_session(stored)
+                if sm.get_health().is_authenticated:
+                    ctx = sm.context
 
-        if not sm.get_health().is_authenticated:
+        if ctx is None:
             await sm.close()
             return {
                 "cid": cid or f"c_unauth_{uuid.uuid4().hex[:8]}",
@@ -730,27 +757,16 @@ class TaskPipelineOrchestrator:
             }
 
         client = GeminiWebClient(
-            session_context=sm.context,
+            session_context=ctx,
             base_url=sm.base_url,
             vault=vault,
-            account_id=sm.active_account_id,
+            account_id=active_acc_id or sm.active_account_id,
             timeout=360.0,
         )
         try:
             att_list: list[dict[str, Any]] | None = None
             full_prompt = prompt
             if is_first_turn and bundle.get("zip_bytes"):
-                try:
-                    uploader = GeminiUploader(session_context=sm.context, base_url=sm.base_url)
-                    uri = await uploader.upload_file(
-                        data=bundle["zip_bytes"],
-                        filename=bundle["zip_filename"],
-                        mime_type="application/zip",
-                    )
-                    att_list = [{"uri": uri, "filename": bundle["zip_filename"], "scotty": True}]
-                except Exception as up_err:
-                    logger.debug("Scotty zip upload skipped (using inline Ultra 2M AST context): %s", up_err)
-                    att_list = None
                 contracts_summary = "\n".join(
                     f"# {k}\n{v}" for k, v in list(bundle.get("ast_contracts", {}).items())[:15]
                 )
@@ -768,39 +784,65 @@ class TaskPipelineOrchestrator:
                 )
 
             text_parts: list[str] = []
-            out_cid = cid
-            out_rid = rid
-            out_rcid = rcid
+            out_cid = None if (cid and str(cid).startswith("c_err")) else cid
+            out_rid = None if (rid and str(rid).startswith("r_err")) else rid
+            out_rcid = None if (rcid and str(rcid).startswith("rc_err")) else rcid
             draft_candidates: list[dict[str, Any]] = []
             code_executions: list[dict[str, Any]] = []
-            eff_model = f"{model}@thinking={thinking}@mode=task"
-            async for chunk in client.generate_stream(
-                prompt=full_prompt,
-                model=eff_model,
-                cid=cid,
-                rid=rid,
-                rcid=rcid,
-                attachments=att_list,
-                gem_id=gem_id,
-                feature_mode=40,
-            ):
-                if getattr(chunk, "text_delta", ""):
-                    text_parts.append(chunk.text_delta)
-                if getattr(chunk, "cid", None):
-                    out_cid = chunk.cid
-                if getattr(chunk, "rid", None):
-                    out_rid = chunk.rid
-                if getattr(chunk, "rcid", None):
-                    out_rcid = chunk.rcid
-                if getattr(chunk, "type", "") == "done" and isinstance(getattr(chunk, "metadata", None), dict):
-                    meta = chunk.metadata
-                    draft_candidates = list(meta.get("draft_candidates") or [])
-                    code_executions = list(meta.get("code_executions") or [])
+            base_model = "gemini-4-argon" if "argon" in str(model) else str(model)
+            eff_model = f"{base_model}@thinking={min(int(thinking or 2), 2)}"
+            remote_gem_id = None if (gem_id and str(gem_id).startswith("gem_")) else gem_id
+
+            async def _collect_stream(
+                target_model: str, target_feature_mode: int, use_att: bool = False
+            ) -> list[str]:
+                nonlocal out_cid, out_rid, out_rcid, draft_candidates, code_executions
+                collected: list[str] = []
+                try:
+                    async for chunk in client.generate_stream(
+                        prompt=full_prompt,
+                        model=target_model,
+                        cid=out_cid,
+                        rid=out_rid,
+                        rcid=out_rcid,
+                        attachments=att_list if use_att else None,
+                        gem_id=remote_gem_id,
+                        feature_mode=target_feature_mode,
+                    ):
+                        piece = getattr(chunk, "text_delta", "") or getattr(chunk, "delta", "")
+                        if piece and getattr(chunk, "type", "text") in ("text", "delta", ""):
+                            collected.append(piece)
+                        if getattr(chunk, "cid", None):
+                            out_cid = chunk.cid
+                        if getattr(chunk, "rid", None):
+                            out_rid = chunk.rid
+                        if getattr(chunk, "rcid", None):
+                            out_rcid = chunk.rcid
+                        if getattr(chunk, "type", "") == "done":
+                            if isinstance(getattr(chunk, "metadata", None), dict):
+                                meta = chunk.metadata
+                                draft_candidates = list(meta.get("draft_candidates") or [])
+                                code_executions = list(meta.get("code_executions") or [])
+                                if not out_cid and meta.get("cid"):
+                                    out_cid = meta.get("cid")
+                                if not out_rid and meta.get("rid"):
+                                    out_rid = meta.get("rid")
+                                if not out_rcid and meta.get("rcid"):
+                                    out_rcid = meta.get("rcid")
+                            break
+                except Exception as stream_err:
+                    if not collected:
+                        raise stream_err
+                return collected
+
+            text_parts = await _collect_stream(eff_model, 0, use_att=False)
+            joined_text = "".join(text_parts)
+
             return {
                 "cid": out_cid or cid or f"c_task_{uuid.uuid4().hex[:8]}",
                 "rid": out_rid or rid or "r_live",
                 "rcid": out_rcid or rcid or "rc_live",
-                "text": "".join(text_parts),
+                "text": joined_text,
                 "draft_candidates": draft_candidates,
                 "code_executions": code_executions,
             }
@@ -980,6 +1022,13 @@ class TaskPipelineOrchestrator:
                 }
             ]
             current_prompt = prompt
+            if target_files and orig_files and task_runner is None:
+                file_dumps: list[str] = []
+                for rel_p, src_txt in list(orig_files.items())[:5]:
+                    numbered = "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(src_txt.splitlines()))
+                    file_dumps.append(f"# Target File ({rel_p})\n```python\n{numbered}\n```")
+                if file_dumps:
+                    current_prompt = f"{current_prompt}\n\n" + "\n\n".join(file_dumps)
             if discovered["skills"] or discovered["rules"] or enable_mcp_tools:
                 mcp_tools_section = (
                     "# Available MCP Tools\n"
