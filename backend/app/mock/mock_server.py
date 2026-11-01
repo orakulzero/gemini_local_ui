@@ -8,9 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import threading
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 from aiohttp import web
 
 from backend.app.mock.fixtures import (
@@ -21,18 +20,16 @@ from backend.app.mock.fixtures import (
     PAYLOAD_CODE_7_PERMISSION_DENIED,
     PAYLOAD_HNVQHB_TURNS,
     PAYLOAD_MAZIQC_CONVERSATIONS,
-    PAYLOAD_NOTEBOOKLM_ADD_SOURCE,
-    PAYLOAD_NOTEBOOKLM_CREATE_NOTEBOOK,
     PAYLOAD_NOTEBOOKLM_DELETE_NOTEBOOK,
     PAYLOAD_NOTEBOOKLM_GET_NOTEBOOK,
     PAYLOAD_NOTEBOOKLM_LIST_NOTEBOOKS,
-    PAYLOAD_NOTEBOOKLM_RENAME_NOTEBOOK,
     PAYLOAD_OTAQ7B_USER_STATUS,
     build_golden_stream_sequence,
     build_stream_error_frame,
     format_batchexecute_envelope,
     format_stream_frame,
 )
+import contextlib
 
 logger = logging.getLogger("mock_gemini_server")
 
@@ -41,17 +38,17 @@ class MockFaultConfig:
     """Configurable fault injection rules and recorded request log."""
 
     def __init__(self) -> None:
-        self.http_status_override: Dict[str, int] = {}
-        self.error_code_override: Dict[str, int] = {}
-        self.drop_connection_paths: Set[str] = set()
-        self.emit_malformed_json_paths: Set[str] = set()
+        self.http_status_override: dict[str, int] = {}
+        self.error_code_override: dict[str, int] = {}
+        self.drop_connection_paths: set[str] = set()
+        self.emit_malformed_json_paths: set[str] = set()
         self.streaming_delay: float = 0.0
         self.force_expired_session: bool = False
         self.force_quota_exhausted: bool = False
         self.force_model_inconsistent = False
         self.force_notebooklm_offline = False
-        self.stream_generate_handler: Optional[Any] = None
-        self.recorded_requests: List[Dict[str, Any]] = []
+        self.stream_generate_handler: Any | None = None
+        self.recorded_requests: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.http_status_override.clear()
@@ -77,10 +74,10 @@ class MockGeminiServer:
         self.fault = MockFaultConfig()
         self.app = web.Application()
         self._setup_routes()
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _setup_routes(self) -> None:
         self.app.router.add_get("/", self._handle_notebooklm_root)
@@ -96,7 +93,7 @@ class MockGeminiServer:
         self.app.router.add_post("/upload", self._handle_upload)
 
 
-    async def _record_request(self, request: web.Request, body_params: Optional[Dict[str, Any]] = None) -> None:
+    async def _record_request(self, request: web.Request, body_params: dict[str, Any] | None = None) -> None:
         rec = {
             "path": request.path,
             "method": request.method,
@@ -187,7 +184,7 @@ class MockGeminiServer:
 
         rpc_ids = request.query.get("rpcids", "")
         f_req = body_dict.get("f.req", "")
-        inner_args: List[Any] = []
+        inner_args: list[Any] = []
         if f_req:
             try:
                 parsed_outer = json.loads(f_req)
@@ -409,15 +406,11 @@ class MockGeminiServer:
                 self._loop.run_forever()
             finally:
                 if self._runner:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._loop.run_until_complete(self.stop_async())
-                    except Exception:
-                        pass
                 if not self._loop.is_closed():
-                    try:
+                    with contextlib.suppress(Exception):
                         self._loop.close()
-                    except Exception:
-                        pass
 
         self._thread = threading.Thread(target=_target, daemon=True)
         self._thread.start()
