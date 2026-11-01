@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from backend.app.bridge.models import DEFAULT_MODELS
 from backend.app.bridge.session import SessionHealthStatus, SessionManager
 from backend.app.storage.database import Database
-from backend.app.storage.vault import AccountProfile, CredentialVault, FailoverConfig
+from backend.app.storage.vault import AccountProfile, CredentialVault
 
 logger = logging.getLogger("gemini_api.limits")
 router = APIRouter(prefix="/api/limits", tags=["Limits & Telemetry"])
@@ -70,7 +70,7 @@ CANONICAL_TELEMETRY_MODELS = [
     ("Task", "task_mode"),
 ]
 
-MODEL_ID_TO_CANONICAL_NAME: Dict[str, str] = {
+MODEL_ID_TO_CANONICAL_NAME: dict[str, str] = {
     "95a4c0abcba24364": "4 Argon",
     "e6fa609c3fa255c0": "3.1 Pro",
     "56fdd199312815e2": "3.8 Flash",
@@ -90,17 +90,16 @@ for _mid, _info in DEFAULT_MODELS.items():
 
 @router.get("")
 async def get_limits(
-    account_id: Optional[str] = Query(None, description="Optional account ID filter"),
+    account_id: str | None = Query(None, description="Optional account ID filter"),
     session_mgr: SessionManager = Depends(get_session_manager),
     vault: CredentialVault = Depends(get_vault),
     db: Database = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Returns live account quota health, per-model rolling usage counters,
     configured thresholds, cooldown status, and failover state.
     """
     now = time.time()
-    now_ms = int(now * 1000)
 
     # 1. Global 24h Summary
     global_24h = await db.get_rolling_usage(account_id=None, window_seconds=86400)
@@ -109,7 +108,7 @@ async def get_limits(
     vdata = vault.load_vault_data()
     failover_cfg = vdata.failover_config
 
-    profiles: List[AccountProfile] = []
+    profiles: list[AccountProfile] = []
     if account_id:
         p = vault.get_account(account_id)
         if not p:
@@ -127,7 +126,7 @@ async def get_limits(
                 )
             ]
 
-    accounts_data: List[Dict[str, Any]] = []
+    accounts_data: list[dict[str, Any]] = []
 
     for prof in profiles:
         sess = session_mgr.get_account_session(prof.id)
@@ -142,7 +141,7 @@ async def get_limits(
         is_cooling = bool(cooldown_until and cooldown_until > now)
         rem_sec = max(0, int(cooldown_until - now)) if is_cooling and cooldown_until else 0
 
-        affected_models: List[str] = []
+        affected_models: list[str] = []
         if is_cooling:
             affected_models.append("All Models")
         if sess and sess.cooldown_models:
@@ -161,7 +160,7 @@ async def get_limits(
             health_str = prof.health_status
 
         # Aggregate per_model_24h by canonical display name to prevent duplicate rows
-        aggregated_model_usage: Dict[str, Dict[str, Any]] = {}
+        aggregated_model_usage: dict[str, dict[str, Any]] = {}
         for raw_key, stats in model_usage_24h.items():
             raw_id = stats.get("model_id") or raw_key
             canon_name = MODEL_ID_TO_CANONICAL_NAME.get(raw_key) or MODEL_ID_TO_CANONICAL_NAME.get(raw_id) or raw_key
@@ -183,7 +182,7 @@ async def get_limits(
             aggregated_model_usage[canon_name]["error_count"] += stats.get("error_count", 0)
 
         # Per model 24h metrics dictionary
-        per_model: Dict[str, Any] = {}
+        per_model: dict[str, Any] = {}
         for disp_name, m_id in CANONICAL_TELEMETRY_MODELS:
             stats = aggregated_model_usage.get(disp_name, {})
             m_cooling = False
@@ -317,7 +316,7 @@ async def update_account_thresholds(
     req: ThresholdsUpdateRequest,
     db: Database = Depends(get_db),
     vault: CredentialVault = Depends(get_vault),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Configures daily and hourly alert thresholds for an account."""
     if not vault.get_account(account_id):
         raise HTTPException(status_code=404, detail=f"Account '{account_id}' not found")
