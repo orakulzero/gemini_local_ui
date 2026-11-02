@@ -13,6 +13,12 @@ from .browser_extractor import (
     ProfileNotFoundError,
 )
 from .client import GeminiWebClient
+from .cross_repo_schema_sync import (
+    BoundaryCompatibilityResult,
+    ContractSchema,
+    CrossRepoSchemaSynchronizer,
+    SyncMigrationPlan,
+)
 from .exceptions import (
     AuthenticationError,
     GeminiBridgeError,
@@ -56,8 +62,12 @@ __all__ = [
     "BrowserCookieExtractor",
     "BrowserExtractorError",
     "BrowserType",
+    "BoundaryCompatibilityResult",
+    "ContractSchema",
     "CookieValidationResult",
+    "CrossRepoSchemaSynchronizer",
     "DEFAULT_MODELS",
+    "SyncMigrationPlan",
     "Gem",
     "GemSerializer",
     "GeminiBridgeError",
