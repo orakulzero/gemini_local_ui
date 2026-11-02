@@ -445,14 +445,22 @@ class EcosystemIntelligenceScout:
 
         target_repo = str(finding.get("target_agy_repo") or "gemini_local_ui")
         resolved_workspace = target_repo
-        if not Path(target_repo).exists():
+        if not Path(target_repo).exists() or not (Path(target_repo) / "tests").exists():
             repo_root = Path(__file__).resolve().parents[3]
             projects_root = repo_root.parent
-            candidate_dir = projects_root / target_repo
-            if target_repo == repo_root.name and repo_root.exists():
-                resolved_workspace = str(repo_root)
-            elif candidate_dir.exists():
-                resolved_workspace = str(candidate_dir)
+            alt_root = Path(r"E:\ANTIGRAVITY")
+            for cand in (
+                repo_root if target_repo == repo_root.name else None,
+                projects_root / Path(target_repo).name,
+                alt_root / Path(target_repo).name,
+            ):
+                if cand is not None and cand.exists() and (cand / "tests").exists():
+                    resolved_workspace = str(cand)
+                    break
+            else:
+                candidate_dir = projects_root / Path(target_repo).name
+                if candidate_dir.exists():
+                    resolved_workspace = str(candidate_dir)
 
         sched = orchestrator.create_schedule(
             name=f"Scout-{target_repo}-{finding_id[:6]}",

@@ -487,7 +487,15 @@ def verify_five_quality_gates(
     gate1_pytest = True
     pytest_output = ""
     if run_pytest:
-        root = Path(workspace_dir).resolve()
+        raw_path = Path(workspace_dir)
+        root = raw_path.resolve()
+        if not raw_path.exists() or (".gemini" in str(raw_path) and not (root / "tests").exists()):
+            repo_name = raw_path.name
+            projects_root = Path(__file__).resolve().parents[3].parent
+            for cand in (projects_root / repo_name, Path(r"E:\ANTIGRAVITY") / repo_name):
+                if cand.exists() and (cand / "tests").exists():
+                    root = cand.resolve()
+                    break
         with tempfile.TemporaryDirectory(prefix="m30_Verify_") as tmp_sandbox:
             sandbox_root = Path(tmp_sandbox) / "workspace"
             sandbox_ignore = [d for d in PRUNED_DIRS if d != ".git"]
@@ -964,7 +972,15 @@ class TaskPipelineOrchestrator:
             pack_ultra_2m_repository_context,
         )
 
-        root = Path(workspace_dir).resolve()
+        raw_path = Path(workspace_dir)
+        root = raw_path.resolve()
+        if not raw_path.exists() or (".gemini" in str(raw_path) and not (root / "tests").exists()):
+            repo_name = raw_path.name
+            projects_root = Path(__file__).resolve().parents[3].parent
+            for cand in (projects_root / repo_name, Path(r"E:\ANTIGRAVITY") / repo_name):
+                if cand.exists() and (cand / "tests").exists():
+                    root = cand.resolve()
+                    break
         orig_files = self._read_original_files(root, target_files)
         bundle = pack_workspace_context(root, target_files=target_files)
         ultra_profile = UltraSubscriptionManager().detect_subscription_profile()

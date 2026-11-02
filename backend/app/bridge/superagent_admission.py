@@ -166,5 +166,5 @@ class SuperagentAdmissionEngine:
         return [
             ticket
             for ticket in tickets
-            if str(ticket.get("stage", "")).lower() in HUMAN_ATTENTION_STAGES
+            if str(ticket.get("stage") or ticket.get("status", "")).lower() in HUMAN_ATTENTION_STAGES
         ]
