@@ -1,7 +1,7 @@
 """
 backend/app/bridge/task_pipeline.py
 M30: Autonomous Gemini 4 Argon Task Mode Pipeline, Scheduled Orchestrator & Self-Healing Verifier.
-Implements REQ-PIPE-01, REQ-PIPE-02, REQ-PIPE-03, REQ-PIPE-04, REQ-PIPE-05.
+Implements REQ-PIPE-01, REQ-PIPE-02, REQ-PIPE-03, REQ-PIPE-04, REQ-PIPE-05, REQ-PIPE-11.
 """
 
 from __future__ import annotations
@@ -141,13 +141,75 @@ def pack_workspace_context(
     }
 
 
+def select_default_target_files_with_line_numbers(
+    orig_files: dict[str, str],
+    max_files: int = 4,
+) -> dict[str, str]:
+    """
+    REQ-PIPE-11: Selects up to max_files non-test production Python files from orig_files
+    and formats each file with 1-indexed line numbers for deterministic RangeEdit grounding.
+    """
+    limit = max(1, int(max_files))
+    candidates: list[tuple[int, str, str]] = []
+    for rel_path, content in orig_files.items():
+        norm = rel_path.replace("\\", "/").lstrip("/")
+        if not norm.endswith(".py"):
+            continue
+        parts = Path(norm).parts
+        if "tests" in parts or Path(norm).name.startswith("test_"):
+            continue
+        is_init = 1 if Path(norm).name == "__init__.py" else 0
+        candidates.append((is_init, norm, content))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    selected: dict[str, str] = {}
+    for _, norm, content in candidates[:limit]:
+        numbered = "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(content.splitlines()))
+        selected[norm] = numbered
+    return selected
+
+
+def snap_range_edit_to_ast_boundary(
+    source_code: str,
+    start_line: int,
+    end_line: int,
+) -> tuple[int, int]:
+    """
+    REQ-PIPE-11: Snaps a line range (start_line, end_line) to the enclosing top-level
+    AST definition boundary (lineno..end_lineno) to prevent mid-node truncation.
+    """
+    s_line = max(1, int(start_line))
+    e_line = max(s_line, int(end_line))
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        return (s_line, e_line)
+
+    snapped_start = s_line
+    snapped_end = e_line
+    for node in tree.body:
+        n_start = getattr(node, "lineno", None)
+        n_end = getattr(node, "end_lineno", None)
+        if n_start is None or n_end is None:
+            continue
+        decorators = getattr(node, "decorator_list", None) or []
+        for dec in decorators:
+            d_line = getattr(dec, "lineno", None)
+            if d_line is not None:
+                n_start = min(n_start, d_line)
+        if n_start <= e_line and n_end >= s_line:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                snapped_start = min(snapped_start, int(n_start))
+                snapped_end = max(snapped_end, int(n_end))
+    return (snapped_start, snapped_end)
+
+
 def extract_code_files_from_response(
     text: str,
     orig_files: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """
-    REQ-PIPE-03, REQ-PIPE-07: Extracts multi-file code blocks and targeted Canvas RangeEdit blocks
-    from Gemini Task Mode Markdown responses.
+    REQ-PIPE-03, REQ-PIPE-07, REQ-PIPE-11: Extracts multi-file code blocks and targeted
+    AST-snapped Canvas RangeEdit blocks from Gemini Task Mode Markdown responses.
     Supports '### File: <path>', '**File:** <path>', '```lang:<path>', '<file path="...">',
     and '### RangeEdit: <path>:<start_line>-<end_line>'.
     """
@@ -202,7 +264,29 @@ def extract_code_files_from_response(
                     end_line=end_line,
                     replacement_content=repl_code,
                 )
-                extracted[rel] = str(updated_doc["content"])
+                candidate_str = str(updated_doc["content"])
+                if rel.endswith(".py"):
+                    needs_snap = False
+                    try:
+                        ast.parse(candidate_str)
+                    except SyntaxError:
+                        needs_snap = True
+                    if not needs_snap and repl_code.lstrip().startswith(("def ", "async def ", "class ", "@")):
+                        snapped = snap_range_edit_to_ast_boundary(base_content, start_line, end_line)
+                        if snapped != (start_line, end_line):
+                            needs_snap = True
+                    if needs_snap:
+                        s_bound, e_bound = snap_range_edit_to_ast_boundary(base_content, start_line, end_line)
+                        if (s_bound, e_bound) != (start_line, end_line):
+                            doc2 = canvas_mgr.create_document(filename=rel, content=base_content)
+                            updated_doc2 = canvas_mgr.apply_range_edit(
+                                doc2["doc_id"],
+                                start_line=s_bound,
+                                end_line=e_bound,
+                                replacement_content=repl_code,
+                            )
+                            candidate_str = str(updated_doc2["content"])
+                extracted[rel] = candidate_str
 
     return extracted
 
@@ -343,7 +427,10 @@ async def verify_candidate_drafts_in_sandbox(
             if all_valid_ast:
                 syntax_ok = True
                 combined_code = "\n\n".join(py_snippets)
-                sbx_res = await run_cloud_python_sandbox(code=combined_code, client=client)
+                sbx_res = await run_cloud_python_sandbox(
+                    code=combined_code,
+                    client=client if client is not None else False,
+                )
                 sandbox_ok = bool(sbx_res.get("ok", False))
                 score = 1.0 if sandbox_ok else 0.5
             else:
@@ -509,6 +596,15 @@ def verify_five_quality_gates(
                 dest = sandbox_root / rel_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(new_code, encoding="utf-8")
+
+            if (sandbox_root / ".git" / "HEAD").is_file():
+                subprocess.run(
+                    ["git", "add", "-A"],
+                    cwd=str(sandbox_root),
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
 
             env = os.environ.copy()
             env["PYTHONPATH"] = str(sandbox_root)
@@ -875,10 +971,40 @@ class TaskPipelineOrchestrator:
         task_runner: Callable[..., Any] | None = None,
         mock_candidate_files: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """REQ-PIPE-02, REQ-PIPE-09, REQ-PIPE-10: Immediately executes a specific schedule by schedule_id."""
+        """REQ-PIPE-02, REQ-PIPE-09, REQ-PIPE-10, REQ-PIPE-11: Immediately executes a specific schedule by schedule_id."""
         sched = self.get_schedule(schedule_id)
         if sched is None:
             raise KeyError(f"Schedule '{schedule_id}' not found")
+        sched_name_lower = str(sched.get("name", "")).lower()
+        if (
+            task_runner is None
+            and mock_candidate_files is None
+            and ("intelligence" in sched_name_lower or "scout" in sched_name_lower)
+        ):
+            from backend.app.bridge.ecosystem_scout import get_ecosystem_scout
+
+            sweep_res = await get_ecosystem_scout().run_intelligence_sweep(
+                focus_query=str(sched.get("prompt", "")),
+            )
+            run_id = f"run_{uuid.uuid4().hex[:10]}"
+            run_record: dict[str, Any] = {
+                "run_id": run_id,
+                "schedule_id": schedule_id,
+                "workspace_dir": str(sched.get("workspace_dir", "")),
+                "prompt": str(sched.get("prompt", "")),
+                "status": "SCOUT_SWEEP_COMPLETED",
+                "sweep_id": str(sweep_res.get("sweep_id", "")),
+                "findings_count": len(sweep_res.get("findings", [])),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._state["runs"][run_id] = run_record
+            if schedule_id in self._state["schedules"]:
+                srec = self._state["schedules"][schedule_id]
+                srec["last_run_ts"] = time.time()
+                srec["next_run_ts"] = time.time() + int(srec.get("interval_seconds", 3600))
+                srec["last_run_id"] = run_id
+            self._save_state()
+            return dict(run_record)
         return await self.execute_pipeline_run(
             workspace_dir=sched["workspace_dir"],
             prompt=sched["prompt"],
@@ -923,7 +1049,7 @@ class TaskPipelineOrchestrator:
             for dirpath, dirnames, filenames in os.walk(workspace_dir):
                 dirnames[:] = [d for d in dirnames if d not in PRUNED_DIRS]
                 for fn in filenames:
-                    if fn.endswith(".py"):
+                    if fn.endswith((".py", ".md", ".toml", ".json", ".yaml", ".yml")):
                         fpath = Path(dirpath) / fn
                         norm = fpath.relative_to(workspace_dir).as_posix()
                         orig[norm] = fpath.read_text(encoding="utf-8", errors="replace")
@@ -1038,13 +1164,6 @@ class TaskPipelineOrchestrator:
                 }
             ]
             current_prompt = prompt
-            if target_files and orig_files and task_runner is None:
-                file_dumps: list[str] = []
-                for rel_p, src_txt in list(orig_files.items())[:5]:
-                    numbered = "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(src_txt.splitlines()))
-                    file_dumps.append(f"# Target File ({rel_p})\n```python\n{numbered}\n```")
-                if file_dumps:
-                    current_prompt = f"{current_prompt}\n\n" + "\n\n".join(file_dumps)
             if discovered["skills"] or discovered["rules"] or enable_mcp_tools:
                 mcp_tools_section = (
                     "# Available MCP Tools\n"
@@ -1054,6 +1173,21 @@ class TaskPipelineOrchestrator:
                     'Emit ```tool_call\n{"name": "...", "arguments": {...}}\n``` to invoke an MCP tool before outputting code.'
                 )
                 current_prompt = f"{prompt}\n\n{discovered['prompt_block']}\n\n{mcp_tools_section}"
+            if orig_files and task_runner is None:
+                numbered_map = (
+                    {
+                        rel_p: "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(src_txt.splitlines()))
+                        for rel_p, src_txt in list(orig_files.items())[:5]
+                    }
+                    if target_files
+                    else select_default_target_files_with_line_numbers(orig_files, max_files=4)
+                )
+                file_dumps = [
+                    f"# Target File ({rel_p})\n```python\n{numbered}\n```"
+                    for rel_p, numbered in numbered_map.items()
+                ]
+                if file_dumps:
+                    current_prompt = f"{current_prompt}\n\n" + "\n\n".join(file_dumps)
             q_engine = get_response_quality_engine()
             for attempt in range(max_heal_attempts + 1):
                 if task_runner is not None:
@@ -1180,7 +1314,7 @@ class TaskPipelineOrchestrator:
                             effective_text = str(resp.get("text", ""))
                             selected_rcid = rcid
 
-                dc_res = await q_engine.double_check_response(text=effective_text)
+                dc_res = await q_engine.double_check_response(text=effective_text, client=False)
                 double_check_trust = float(dc_res.get("trust_score", 0.95))
 
                 extracted = extract_code_files_from_response(
