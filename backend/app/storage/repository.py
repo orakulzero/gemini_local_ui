@@ -6,7 +6,6 @@ DAG Tree Branching, and Remote Google Gemini Synchronization.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import json
@@ -14,7 +13,8 @@ import logging
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any
+from collections.abc import AsyncIterator
 import uuid
 
 from backend.app.storage.database import AsyncRLock, Database
@@ -37,7 +37,7 @@ class Attachment:
     def resource_uri(self) -> str:
         return self.uri
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "message_id": self.message_id,
@@ -57,31 +57,31 @@ class Message:
     conversation_id: str
     role: str  # 'user' | 'assistant' | 'system'
     content: str
-    parent_id: Optional[int] = None
-    thoughts: Optional[str] = None
+    parent_id: int | None = None
+    thoughts: str | None = None
     model: str = "gemini-2.5-pro"
-    token_count: Optional[int] = None
+    token_count: int | None = None
     is_error: bool = False
     created_at: int = field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = field(default_factory=lambda: int(time.time() * 1000))
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    attachments: List[Attachment] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    attachments: list[Attachment] = field(default_factory=list)
 
     # Dynamic branch navigation properties computed at query time
-    sibling_index: Optional[int] = None  # 1-indexed (e.g. 2)
-    sibling_count: Optional[int] = None  # Total siblings (e.g. 3)
-    sibling_ids: Optional[List[int]] = None
-    children_ids: Optional[List[int]] = None
+    sibling_index: int | None = None  # 1-indexed (e.g. 2)
+    sibling_count: int | None = None  # Total siblings (e.g. 3)
+    sibling_ids: list[int] | None = None
+    children_ids: list[int] | None = None
 
     @property
-    def parent_message_id(self) -> Optional[int]:
+    def parent_message_id(self) -> int | None:
         return self.parent_id
 
     @property
-    def thinking_content(self) -> Optional[str]:
+    def thinking_content(self) -> str | None:
         return self.thoughts
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
@@ -110,18 +110,18 @@ class Conversation:
     id: str
     title: str
     model: str = "gemini-2.5-pro"
-    remote_conversation_id: Optional[str] = None
-    gem_id: Optional[str] = None
-    system_prompt: Optional[str] = None
-    active_leaf_message_id: Optional[int] = None
+    remote_conversation_id: str | None = None
+    gem_id: str | None = None
+    system_prompt: str | None = None
+    active_leaf_message_id: int | None = None
     is_pinned: bool = False
     is_archived: bool = False
     created_at: int = field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = field(default_factory=lambda: int(time.time() * 1000))
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     message_count: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "title": self.title,
@@ -145,10 +145,10 @@ class ConversationRepository:
     DAG Tree Branching, and Remote Google Gemini Synchronization.
     """
 
-    def __init__(self, db: Union[Database, sqlite3.Connection, str, Path]) -> None:
+    def __init__(self, db: Database | sqlite3.Connection | str | Path) -> None:
         if isinstance(db, Database):
             self.db = db
-            self._external_conn: Optional[sqlite3.Connection] = None
+            self._external_conn: sqlite3.Connection | None = None
         elif isinstance(db, sqlite3.Connection):
             self.db = Database(db_path=":memory:")
             self._external_conn = db
@@ -173,7 +173,7 @@ class ConversationRepository:
 
     # Helper parsing methods
     @staticmethod
-    def _parse_int_id(val: Any) -> Optional[int]:
+    def _parse_int_id(val: Any) -> int | None:
         if val is None:
             return None
         try:
@@ -181,7 +181,7 @@ class ConversationRepository:
         except (ValueError, TypeError):
             return None
 
-    def _row_to_conversation(self, row: Dict[str, Any], msg_count: int = 0) -> Conversation:
+    def _row_to_conversation(self, row: dict[str, Any], msg_count: int = 0) -> Conversation:
         meta = json.loads(row["metadata_json"]) if row.get("metadata_json") else {}
         return Conversation(
             id=row["id"],
@@ -199,7 +199,7 @@ class ConversationRepository:
             message_count=msg_count,
         )
 
-    def _row_to_message(self, row: Dict[str, Any]) -> Message:
+    def _row_to_message(self, row: dict[str, Any]) -> Message:
         meta = json.loads(row["metadata_json"]) if row.get("metadata_json") else {}
         return Message(
             id=int(row["id"]),
@@ -216,7 +216,7 @@ class ConversationRepository:
             metadata=meta,
         )
 
-    def _row_to_attachment(self, row: Dict[str, Any]) -> Attachment:
+    def _row_to_attachment(self, row: dict[str, Any]) -> Attachment:
         return Attachment(
             id=row["id"],
             message_id=int(row["message_id"]),
@@ -236,11 +236,11 @@ class ConversationRepository:
         self,
         title: str = "New Conversation",
         model: str = "gemini-2.5-pro",
-        gem_id: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        remote_conversation_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        id: Optional[str] = None,
+        gem_id: str | None = None,
+        system_prompt: str | None = None,
+        remote_conversation_id: str | None = None,
+        conversation_id: str | None = None,
+        id: str | None = None,
     ) -> Conversation:
         conv_id = conversation_id or id or f"conv_{uuid.uuid4().hex[:12]}"
         now = int(time.time() * 1000)
@@ -279,7 +279,7 @@ class ConversationRepository:
             await conn.execute(sql, params)
         return conv
 
-    async def get_conversation(self, conv_id: str) -> Optional[Conversation]:
+    async def get_conversation(self, conv_id: str) -> Conversation | None:
         sql = """
         SELECT c.*, COUNT(m.id) as msg_count
         FROM conversations c
@@ -292,7 +292,7 @@ class ConversationRepository:
             return None
         return self._row_to_conversation(row, msg_count=row["msg_count"])
 
-    async def get_conversation_by_remote_id(self, remote_id: str) -> Optional[Conversation]:
+    async def get_conversation_by_remote_id(self, remote_id: str) -> Conversation | None:
         sql = "SELECT * FROM conversations WHERE remote_conversation_id = ?;"
         row = await self.db.fetch_one(sql, (remote_id,))
         if not row:
@@ -305,11 +305,11 @@ class ConversationRepository:
         limit: int = 20,
         archived: bool = False,
         pinned_first: bool = True,
-        search_query: Optional[str] = None,
-    ) -> Tuple[List[Conversation], int]:
+        search_query: str | None = None,
+    ) -> tuple[list[Conversation], int]:
         offset = (page - 1) * limit
         where_clauses = ["c.is_archived = ?"]
-        params: List[Any] = [1 if archived else 0]
+        params: list[Any] = [1 if archived else 0]
 
         if search_query:
             where_clauses.append("c.title LIKE ?")
@@ -341,7 +341,7 @@ class ConversationRepository:
         self,
         query: str,
         limit: int = 20,
-    ) -> List[Conversation]:
+    ) -> list[Conversation]:
         """Searches conversations matching query string."""
         convs, _ = await self.list_conversations(search_query=query, limit=limit)
         return convs
@@ -353,10 +353,10 @@ class ConversationRepository:
 
     async def update_conversation(
         self,
-        conv_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
+        conv_id: str | None = None,
+        conversation_id: str | None = None,
         **fields: Any,
-    ) -> Optional[Conversation]:
+    ) -> Conversation | None:
         target_id = conv_id or conversation_id or fields.pop("id", None)
         if not target_id:
             raise ValueError("Missing conv_id or conversation_id")
@@ -385,7 +385,7 @@ class ConversationRepository:
             await conn.execute(f"UPDATE conversations SET {set_sql} WHERE id = ?;", params)
         return await self.get_conversation(target_id)
 
-    async def archive_conversation(self, conv_id: str, is_archived: bool = True) -> Optional[Conversation]:
+    async def archive_conversation(self, conv_id: str, is_archived: bool = True) -> Conversation | None:
         now = int(time.time() * 1000)
         return await self.update_conversation(conv_id, is_archived=is_archived, updated_at=now)
 
@@ -406,15 +406,15 @@ class ConversationRepository:
         conversation_id: str,
         role: str,
         content: str,
-        parent_id: Optional[int] = None,
-        thoughts: Optional[str] = None,
+        parent_id: int | None = None,
+        thoughts: str | None = None,
         model: str = "gemini-2.5-pro",
-        token_count: Optional[int] = None,
+        token_count: int | None = None,
         is_error: bool = False,
-        created_at: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        parent_message_id: Optional[int] = None,
-        thinking_content: Optional[str] = None,
+        created_at: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        parent_message_id: int | None = None,
+        thinking_content: str | None = None,
     ) -> Message:
         """Inserts message, links parent_id in DAG, and advances active leaf pointer."""
         effective_parent = parent_id if parent_id is not None else parent_message_id
@@ -454,7 +454,7 @@ class ConversationRepository:
             )
 
 
-        msg = Message(
+        return Message(
             id=msg_id,
             conversation_id=conversation_id,
             role=role,
@@ -468,7 +468,6 @@ class ConversationRepository:
             updated_at=now,
             metadata=metadata or {},
         )
-        return msg
 
     async def create_message(self, **kwargs: Any) -> Message:
         """Alias for add_message supporting diverse naming styles."""
@@ -550,7 +549,7 @@ class ConversationRepository:
             metadata=metadata,
         )
 
-    async def get_message(self, message_id: Union[int, str]) -> Optional[Message]:
+    async def get_message(self, message_id: int | str) -> Message | None:
         int_id = self._parse_int_id(message_id)
         if int_id is None:
             return None
@@ -562,7 +561,7 @@ class ConversationRepository:
         msg.attachments = [self._row_to_attachment(ar) for ar in att_rows]
         return msg
 
-    async def get_all_messages(self, conversation_id: str) -> List[Message]:
+    async def get_all_messages(self, conversation_id: str) -> list[Message]:
         """Retrieves all messages in conversation and annotates with siblings and attachments."""
         rows = await self.db.fetch_all(
             "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC;",
@@ -579,16 +578,16 @@ class ConversationRepository:
     async def get_conversation_thread(
         self,
         conversation_id: str,
-        leaf_message_id: Optional[Union[int, str]] = None,
-    ) -> List[Message]:
+        leaf_message_id: int | str | None = None,
+    ) -> list[Message]:
         """Reconstructs the ordered list of messages in thread (alias for get_active_thread)."""
         return await self.get_active_thread(conversation_id, leaf_message_id)
 
     async def get_active_thread(
         self,
         conversation_id: str,
-        leaf_message_id: Optional[Union[int, str]] = None,
-    ) -> List[Message]:
+        leaf_message_id: int | str | None = None,
+    ) -> list[Message]:
         """
         Reconstructs the ordered list of messages forming the active conversation thread
         from root to leaf via a recursive CTE.
@@ -639,7 +638,7 @@ class ConversationRepository:
         return messages
 
     async def _annotate_siblings_and_attachments(
-        self, conversation_id: str, messages: List[Message]
+        self, conversation_id: str, messages: list[Message]
     ) -> None:
         """Annotates each message with sibling indices, total siblings, and attachments."""
         if not messages:
@@ -650,7 +649,7 @@ class ConversationRepository:
             (conversation_id,),
         )
 
-        parent_to_children: Dict[Optional[int], List[int]] = {}
+        parent_to_children: dict[int | None, list[int]] = {}
         for r in all_rows:
             p_id = self._parse_int_id(r["parent_id"])
             m_id = int(r["id"])
@@ -662,7 +661,7 @@ class ConversationRepository:
             f"SELECT * FROM attachments WHERE message_id IN ({placeholders});",
             msg_ids,
         )
-        att_by_msg: Dict[int, List[Attachment]] = {}
+        att_by_msg: dict[int, list[Attachment]] = {}
         for ar in att_rows:
             att = self._row_to_attachment(ar)
             att_by_msg.setdefault(att.message_id, []).append(att)
@@ -678,7 +677,7 @@ class ConversationRepository:
             m.children_ids = parent_to_children.get(m.id, [])
             m.attachments = att_by_msg.get(m.id, [])
 
-    async def get_message_siblings(self, message_id: Union[int, str]) -> Tuple[int, int]:
+    async def get_message_siblings(self, message_id: int | str) -> tuple[int, int]:
         """Returns (branch_index, total_branches) for message, 1-indexed."""
         int_id = self._parse_int_id(message_id)
         if int_id is None:
@@ -716,12 +715,12 @@ class ConversationRepository:
     async def fork_branch(
         self,
         conversation_id: str,
-        parent_id: Optional[Union[int, str]],
+        parent_id: int | str | None,
         role: str,
         content: str,
-        thoughts: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> Tuple[Message, List[Message]]:
+        thoughts: str | None = None,
+        model: str | None = None,
+    ) -> tuple[Message, list[Message]]:
         """Creates a new branch starting from parent_id and returns (new_message, new_thread)."""
         int_parent_id = self._parse_int_id(parent_id)
         msg_model = model or "gemini-2.5-pro"
@@ -739,8 +738,8 @@ class ConversationRepository:
     async def switch_active_branch(
         self,
         conversation_id: str,
-        target_message_id: Union[int, str],
-    ) -> Tuple[int, List[Message]]:
+        target_message_id: int | str,
+    ) -> tuple[int, list[Message]]:
         """
         Switches active branch by resolving down the tree from target_message_id
         to the most recent descendant leaf.
@@ -763,7 +762,7 @@ class ConversationRepository:
             raise ValueError(f"Message {target_message_id} not found in conversation {conversation_id}")
 
         # Build parent -> latest child mapping
-        parent_to_latest_child: Dict[int, int] = {}
+        parent_to_latest_child: dict[int, int] = {}
         for r in child_rows:
             p_id = r.get("parent_id")
             if p_id is not None and p_id not in parent_to_latest_child:
@@ -794,10 +793,10 @@ class ConversationRepository:
     async def create_branch_edit(
         self,
         conversation_id: str,
-        target_message_id: Union[int, str],
+        target_message_id: int | str,
         new_content: str,
-        model: Optional[str] = None,
-    ) -> Tuple[Message, List[Message]]:
+        model: str | None = None,
+    ) -> tuple[Message, list[Message]]:
         """
         Edits an earlier message, creating a new sibling message sharing the same parent,
         updating the active leaf pointer.
@@ -828,16 +827,16 @@ class ConversationRepository:
 
     async def add_attachment(
         self,
-        message_id: Union[int, str],
-        filename: Optional[str] = None,
-        file_name: Optional[str] = None,
+        message_id: int | str,
+        filename: str | None = None,
+        file_name: str | None = None,
         mime_type: str = "application/octet-stream",
-        size_bytes: Optional[int] = None,
-        file_size: Optional[int] = None,
+        size_bytes: int | None = None,
+        file_size: int | None = None,
         storage_path: str = "",
         uri: str = "",
-        remote_file_uri: Optional[str] = None,
-        attachment_id: Optional[str] = None,
+        remote_file_uri: str | None = None,
+        attachment_id: str | None = None,
     ) -> Attachment:
         int_msg_id = self._parse_int_id(message_id)
         assert int_msg_id is not None
@@ -873,8 +872,8 @@ class ConversationRepository:
     # =========================================================================
 
     async def reconcile_remote_conversations(
-        self, remote_list: List[Dict[str, Any]]
-    ) -> Dict[str, int]:
+        self, remote_list: list[dict[str, Any]]
+    ) -> dict[str, int]:
         """
         Reconciles remote conversation metadata from Google Gemini with the local database.
         Returns: { 'synced': total, 'new': count, 'updated': count, 'unchanged': count }
@@ -943,7 +942,7 @@ class ConversationRepository:
     async def hydrate_remote_turns(
         self,
         conversation_id: str,
-        turns_payload: List[Any],
+        turns_payload: list[Any],
     ) -> int:
         """
         Parses Google Gemini turn payloads from RPC hNvQHb and populates local messages.
@@ -966,7 +965,7 @@ class ConversationRepository:
             (conversation_id,),
         )
         existing_turn_ids = set()
-        turn_id_to_row: Dict[str, Dict[str, Any]] = {}
+        turn_id_to_row: dict[str, dict[str, Any]] = {}
         for em in existing_msgs:
             if em.get("metadata_json"):
                 try:
@@ -978,7 +977,7 @@ class ConversationRepository:
                 except Exception:
                     pass
 
-        prev_msg_id: Optional[int] = None
+        prev_msg_id: int | None = None
         latest_msg = await self.db.fetch_one(
             "SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1;",
             (conversation_id,),
@@ -1146,15 +1145,15 @@ class ConversationRepository:
         model_name: str,
         feature_mode: str = "chat",
         reasoning_level: int = 1,
-        request_timestamp: Optional[int] = None,
+        request_timestamp: int | None = None,
         prompt_tokens_est: int = 0,
         completion_tokens_est: int = 0,
         thinking_tokens_est: int = 0,
         status_code: int = 200,
-        error_code: Optional[str] = None,
+        error_code: str | None = None,
         duration_ms: int = 0,
         was_failover: int = 0,
-        failover_from_account: Optional[str] = None,
+        failover_from_account: str | None = None,
     ) -> None:
         """Records token and request counts to usage_telemetry in the database."""
         await self.db.record_telemetry(
