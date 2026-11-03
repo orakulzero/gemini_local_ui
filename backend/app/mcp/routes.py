@@ -6,8 +6,8 @@ FastAPI router providing the HTTP POST /mcp endpoint for JSON-RPC 2.0 communicat
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Union
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from typing import Any
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from backend.app.bridge.client import GeminiWebClient
@@ -19,7 +19,7 @@ logger = logging.getLogger("gemini_mcp.routes")
 router = APIRouter(tags=["MCP"])
 
 # Module-level server singleton
-_mcp_server: Optional[MCPServer] = None
+_mcp_server: MCPServer | None = None
 
 
 def get_mcp_server(request: Request) -> MCPServer:
@@ -44,7 +44,7 @@ def get_mcp_server(request: Request) -> MCPServer:
     return _mcp_server
 
 
-def get_gemini_client(request: Request) -> Optional[GeminiWebClient]:
+def get_gemini_client(request: Request) -> GeminiWebClient | None:
     """Dependency injection resolving active GeminiWebClient."""
     sm = getattr(request.app.state, "session_manager", None)
     if sm and sm.active_account_id:
@@ -59,7 +59,7 @@ def get_gemini_client(request: Request) -> Optional[GeminiWebClient]:
         return None
 
 
-async def get_notebooklm_client(request: Request) -> Optional[NotebookLMClient]:
+async def get_notebooklm_client(request: Request) -> NotebookLMClient | None:
     """Dependency injection resolving active NotebookLMClient."""
     from backend.app.api.notebooklm import get_notebooklm_client as resolve_nb_client
     try:
@@ -78,8 +78,8 @@ async def get_notebooklm_client(request: Request) -> Optional[NotebookLMClient]:
 async def handle_mcp_endpoint(
     request: Request,
     server: MCPServer = Depends(get_mcp_server),
-    client: Optional[GeminiWebClient] = Depends(get_gemini_client),
-    notebooklm_client: Optional[NotebookLMClient] = Depends(get_notebooklm_client),
+    client: GeminiWebClient | None = Depends(get_gemini_client),
+    notebooklm_client: NotebookLMClient | None = Depends(get_notebooklm_client),
 ) -> Any:
     """
     Model Context Protocol (MCP) JSON-RPC 2.0 endpoint.
