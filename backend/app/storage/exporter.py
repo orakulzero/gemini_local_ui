@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from backend.app.storage.repository import Conversation, Message
 
@@ -41,12 +41,12 @@ class ThreadExporter:
     def export_to_markdown(
         cls,
         conversation: Conversation,
-        thread: List[Message],
-        exported_at: Optional[int] = None,
+        thread: list[Message],
+        exported_at: int | None = None,
     ) -> str:
         """Generates clean GitHub-flavored Markdown with YAML frontmatter."""
         export_ts = exported_at or int(datetime.now(timezone.utc).timestamp() * 1000)
-        lines: List[str] = []
+        lines: list[str] = []
 
         # 1. YAML Frontmatter
         lines.append("---")
@@ -114,8 +114,8 @@ class ThreadExporter:
     def export_markdown(
         cls,
         conversation: Conversation,
-        thread: List[Message],
-        exported_at: Optional[int] = None,
+        thread: list[Message],
+        exported_at: int | None = None,
     ) -> str:
         """Alias for export_to_markdown."""
         return cls.export_to_markdown(conversation, thread, exported_at)
@@ -124,16 +124,16 @@ class ThreadExporter:
     def export_to_json(
         cls,
         conversation: Conversation,
-        active_thread: List[Message],
-        all_messages: Optional[List[Message]] = None,
-        exported_at: Optional[int] = None,
+        active_thread: list[Message],
+        all_messages: list[Message] | None = None,
+        exported_at: int | None = None,
     ) -> str:
         """Generates lossless structured JSON export with DAG tree metadata."""
         export_ts = exported_at or int(datetime.now(timezone.utc).timestamp() * 1000)
         messages_pool = all_messages if all_messages is not None else active_thread
 
         # Build adjacency graph
-        branch_tree: Dict[str, Dict[str, Any]] = {}
+        branch_tree: dict[str, dict[str, Any]] = {}
         for m in messages_pool:
             branch_tree[str(m.id)] = {
                 "parent_id": m.parent_id,
@@ -142,7 +142,7 @@ class ThreadExporter:
                 "sibling_count": m.sibling_count,
             }
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "$schema": "https://gemini-local.internal/schemas/v1/conversation-export.json",
             "version": "1.0",
             "exported_at": cls._format_iso8601(export_ts),
@@ -159,9 +159,9 @@ class ThreadExporter:
     def export_json(
         cls,
         conversation: Conversation,
-        active_thread: List[Message],
-        all_messages: Optional[List[Message]] = None,
-        exported_at: Optional[int] = None,
+        active_thread: list[Message],
+        all_messages: list[Message] | None = None,
+        exported_at: int | None = None,
     ) -> str:
         """Alias for export_to_json."""
         return cls.export_to_json(conversation, active_thread, all_messages, exported_at)
