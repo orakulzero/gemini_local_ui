@@ -7,7 +7,6 @@ Uses Windows DPAPI on Windows and AES-256-GCM fallback on other operating system
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
@@ -17,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("gemini_vault")
 
@@ -65,7 +64,7 @@ if IS_WINDOWS:
     kernel32.LocalFree.restype = ctypes.c_void_p
 
 
-def win32_protect_data(data: bytes, entropy: Optional[bytes] = None) -> bytes:
+def win32_protect_data(data: bytes, entropy: bytes | None = None) -> bytes:
     """Encrypts bytes using Windows DPAPI (CurrentUser scope)."""
     if not IS_WINDOWS:
         raise OSError("win32_protect_data is only supported on Windows")
@@ -73,7 +72,7 @@ def win32_protect_data(data: bytes, entropy: Optional[bytes] = None) -> bytes:
     in_buf = ctypes.create_string_buffer(data, len(data))
     in_blob = DATA_BLOB(len(data), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_byte)))
 
-    entropy_blob: Optional[DATA_BLOB] = None
+    entropy_blob: DATA_BLOB | None = None
     if entropy:
         entropy_buf = ctypes.create_string_buffer(entropy, len(entropy))
         entropy_blob = DATA_BLOB(len(entropy), ctypes.cast(entropy_buf, ctypes.POINTER(ctypes.c_byte)))
@@ -95,14 +94,13 @@ def win32_protect_data(data: bytes, entropy: Optional[bytes] = None) -> bytes:
         raise OSError(f"CryptProtectData failed with Win32 error code: {err}")
 
     try:
-        encrypted_bytes = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        return encrypted_bytes
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
         if out_blob.pbData:
             kernel32.LocalFree(out_blob.pbData)
 
 
-def win32_unprotect_data(cipher_data: bytes, entropy: Optional[bytes] = None) -> bytes:
+def win32_unprotect_data(cipher_data: bytes, entropy: bytes | None = None) -> bytes:
     """Decrypts bytes using Windows DPAPI (CurrentUser scope)."""
     if not IS_WINDOWS:
         raise OSError("win32_unprotect_data is only supported on Windows")
@@ -110,7 +108,7 @@ def win32_unprotect_data(cipher_data: bytes, entropy: Optional[bytes] = None) ->
     in_buf = ctypes.create_string_buffer(cipher_data, len(cipher_data))
     in_blob = DATA_BLOB(len(cipher_data), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_byte)))
 
-    entropy_blob: Optional[DATA_BLOB] = None
+    entropy_blob: DATA_BLOB | None = None
     if entropy:
         entropy_buf = ctypes.create_string_buffer(entropy, len(entropy))
         entropy_blob = DATA_BLOB(len(entropy), ctypes.cast(entropy_buf, ctypes.POINTER(ctypes.c_byte)))
@@ -132,8 +130,7 @@ def win32_unprotect_data(cipher_data: bytes, entropy: Optional[bytes] = None) ->
         raise OSError(f"CryptUnprotectData failed with Win32 error code: {err}")
 
     try:
-        decrypted_bytes = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        return decrypted_bytes
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
         if out_blob.pbData:
             kernel32.LocalFree(out_blob.pbData)
@@ -144,13 +141,13 @@ def get_machine_derived_key() -> bytes:
     ident = ""
     if os.path.exists("/etc/machine-id"):
         try:
-            with open("/etc/machine-id", "r", encoding="utf-8") as f:
+            with open("/etc/machine-id", encoding="utf-8") as f:
                 ident = f.read().strip()
         except Exception:
             pass
     elif os.path.exists("/var/lib/dbus/machine-id"):
         try:
-            with open("/var/lib/dbus/machine-id", "r", encoding="utf-8") as f:
+            with open("/var/lib/dbus/machine-id", encoding="utf-8") as f:
                 ident = f.read().strip()
         except Exception:
             pass
@@ -191,6 +188,7 @@ def fallback_unprotect_data(cipher_data: bytes) -> bytes:
 
 from dataclasses import asdict, dataclass, field
 import time
+import contextlib
 
 
 @dataclass
@@ -201,17 +199,17 @@ class AccountProfile:
     tier: str = "free"  # "free" | "pro" | "ultra"
     priority: int = 1
     cookies: dict[str, str] = field(default_factory=dict)
-    snlm0e: Optional[str] = None
+    snlm0e: str | None = None
     cfb2h: str = "boq_assistant-bard-web-server_20261017.00_p0"
-    fdrfje: Optional[str] = None
+    fdrfje: str | None = None
     qkiaye: str = "feeds/mcudyrk2a4khkz"
     tux5cc: str = "en"
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
     last_rotated_at: float = field(default_factory=time.time)
     health_status: str = "healthy"
-    cooldown_until: Optional[float] = None
-    cooldown_reason: Optional[str] = None
+    cooldown_until: float | None = None
+    cooldown_reason: str | None = None
 
 
 @dataclass
@@ -241,8 +239,8 @@ class CredentialVault:
 
     def __init__(
         self,
-        vault_path: Optional[Path | str] = None,
-        entropy: Optional[bytes] = None,
+        vault_path: Path | str | None = None,
+        entropy: bytes | None = None,
         force_fallback: bool = False,
     ) -> None:
         self.force_fallback = force_fallback
@@ -259,7 +257,7 @@ class CredentialVault:
             self.vault_path = Path(vault_path)
             self.vault_path.parent.mkdir(parents=True, exist_ok=True)
         self.backup_path = self.vault_path.parent / f"{self.vault_path.name}.bak"
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
         self._thread_lock = threading.RLock()
 
     @property
@@ -374,7 +372,7 @@ class CredentialVault:
                     logger.error("Rollback from shadow backup failed: %s", rec_err)
             return VaultData()
 
-    def _write_vault_file_atomic(self, cipher: bytes, target_path: Optional[Path] = None) -> None:
+    def _write_vault_file_atomic(self, cipher: bytes, target_path: Path | None = None) -> None:
         """Atomically writes encrypted payload to disk using NamedTemporaryFile, fsync, and replace."""
         dest_path = Path(target_path) if target_path else self.vault_path
         vault_dir = dest_path.parent
@@ -395,33 +393,25 @@ class CredentialVault:
                 tmp_file.close()
 
                 if not IS_WINDOWS:
-                    try:
+                    with contextlib.suppress(Exception):
                         os.chmod(tmp_path, 0o600)
-                    except Exception:
-                        pass
 
                 # Windows retry loop to defend against transient [WinError 32] file sharing collisions
-                last_err = None
                 for attempt in range(5):
                     try:
                         os.replace(tmp_path, dest_path)
                         break
-                    except PermissionError as e:
-                        last_err = e
+                    except PermissionError:
                         if attempt < 4:
                             time.sleep(0.015 * (attempt + 1))
                         else:
                             raise
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     tmp_file.close()
-                except Exception:
-                    pass
                 if tmp_path.exists():
-                    try:
+                    with contextlib.suppress(Exception):
                         tmp_path.unlink()
-                    except Exception:
-                        pass
                 raise
 
     @staticmethod
@@ -528,7 +518,7 @@ class CredentialVault:
             vdata.active_account_id = act_id
         self.store_vault_data(vdata)
 
-    def load_credentials(self) -> Optional[dict[str, Any]]:
+    def load_credentials(self) -> dict[str, Any] | None:
         """Backwards-compatible credentials getter returning the active account's cookies."""
         vdata = self.load_vault_data()
         if not vdata.accounts:
@@ -542,7 +532,7 @@ class CredentialVault:
         """Returns all configured account profiles."""
         return list(self.load_vault_data().accounts.values())
 
-    def get_account(self, account_id: str) -> Optional[AccountProfile]:
+    def get_account(self, account_id: str) -> AccountProfile | None:
         """Retrieves an account profile by ID."""
         return self.load_vault_data().accounts.get(account_id)
 
