@@ -362,6 +362,7 @@ class SessionManager:
 
             saved_snlm0e = profile.snlm0e
             saved_cfb2h = profile.cfb2h
+            saved_fdrfje = profile.fdrfje
             scraped = await self.scrape_tokens(acc_id)
             if (
                 not scraped
@@ -372,6 +373,8 @@ class SessionManager:
                 sess.context.access_token = saved_snlm0e
                 if saved_cfb2h:
                     sess.context.build_label = saved_cfb2h
+                if saved_fdrfje:
+                    sess.context.session_id = saved_fdrfje
                 sess.context.status = SessionHealthStatus.HEALTHY
                 sess.context.last_error = None
                 sess.context.last_refresh = time.time()

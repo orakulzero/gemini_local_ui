@@ -1,7 +1,7 @@
 """
 backend/app/bridge/task_pipeline.py
-M30: Autonomous Gemini 4 Argon Task Mode Pipeline, Scheduled Orchestrator & Self-Healing Verifier.
-Implements REQ-PIPE-01, REQ-PIPE-02, REQ-PIPE-03, REQ-PIPE-04, REQ-PIPE-05, REQ-PIPE-11.
+M30-M49: Autonomous Gemini 4 Argon Task Mode Pipeline, Scheduled Orchestrator & Self-Healing Verifier.
+Implements REQ-PIPE-01, REQ-PIPE-02, REQ-PIPE-03, REQ-PIPE-04, REQ-PIPE-05, REQ-PIPE-11, REQ-PIPE-12.
 """
 
 from __future__ import annotations
@@ -25,6 +25,13 @@ import time
 from typing import Any, Callable
 import uuid
 import zipfile
+
+from backend.app.bridge.additive_contract_guard import (
+    build_additive_only_prompt_block,
+    extract_immutable_contract_snapshot,
+    is_noop_pipeline_response,
+    verify_additive_contract,
+)
 
 logger = logging.getLogger("gemini_backend.task_pipeline")
 
@@ -485,12 +492,13 @@ def verify_five_quality_gates(
     candidate_files: dict[str, str],
     run_pytest: bool = True,
     pytest_args: list[str] | None = None,
+    allow_empty_noop: bool = False,
 ) -> dict[str, Any]:
     """
-    REQ-PIPE-04: Evaluates the 5 Quality Gates in an isolated sandbox without modifying workspace_dir:
+    REQ-PIPE-04, REQ-PIPE-12: Evaluates the 5 Quality Gates in an isolated sandbox without modifying workspace_dir:
       1. gate1_pytest: pytest passes in an isolated temporary copy of workspace_dir.
       2. gate2_secrets: zero secrets (PATs, API keys, private keys) or hardcoded user paths.
-      3. gate3_ast_req: valid Python AST, 100% REQ-* tag preservation, and top-level signature preservation.
+      3. gate3_ast_req: valid Python AST, 100% REQ-* tag preservation, and additive-only contract preservation.
       4. gate4_english: zero Cyrillic characters (\\u0400-\\u04FF).
       5. gate5_line_cap: >= 95% non-empty line retention on existing files with >= 20 non-empty lines.
     """
@@ -500,7 +508,7 @@ def verify_five_quality_gates(
     gate4_english = True
     gate5_line_cap = True
 
-    if not candidate_files:
+    if not candidate_files and not allow_empty_noop:
         diagnostics.append("gate3_ast_req: candidate_files is empty")
         gate3_ast_req = False
 
@@ -539,7 +547,7 @@ def verify_five_quality_gates(
                 f"gate3_ast_req: missing requirement tags in {rel_path}: {', '.join(missing_reqs)}"
             )
 
-        # Gate 3 (part C): Top-level function/class symbol preservation
+        # Gate 3 (part C): Top-level function/class symbol & additive contract preservation
         if rel_path.endswith(".py") and gate3_ast_req:
             try:
                 old_syms = _extract_top_level_symbol_map(old_code)
@@ -555,6 +563,11 @@ def verify_five_quality_gates(
                         diagnostics.append(
                             f"gate3_ast_req: signature regression on '{sym_name}' in {rel_path}"
                         )
+                add_check = verify_additive_contract(old_code, new_code, rel_path=rel_path)
+                if not add_check["passed"]:
+                    gate3_ast_req = False
+                    for viol in add_check["violations"]:
+                        diagnostics.append(f"gate3_ast_req: {viol}")
             except SyntaxError:
                 gate3_ast_req = False
 
@@ -592,6 +605,19 @@ def verify_five_quality_gates(
                 ignore=shutil.ignore_patterns(*sandbox_ignore, "*.pyc", "*.pyo"),
                 dirs_exist_ok=True,
             )
+            plugin_fallback = Path.home() / ".gemini" / "config" / "plugins" / root.name
+            for extra_src in (raw_path, root, plugin_fallback):
+                if not extra_src.exists():
+                    continue
+                for asset_name in ("rules", "skills", "agents", "plugin.json", "mcp_config.json", "hooks.json"):
+                    src_item = extra_src / asset_name
+                    dst_item = sandbox_root / asset_name
+                    if src_item.exists() and not dst_item.exists():
+                        if src_item.is_dir():
+                            shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                        else:
+                            dst_item.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src_item, dst_item)
             for rel_path, new_code in candidate_files.items():
                 dest = sandbox_root / rel_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -636,12 +662,15 @@ def verify_five_quality_gates(
         "gate4_english": gate4_english,
         "gate5_line_cap": gate5_line_cap,
     }
-    return {
+    res_out: dict[str, Any] = {
         "passed": all(gates.values()),
         "gates": gates,
         "diagnostics": diagnostics,
         "pytest_output": pytest_output,
     }
+    if allow_empty_noop and not candidate_files:
+        res_out["noop_verified"] = True
+    return res_out
 
 
 def _compute_unified_diff(orig_files: dict[str, str], candidate_files: dict[str, str]) -> str:
@@ -964,6 +993,52 @@ class TaskPipelineOrchestrator:
             await client.close()
             await sm.close()
 
+    async def _create_live_scout_client(self) -> tuple[Any | None, Any | None]:
+        """Creates a live GeminiWebClient and SessionManager when credentials exist outside unit-test mocks."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return None, None
+        try:
+            from backend.app.bridge.client import GeminiWebClient
+            from backend.app.bridge.session import SessionContext, SessionHealthStatus, SessionManager
+            from backend.app.storage.vault import CredentialVault
+
+            vault = CredentialVault()
+            sm = SessionManager(vault=vault)
+            vdata = vault.load_vault_data()
+            if vdata and vdata.accounts:
+                acc_id = (
+                    vdata.active_account_id
+                    if vdata.active_account_id in vdata.accounts
+                    else next(iter(vdata.accounts.keys()))
+                )
+                prof = vdata.accounts[acc_id]
+                if prof.cookies.get("__Secure-1PSID") and prof.snlm0e:
+                    ctx = SessionContext(
+                        cookies=dict(prof.cookies),
+                        access_token=prof.snlm0e,
+                        build_label=prof.cfb2h or "boq_gemini-web-uiserver_20261019.01_p0",
+                        session_id=prof.fdrfje,
+                        push_id=prof.qkiaye or "feeds/mcudyrk2a4khkz",
+                        language=prof.tux5cc or "en",
+                        account_tier=prof.tier or "ultra",
+                        status=SessionHealthStatus.HEALTHY,
+                        passive_rotation=True,
+                        account_id=acc_id,
+                        vault=vault,
+                    )
+                    client = GeminiWebClient(
+                        session_context=ctx,
+                        base_url=sm.base_url,
+                        vault=vault,
+                        account_id=acc_id,
+                        timeout=60.0,
+                    )
+                    return client, sm
+            await sm.close()
+        except Exception as exc:
+            logger.debug("Live scout client initialization skipped: %s", exc)
+        return None, None
+
     async def run_schedule_now(
         self,
         schedule_id: str,
@@ -971,7 +1046,7 @@ class TaskPipelineOrchestrator:
         task_runner: Callable[..., Any] | None = None,
         mock_candidate_files: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """REQ-PIPE-02, REQ-PIPE-09, REQ-PIPE-10, REQ-PIPE-11: Immediately executes a specific schedule by schedule_id."""
+        """REQ-PIPE-02, REQ-PIPE-09, REQ-PIPE-10, REQ-PIPE-11, REQ-PIPE-12: Immediately executes a specific schedule by schedule_id."""
         sched = self.get_schedule(schedule_id)
         if sched is None:
             raise KeyError(f"Schedule '{schedule_id}' not found")
@@ -983,9 +1058,17 @@ class TaskPipelineOrchestrator:
         ):
             from backend.app.bridge.ecosystem_scout import get_ecosystem_scout
 
-            sweep_res = await get_ecosystem_scout().run_intelligence_sweep(
-                focus_query=str(sched.get("prompt", "")),
-            )
+            live_client, live_sm = await self._create_live_scout_client()
+            try:
+                sweep_res = await get_ecosystem_scout().run_intelligence_sweep(
+                    focus_query=str(sched.get("prompt", "")),
+                    client=live_client,
+                )
+            finally:
+                if live_client is not None:
+                    await live_client.close()
+                if live_sm is not None:
+                    await live_sm.close()
             run_id = f"run_{uuid.uuid4().hex[:10]}"
             run_record: dict[str, Any] = {
                 "run_id": run_id,
@@ -1174,6 +1257,7 @@ class TaskPipelineOrchestrator:
                 )
                 current_prompt = f"{prompt}\n\n{discovered['prompt_block']}\n\n{mcp_tools_section}"
             if orig_files and task_runner is None:
+                additive_block = build_additive_only_prompt_block(orig_files)
                 numbered_map = (
                     {
                         rel_p: "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(src_txt.splitlines()))
@@ -1187,7 +1271,9 @@ class TaskPipelineOrchestrator:
                     for rel_p, numbered in numbered_map.items()
                 ]
                 if file_dumps:
-                    current_prompt = f"{current_prompt}\n\n" + "\n\n".join(file_dumps)
+                    current_prompt = f"{current_prompt}\n\n{additive_block}\n\n" + "\n\n".join(file_dumps)
+                else:
+                    current_prompt = f"{current_prompt}\n\n{additive_block}"
             q_engine = get_response_quality_engine()
             for attempt in range(max_heal_attempts + 1):
                 if task_runner is not None:
@@ -1324,6 +1410,18 @@ class TaskPipelineOrchestrator:
                 if extracted:
                     candidate_files.update(extracted)
 
+                if is_noop_pipeline_response(effective_text, orig_files, candidate_files, cid=cid):
+                    gates_result = verify_five_quality_gates(
+                        workspace_dir=root,
+                        orig_files=orig_files,
+                        candidate_files={},
+                        run_pytest=run_pytest,
+                        allow_empty_noop=True,
+                    )
+                    if gates_result.get("passed"):
+                        candidate_files = {}
+                        break
+
                 gates_result = verify_five_quality_gates(
                     workspace_dir=root,
                     orig_files=orig_files,
@@ -1346,7 +1444,12 @@ class TaskPipelineOrchestrator:
 
         unified_diff = _compute_unified_diff(orig_files, candidate_files)
         run_id = f"run_{uuid.uuid4().hex[:10]}"
-        status_val = "STAGED_AWAITING_APPROVAL" if gates_result.get("passed") else "FAILED_GATES"
+        if gates_result.get("passed") and gates_result.get("noop_verified"):
+            status_val = "CLEAN_NOOP_VERIFIED"
+        elif gates_result.get("passed"):
+            status_val = "STAGED_AWAITING_APPROVAL"
+        else:
+            status_val = "FAILED_GATES"
         run_record: dict[str, Any] = {
             "run_id": run_id,
             "schedule_id": schedule_id,

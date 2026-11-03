@@ -1,7 +1,7 @@
 """
 backend/app/bridge/ecosystem_scout.py
-M41-M42: Autonomous Ecosystem Intelligence, Repo/Skill/Forum Scout & Cross-IDE Skill Transpiler.
-Implements REQ-SCOUT-01, REQ-SCOUT-02, REQ-SCOUT-03, REQ-SCOUT-04, REQ-SCOUT-06.
+M41-M49: Autonomous Ecosystem Intelligence, Repo/Skill/Forum Scout & Cross-IDE Skill Transpiler.
+Implements REQ-SCOUT-01, REQ-SCOUT-02, REQ-SCOUT-03, REQ-SCOUT-04, REQ-SCOUT-06, REQ-SCOUT-07.
 """
 
 from __future__ import annotations
@@ -201,17 +201,26 @@ class EcosystemIntelligenceScout:
                 if not parts:
                     logger.warning("Live scout stream warning: %s", sweep_err)
             synthesis_notes = "".join(parts).strip()
-            json_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", synthesis_notes, re.DOTALL)
-            raw_json = json_match.group(1) if json_match else (
-                synthesis_notes if synthesis_notes.startswith("[") else ""
-            )
-            if raw_json:
+            candidate_blocks: list[str] = []
+            for m in re.finditer(r"```(?:json)?\s*(\[.*?\])\s*```", synthesis_notes, re.DOTALL):
+                candidate_blocks.append(m.group(1).strip())
+            if "```json" in synthesis_notes:
+                for chunk_part in synthesis_notes.split("```json")[1:]:
+                    body = chunk_part.split("```", 1)[0].strip()
+                    if body.startswith("["):
+                        candidate_blocks.append(body)
+            if synthesis_notes.startswith("["):
+                candidate_blocks.append(synthesis_notes)
+
+            for raw_json in reversed(candidate_blocks):
                 try:
                     parsed_items = json.loads(raw_json)
                     if isinstance(parsed_items, list):
                         for item in parsed_items:
                             if isinstance(item, dict) and item.get("title") and item.get("lane") in active_lanes:
                                 live_discovered.append(item)
+                        if live_discovered:
+                            break
                 except Exception as parse_err:
                     logger.debug("Scout JSON parse fallback: %s", parse_err)
 
@@ -263,8 +272,10 @@ class EcosystemIntelligenceScout:
         for lane in active_lanes:
             templates = LANE_TEMPLATES.get(lane, [])
             for tpl in templates:
-                if live_discovered and str(tpl["title"]) in existing_titles:
+                tpl_title = str(tpl["title"]).strip()
+                if tpl_title in existing_titles:
                     continue
+                existing_titles.add(tpl_title)
                 fid = f"fnd_{uuid.uuid4().hex[:10]}"
                 impact = float(tpl["impact_score"])
                 feasibility = float(tpl["feasibility_score"])
@@ -276,7 +287,7 @@ class EcosystemIntelligenceScout:
                     "finding_id": fid,
                     "sweep_id": sweep_id,
                     "lane": lane,
-                    "title": str(tpl["title"]),
+                    "title": tpl_title,
                     "source_url": str(tpl["source_url"]),
                     "target_agy_repo": str(tpl["target_agy_repo"]),
                     "summary": summary_text,
@@ -290,6 +301,11 @@ class EcosystemIntelligenceScout:
                 self._state["findings"][fid] = finding
                 findings_out.append(finding)
                 lane_counts[lane] = lane_counts.get(lane, 0) + 1
+            if lane_counts.get(lane, 0) == 0:
+                for stored in self._state["findings"].values():
+                    if stored.get("lane") == lane:
+                        findings_out.append(dict(stored))
+                        lane_counts[lane] = lane_counts.get(lane, 0) + 1
 
         findings_out.sort(key=lambda x: float(x["priority_score"]), reverse=True)
         self._state["sweeps"][sweep_id] = {
