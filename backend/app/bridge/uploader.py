@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 import httpx
 
 from backend.app.bridge.exceptions import AuthenticationError, GeminiBridgeError
@@ -41,9 +41,9 @@ class GeminiUploader:
     def __init__(
         self,
         session_context: Any = None,
-        base_url: Optional[str] = None,
-        upload_url: Optional[str] = None,
-        cookies: Optional[Dict[str, str]] = None,
+        base_url: str | None = None,
+        upload_url: str | None = None,
+        cookies: dict[str, str] | None = None,
         timeout: float = 60.0,
     ) -> None:
         self.ctx = session_context
@@ -91,7 +91,7 @@ class GeminiUploader:
         cls,
         filename: str,
         fallback: str = "application/octet-stream",
-        data: Optional[bytes] = None,
+        data: bytes | None = None,
     ) -> str:
         """Determines MIME type using magic bytes (if data is an image) or file extension."""
         if data:
@@ -102,7 +102,7 @@ class GeminiUploader:
         return mime or fallback
 
     @staticmethod
-    def format_chat_turn_attachment(resource_uri: str, filename: str) -> List[Any]:
+    def format_chat_turn_attachment(resource_uri: str, filename: str) -> list[Any]:
         """
         Formats a single file attachment for insertion into inner_req_list[0][3].
         Structure: [[[uri], filename]]
@@ -110,7 +110,7 @@ class GeminiUploader:
         return [[[resource_uri], filename]]
 
     @staticmethod
-    def format_scotty_attachment(resource_uri: str, filename: str = "image.png") -> List[Any]:
+    def format_scotty_attachment(resource_uri: str, filename: str = "image.png") -> list[Any]:
         """
         Formats a Scotty resumable upload reference with media flag 1:
         Structure: [[[uri, 1], filename]]
@@ -119,13 +119,13 @@ class GeminiUploader:
 
     @staticmethod
     def format_chat_turn_attachments(
-        attachments: Union[List[Tuple[str, str]], List[Dict[str, Any]]]
-    ) -> List[Any]:
+        attachments: list[tuple[str, str]] | list[dict[str, Any]]
+    ) -> list[Any]:
         """
         Formats multiple file attachments.
         Accepts list of (resource_uri, filename) tuples or list of {"uri": "...", "filename": "..."} dicts.
         """
-        formatted: List[Any] = []
+        formatted: list[Any] = []
         for item in attachments:
             if isinstance(item, tuple):
                 uri, name = item
@@ -139,7 +139,7 @@ class GeminiUploader:
                     formatted.append([[[uri], name]])
         return formatted
 
-    def _get_clean_cookies(self) -> Dict[str, str]:
+    def _get_clean_cookies(self) -> dict[str, str]:
         raw = self._cookies or (getattr(self.ctx, "cookies", {}) if self.ctx else {})
         return {k: v for k, v in (raw or {}).items() if k not in FOREIGN_SERVICE_COOKIES}
 
@@ -147,9 +147,9 @@ class GeminiUploader:
         self,
         data: bytes,
         filename: str = "image.png",
-        mime_type: Optional[str] = None,
-        push_id: Optional[str] = None,
-        pctx: Optional[str] = None,
+        mime_type: str | None = None,
+        push_id: str | None = None,
+        pctx: str | None = None,
     ) -> str:
         """
         Uploads binary data using Google's 2-step Scotty resumable upload protocol:
@@ -163,7 +163,7 @@ class GeminiUploader:
         effective_pctx = pctx or ctx_pctx or self.DEFAULT_PCTX
 
         cookies = self._get_clean_cookies()
-        start_headers: Dict[str, str] = {
+        start_headers: dict[str, str] = {
             "Push-ID": effective_push_id,
             "X-Tenant-Id": "bard-storage",
             "X-Client-Pctx": effective_pctx,
@@ -236,9 +236,9 @@ class GeminiUploader:
         self,
         data: bytes,
         filename: str,
-        mime_type: Optional[str] = None,
-        push_id: Optional[str] = None,
-        use_resumable: Optional[bool] = None,
+        mime_type: str | None = None,
+        push_id: str | None = None,
+        use_resumable: bool | None = None,
     ) -> str:
         """
         Uploads binary file data and returns the Google resource URI string.
@@ -259,7 +259,7 @@ class GeminiUploader:
         effective_push_id = push_id or ctx_push_id or self.DEFAULT_PUSH_ID
         cookies = self._get_clean_cookies()
 
-        headers: Dict[str, str] = {
+        headers: dict[str, str] = {
             "Push-ID": effective_push_id,
             "Origin": "https://gemini.google.com",
             "Referer": "https://gemini.google.com/",
@@ -306,12 +306,11 @@ class GeminiUploader:
                         if not resource_uri.startswith("/contrib_service/"):
                             logger.warning("Unexpected upload response format: %r", resource_uri[:100])
                         return resource_uri
-                    elif resp.status_code in (401, 403):
+                    if resp.status_code in (401, 403):
                         raise AuthenticationError(f"Upload rejected: HTTP {resp.status_code}")
-                    elif resp.status_code == 413:
+                    if resp.status_code == 413:
                         raise GeminiBridgeError("File size exceeds Google Gemini upload limit", code=413)
-                    else:
-                        raise GeminiBridgeError(f"Upload failed with HTTP {resp.status_code}: {resp.text[:200]}")
+                    raise GeminiBridgeError(f"Upload failed with HTTP {resp.status_code}: {resp.text[:200]}")
             except (AuthenticationError, GeminiBridgeError):
                 raise
             except Exception as e:
