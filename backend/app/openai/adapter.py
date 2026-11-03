@@ -6,13 +6,12 @@ Bidirectional translation between OpenAI Chat Completions format and Gemini Web 
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import mimetypes
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 import httpx
 
 from backend.app.bridge.models import DEFAULT_MODELS, OPENAI_MODEL_ALIASES
@@ -32,12 +31,10 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024  # 25 MB
 
 class ModelNotFoundError(Exception):
     """Raised when a requested model ID cannot be resolved."""
-    pass
 
 
 class InvalidImagePayloadError(Exception):
     """Raised when an image payload is malformed or exceeds size limits."""
-    pass
 
 
 class ImageAttachmentDescriptor:
@@ -51,7 +48,7 @@ class OpenAIAdapter:
     """Translates OpenAI requests to Gemini web format and coordinates vision uploads."""
 
     @staticmethod
-    def resolve_model(model_name: str) -> Tuple[str, Optional[str]]:
+    def resolve_model(model_name: str) -> tuple[str, str | None]:
         """
         Resolves model alias or Gem name to (canonical_model_id, gem_id).
         Supports modifier suffixes such as @mode=task or @thinking=4.
@@ -59,13 +56,13 @@ class OpenAIAdapter:
         """
         raw_name = model_name.strip()
         clean_name = raw_name
-        gem_id: Optional[str] = None
+        gem_id: str | None = None
         modifier: str = ""
 
         if "@" in clean_name:
             base_part, *mod_parts = clean_name.split("@")
             clean_name = base_part.strip()
-            kept_mods: List[str] = []
+            kept_mods: list[str] = []
             for mp in mod_parts:
                 mp_strip = mp.strip()
                 if mp_strip.startswith("gem="):
@@ -99,14 +96,14 @@ class OpenAIAdapter:
 
     @staticmethod
     def build_tools_system_instruction(
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
-    ) -> Optional[str]:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> str | None:
         """Builds the `# Tool Use` prompt instruction block for OpenAI Function/Tool Calling."""
         if not tools or tool_choice == "none":
             return None
 
-        tool_specs: List[str] = []
+        tool_specs: list[str] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -161,7 +158,7 @@ class OpenAIAdapter:
         )
 
     @staticmethod
-    def parse_tool_calls(text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:
         """
         Extracts ```tool_call ... ``` blocks from model text and returns
         `(cleaned_text, openai_tool_calls_list)`.
@@ -169,8 +166,8 @@ class OpenAIAdapter:
         if not text or "```" not in text:
             return text or "", []
 
-        calls: List[Dict[str, Any]] = []
-        clean_parts: List[str] = []
+        calls: list[dict[str, Any]] = []
+        clean_parts: list[str] = []
         last_idx = 0
 
         for match in TOOL_CALL_RE.finditer(text):
@@ -229,13 +226,13 @@ class OpenAIAdapter:
     @classmethod
     def extract_system_instruction(
         cls,
-        messages: List[ChatCompletionMessageParam],
-        response_format: Optional[Dict[str, Any]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
-    ) -> Optional[str]:
+        messages: list[ChatCompletionMessageParam],
+        response_format: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> str | None:
         """Extracts and merges all system/developer messages, response format rules, and tool specs."""
-        system_parts: List[str] = []
+        system_parts: list[str] = []
         for msg in messages:
             if msg.role in ("system", "developer"):
                 if isinstance(msg.content, str):
@@ -263,7 +260,7 @@ class OpenAIAdapter:
         return "\n\n".join(system_parts) if system_parts else None
 
     @classmethod
-    async def parse_image_part(cls, part: Union[ContentPart, Dict[str, Any]]) -> ImageAttachmentDescriptor:
+    async def parse_image_part(cls, part: ContentPart | dict[str, Any]) -> ImageAttachmentDescriptor:
         """Parses a single image_url part (data URI or remote HTTP URL)."""
         raw_url = ""
         if isinstance(part, ContentPart):
@@ -302,7 +299,7 @@ class OpenAIAdapter:
             return ImageAttachmentDescriptor(data=raw_bytes, filename=filename, mime_type=mime_type)
 
         # 2. Remote HTTP/HTTPS URL
-        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+        if raw_url.startswith(("http://", "https://")):
             try:
                 async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                     resp = await client.get(raw_url)
@@ -325,21 +322,21 @@ class OpenAIAdapter:
     @classmethod
     async def extract_turns_and_attachments(
         cls,
-        messages: List[ChatCompletionMessageParam],
-        system_instruction: Optional[str] = None,
-    ) -> Tuple[str, List[Dict[str, str]], List[ImageAttachmentDescriptor]]:
+        messages: list[ChatCompletionMessageParam],
+        system_instruction: str | None = None,
+    ) -> tuple[str, list[dict[str, str]], list[ImageAttachmentDescriptor]]:
         """
         Parses non-system messages, coalesces consecutive identical roles,
         extracts unuploaded image descriptors, and returns (final_prompt, history, image_descriptors).
         """
-        raw_turns: List[Tuple[str, str, List[ImageAttachmentDescriptor]]] = []
+        raw_turns: list[tuple[str, str, list[ImageAttachmentDescriptor]]] = []
 
         for msg in messages:
             if msg.role in ("system", "developer"):
                 continue
 
-            text_parts: List[str] = []
-            img_descriptors: List[ImageAttachmentDescriptor] = []
+            text_parts: list[str] = []
+            img_descriptors: list[ImageAttachmentDescriptor] = []
 
             if isinstance(msg.content, str):
                 if msg.content:
@@ -369,7 +366,7 @@ class OpenAIAdapter:
                 turn_text = f"[Tool result for {tool_label}]: {turn_text}"
                 eff_role = "user"
             elif msg.role == "assistant" and msg.tool_calls:
-                tc_lines: List[str] = []
+                tc_lines: list[str] = []
                 for tc in msg.tool_calls:
                     if isinstance(tc, dict):
                         fn = tc.get("function", {})
@@ -387,7 +384,7 @@ class OpenAIAdapter:
             return "", [], []
 
         # Coalesce consecutive turns with the same role
-        coalesced: List[Tuple[str, str, List[ImageAttachmentDescriptor]]] = []
+        coalesced: list[tuple[str, str, list[ImageAttachmentDescriptor]]] = []
         for role, text, imgs in raw_turns:
             if coalesced and coalesced[-1][0] == role:
                 prev_role, prev_text, prev_imgs = coalesced[-1]
@@ -399,7 +396,7 @@ class OpenAIAdapter:
         # Separate latest user turn from preceding history
         final_turn_role, final_prompt, final_images = coalesced[-1]
 
-        history: List[Dict[str, str]] = []
+        history: list[dict[str, str]] = []
         for r, t, _ in coalesced[:-1]:
             history.append({"role": "model" if r == "assistant" else "user", "content": t})
 
@@ -412,11 +409,11 @@ class OpenAIAdapter:
     @classmethod
     async def stage_and_upload_images(
         cls,
-        descriptors: List[ImageAttachmentDescriptor],
+        descriptors: list[ImageAttachmentDescriptor],
         uploader: GeminiUploader,
-    ) -> List[Dict[str, str]]:
+    ) -> list[dict[str, str]]:
         """Uploads parsed images via GeminiUploader and returns attachment dicts."""
-        attachments: List[Dict[str, str]] = []
+        attachments: list[dict[str, str]] = []
         for desc in descriptors:
             uri = await uploader.upload_file(
                 data=desc.data,
