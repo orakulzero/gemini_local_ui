@@ -17,7 +17,8 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any
+from collections.abc import AsyncIterator, Callable
 
 import aiosqlite
 
@@ -36,7 +37,7 @@ class AsyncRLock:
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._owner: Optional[asyncio.Task] = None
+        self._owner: asyncio.Task | None = None
         self._count = 0
 
     async def acquire(self) -> None:
@@ -89,8 +90,8 @@ class Database:
 
     def __init__(
         self,
-        db_path: Optional[Union[str, Path]] = None,
-        max_readers: Optional[int] = None,
+        db_path: str | Path | None = None,
+        max_readers: int | None = None,
     ) -> None:
         if db_path is None:
             env_path = os.environ.get("GEMINI_DB_PATH")
@@ -102,9 +103,9 @@ class Database:
             if self.db_path.parent:
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
         self._write_lock = AsyncRLock()
-        self._tx_depth: Dict[asyncio.Task, int] = {}
+        self._tx_depth: dict[asyncio.Task, int] = {}
         self._initialized = False
         self.is_memory = str(self.db_path) == ":memory:"
 
@@ -119,11 +120,11 @@ class Database:
                 self.max_readers = min(4, max(2, (os.cpu_count() or 4) // 2))
 
         # ThreadPool reader pool & connection registry
-        self._reader_executor: Optional[ThreadPoolExecutor] = None
+        self._reader_executor: ThreadPoolExecutor | None = None
         self._local = threading.local()
-        self._reader_conns: List[sqlite3.Connection] = []
+        self._reader_conns: list[sqlite3.Connection] = []
         self._reader_lock = threading.Lock()
-        self._mutation_listeners: List[Callable[[], Any]] = []
+        self._mutation_listeners: list[Callable[[], Any]] = []
 
     def register_mutation_listener(self, listener: Callable[[], Any]) -> None:
         """Registers a callback invoked whenever modifying statements commit."""
@@ -212,13 +213,13 @@ class Database:
             self._initialized = False
             logger.info("Database connection closed cleanly with zero leaks")
 
-    async def init_schema(self, schema_sql_path: Optional[Union[str, Path]] = None) -> None:
+    async def init_schema(self, schema_sql_path: str | Path | None = None) -> None:
         """Executes schema.sql DDL to initialize database tables and triggers."""
         db = await self.connect()
         if schema_sql_path is None:
             schema_sql_path = Path(__file__).parent / "schema.sql"
 
-        with open(schema_sql_path, "r", encoding="utf-8") as f:
+        with open(schema_sql_path, encoding="utf-8") as f:
             ddl = f.read()
 
         async with self._write_lock:
@@ -232,7 +233,7 @@ class Database:
     async def execute(
         self,
         query: str,
-        params: Union[Tuple[Any, ...], Dict[str, Any]] = (),
+        params: tuple[Any, ...] | dict[str, Any] = (),
     ) -> aiosqlite.Cursor:
         """Executes SQL statement with write-lock protection for modifying commands."""
         db = await self.connect()
@@ -294,13 +295,13 @@ class Database:
             yield conn
 
 
-    def _sync_fetch_all(self, query: str, params: Any) -> List[Dict[str, Any]]:
+    def _sync_fetch_all(self, query: str, params: Any) -> list[dict[str, Any]]:
         conn = self._get_sync_reader_conn()
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
-    def _sync_fetch_one(self, query: str, params: Any) -> Optional[Dict[str, Any]]:
+    def _sync_fetch_one(self, query: str, params: Any) -> dict[str, Any] | None:
         conn = self._get_sync_reader_conn()
         cursor = conn.execute(query, params)
         row = cursor.fetchone()
@@ -315,8 +316,8 @@ class Database:
     async def fetch_all(
         self,
         query: str,
-        params: Union[Tuple[Any, ...], Dict[str, Any]] = (),
-    ) -> List[Dict[str, Any]]:
+        params: tuple[Any, ...] | dict[str, Any] = (),
+    ) -> list[dict[str, Any]]:
         """Executes a query and returns all matching rows as dictionaries."""
         if self.is_memory:
             db = await self.connect()
@@ -330,8 +331,8 @@ class Database:
     async def fetch_one(
         self,
         query: str,
-        params: Union[Tuple[Any, ...], Dict[str, Any]] = (),
-    ) -> Optional[Dict[str, Any]]:
+        params: tuple[Any, ...] | dict[str, Any] = (),
+    ) -> dict[str, Any] | None:
         """Executes a query and returns a single row as a dictionary, or None."""
         if self.is_memory:
             db = await self.connect()
@@ -347,7 +348,7 @@ class Database:
     async def fetch_val(
         self,
         query: str,
-        params: Union[Tuple[Any, ...], Dict[str, Any]] = (),
+        params: tuple[Any, ...] | dict[str, Any] = (),
     ) -> Any:
         """Executes a query and returns the scalar value of the first column, or None."""
         if self.is_memory:
@@ -383,15 +384,15 @@ class Database:
         model_name: str,
         feature_mode: str = "chat",
         reasoning_level: int = 1,
-        request_timestamp: Optional[int] = None,
+        request_timestamp: int | None = None,
         prompt_tokens_est: int = 0,
         completion_tokens_est: int = 0,
         thinking_tokens_est: int = 0,
         status_code: int = 200,
-        error_code: Optional[str] = None,
+        error_code: str | None = None,
         duration_ms: int = 0,
         was_failover: int = 0,
-        failover_from_account: Optional[str] = None,
+        failover_from_account: str | None = None,
     ) -> None:
         """Records a single request transaction in usage_telemetry."""
         if request_timestamp is None:
@@ -433,9 +434,9 @@ class Database:
 
     async def get_rolling_usage(
         self,
-        account_id: Optional[str] = None,
+        account_id: str | None = None,
         window_seconds: int = 86400,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Calculates aggregated usage metrics across a rolling time window (default 24h)."""
         window_start_ms = int((time.time() - window_seconds) * 1000)
         if account_id:
@@ -486,7 +487,7 @@ class Database:
         self,
         account_id: str,
         window_seconds: int = 86400,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> dict[str, dict[str, Any]]:
         """Calculates per-model request counts and token sums for an account in rolling window."""
         window_start_ms = int((time.time() - window_seconds) * 1000)
         query = """
@@ -501,7 +502,7 @@ class Database:
         GROUP BY model_name, model_id
         """
         rows = await self.fetch_all(query, (account_id, window_start_ms))
-        result: Dict[str, Dict[str, Any]] = {}
+        result: dict[str, dict[str, Any]] = {}
         for r in rows:
             name = r.get("model_name") or r.get("model_id")
             result[name] = {
@@ -512,7 +513,7 @@ class Database:
             }
         return result
 
-    async def get_account_limits_config(self, account_id: str) -> Dict[str, Any]:
+    async def get_account_limits_config(self, account_id: str) -> dict[str, Any]:
         """Loads warning and soft limits config for account, returning sensible defaults if unset."""
         query = "SELECT * FROM account_limits_config WHERE account_id = ?"
         row = await self.fetch_one(query, (account_id,))
@@ -534,8 +535,8 @@ class Database:
         daily_request_threshold: int = 250,
         daily_token_threshold: int = 500000,
         hourly_request_threshold: int = 60,
-        cooldown_until: Optional[int] = None,
-        cooldown_reason: Optional[str] = None,
+        cooldown_until: int | None = None,
+        cooldown_reason: str | None = None,
     ) -> None:
         """Updates soft limits and warning thresholds for an account."""
         now_ms = int(time.time() * 1000)
@@ -565,7 +566,7 @@ class Database:
             ),
         )
 
-    async def get_recent_failovers(self, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_recent_failovers(self, limit: int = 10) -> list[dict[str, Any]]:
         """Returns recent failover audit records from usage_telemetry."""
         query = """
         SELECT request_timestamp, account_id, failover_from_account, model_name, status_code, error_code
