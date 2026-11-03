@@ -11,7 +11,7 @@ import ast
 from dataclasses import asdict, dataclass, field
 import hashlib
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 
 class _DictAccessMixin:
@@ -23,7 +23,7 @@ class _DictAccessMixin:
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # type: ignore[arg-type]
 
 
@@ -32,7 +32,7 @@ class ContractSchema(_DictAccessMixin):
     """Extracted repository contract schema with deterministic SHA-256 digest (REQ-SYNC-SCHEMA-01)."""
 
     repo_name: str
-    models: Dict[str, Dict[str, Dict[str, Any]]]
+    models: dict[str, dict[str, dict[str, Any]]]
     schema_hash: str
 
 
@@ -43,8 +43,8 @@ class BoundaryCompatibilityResult(_DictAccessMixin):
     producer_repo: str
     consumer_repo: str
     compatible: bool
-    missing_fields: List[str] = field(default_factory=list)
-    type_mismatches: List[Dict[str, Any]] = field(default_factory=list)
+    missing_fields: list[str] = field(default_factory=list)
+    type_mismatches: list[dict[str, Any]] = field(default_factory=list)
     drift_score: float = 0.0
 
 
@@ -56,9 +56,9 @@ class SyncMigrationPlan(_DictAccessMixin):
     consumer_repo: str
     compatible: bool
     drift_score: float
-    actions: List[Dict[str, Any]] = field(default_factory=list)
-    missing_fields: List[str] = field(default_factory=list)
-    type_mismatches: List[Dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    missing_fields: list[str] = field(default_factory=list)
+    type_mismatches: list[dict[str, Any]] = field(default_factory=list)
 
 
 class CrossRepoSchemaSynchronizer:
@@ -81,14 +81,14 @@ class CrossRepoSchemaSynchronizer:
     ) -> ContractSchema:
         """Parse BaseModel and TypedDict classes from Python source into a deterministic schema (REQ-SYNC-SCHEMA-01)."""
         tree = ast.parse(source_code)
-        models: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        models: dict[str, dict[str, dict[str, Any]]] = {}
         for node in tree.body:
             if not isinstance(node, ast.ClassDef):
                 continue
             bases = {self._base_name(b) for b in node.bases}
             if bases and not (bases & self.CONTRACT_BASES) and len(node.bases) == 0:
                 continue
-            fields_map: Dict[str, Dict[str, Any]] = {}
+            fields_map: dict[str, dict[str, Any]] = {}
             for stmt in node.body:
                 if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
                     fname = stmt.target.id
@@ -113,8 +113,8 @@ class CrossRepoSchemaSynchronizer:
         prod_models = producer_schema["models"] if isinstance(producer_schema, dict) else producer_schema.models
         cons_models = consumer_schema["models"] if isinstance(consumer_schema, dict) else consumer_schema.models
 
-        missing_fields: List[str] = []
-        type_mismatches: List[Dict[str, Any]] = []
+        missing_fields: list[str] = []
+        type_mismatches: list[dict[str, Any]] = []
         total_checked = 0
         for model_name, cons_fields in cons_models.items():
             prod_fields = prod_models.get(model_name, {})
@@ -146,7 +146,7 @@ class CrossRepoSchemaSynchronizer:
         """Generate concrete add_field and align_type migration actions for drifted schemas (REQ-SYNC-SCHEMA-01)."""
         compat = self.verify_boundary_compatibility(producer_schema, consumer_schema)
         cons_models = consumer_schema["models"] if isinstance(consumer_schema, dict) else consumer_schema.models
-        actions: List[Dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
         for missing in compat.missing_fields:
             model_name, fname = missing.split(".", 1) if "." in missing else ("Model", missing)
             expected_type = cons_models.get(model_name, {}).get(fname, {}).get("type", "Any")
