@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -39,6 +39,7 @@ from backend.app.openai.sse import (
     generate_completion_id,
     stream_openai_sse,
 )
+import contextlib
 
 logger = logging.getLogger("gemini_openai.routes")
 
@@ -58,8 +59,8 @@ def estimate_token_count(text: str) -> int:
 def make_openai_error(
     message: str,
     status_code: int = 400,
-    param: Optional[str] = None,
-    code: Optional[str] = None,
+    param: str | None = None,
+    code: str | None = None,
     error_type: str = "invalid_request_error",
 ) -> JSONResponse:
     """Builds a standard OpenAI-formatted error response."""
@@ -136,7 +137,7 @@ async def list_models(
     client: GeminiWebClient = Depends(get_gemini_client),
 ) -> OpenAIModelList:
     """Lists available canonical models, aliases, and active Custom Gems."""
-    models_data: List[OpenAIModel] = []
+    models_data: list[OpenAIModel] = []
     seen_ids: set[str] = set()
 
     # 1. Canonical Gemini Models
@@ -152,7 +153,7 @@ async def list_models(
             )
 
     # 2. OpenAI Compatibility Aliases
-    for alias_id in OPENAI_MODEL_ALIASES.keys():
+    for alias_id in OPENAI_MODEL_ALIASES:
         if alias_id not in seen_ids:
             seen_ids.add(alias_id)
             models_data.append(
@@ -239,9 +240,9 @@ async def chat_completions(
     # 3. Conversation Prefix Cache Lookup & Extraction
     has_tools = bool(req.tools and req.tool_choice != "none")
     matched_n, cached_chat = conversation_cache.find(req.messages)
-    resume_cid: Optional[str] = None
-    resume_rid: Optional[str] = None
-    resume_rcid: Optional[str] = None
+    resume_cid: str | None = None
+    resume_rid: str | None = None
+    resume_rcid: str | None = None
 
     try:
         if cached_chat and matched_n > 0:
@@ -272,7 +273,7 @@ async def chat_completions(
         return make_openai_error(str(e), status_code=400, param="messages")
 
     # 5. Upload Attachments
-    attachments: List[Dict[str, str]] = []
+    attachments: list[dict[str, str]] = []
     if image_descriptors:
         try:
             attachments = await OpenAIAdapter.stage_and_upload_images(image_descriptors, uploader)
@@ -283,7 +284,7 @@ async def chat_completions(
             return make_openai_error(f"Failed uploading image attachment: {e}", status_code=500)
 
     # 6. Parse Stop Sequences
-    stop_seqs: Optional[List[str]] = None
+    stop_seqs: list[str] | None = None
     if req.stop:
         if isinstance(req.stop, str):
             stop_seqs = [req.stop]
@@ -294,12 +295,12 @@ async def chat_completions(
     created_at = int(time.time())
     start_time = time.time()
     failover_occurred = False
-    failover_from: Optional[str] = None
+    failover_from: str | None = None
     fulfilled_by_id = target_account_id
-    done_metadata: Dict[str, Any] = {}
+    done_metadata: dict[str, Any] = {}
 
-    def _build_stream_kwargs() -> Dict[str, Any]:
-        kw: Dict[str, Any] = {
+    def _build_stream_kwargs() -> dict[str, Any]:
+        kw: dict[str, Any] = {
             "prompt": prompt,
             "model": canonical_model,
             "gem_id": gem_id,
@@ -382,7 +383,7 @@ async def chat_completions(
                     return
             raise
 
-    async def log_telemetry(status_code: int = 200, full_resp_text: str = "", error_str: Optional[str] = None) -> None:
+    async def log_telemetry(status_code: int = 200, full_resp_text: str = "", error_str: str | None = None) -> None:
         try:
             dur_ms = int((time.time() - start_time) * 1000)
             p_tok = estimate_token_count(prompt)
@@ -427,7 +428,7 @@ async def chat_completions(
     # 7. Execution: Streaming vs Non-Streaming
     try:
         if req.stream:
-            accumulated_chunks: List[str] = []
+            accumulated_chunks: list[str] = []
 
             async def tracking_stream_generator():
                 nonlocal accumulated_chunks
@@ -463,10 +464,8 @@ async def chat_completions(
                     await log_telemetry(status_code=200, full_resp_text=final_streamed_text)
                 finally:
                     if client and hasattr(client, "close"):
-                        try:
+                        with contextlib.suppress(Exception):
                             await client.close()
-                        except Exception:
-                            pass
 
             return StreamingResponse(
                 tracked_sse_response(),
@@ -477,63 +476,58 @@ async def chat_completions(
                     "X-Accel-Buffering": "no",
                 },
             )
-        else:
-            full_text_chunks: List[str] = []
+        full_text_chunks: list[str] = []
+        try:
+            gen = create_stream_with_failover()
             try:
-                gen = create_stream_with_failover()
-                try:
-                    async for chunk in gen:
-                        if chunk.type == "text" and chunk.delta:
-                            full_text_chunks.append(chunk.delta)
-                        elif chunk.type == "done":
-                            break
-                finally:
-                    if hasattr(gen, "aclose"):
-                        try:
-                            await gen.aclose()
-                        except Exception:
-                            pass
-            except Exception as stream_err:
-                err_code = 1037 if "1037" in str(stream_err) else (429 if "429" in str(stream_err) else 500)
-                await log_telemetry(status_code=err_code, full_resp_text="".join(full_text_chunks), error_str=str(stream_err))
-                raise
-            finally:
-                if client and hasattr(client, "close"):
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
-
-            full_text = "".join(full_text_chunks)
-
-            # Apply stop sequence truncation if applicable
-            if stop_seqs:
-                for s in stop_seqs:
-                    if s in full_text:
-                        full_text = full_text[:full_text.find(s)]
+                async for chunk in gen:
+                    if chunk.type == "text" and chunk.delta:
+                        full_text_chunks.append(chunk.delta)
+                    elif chunk.type == "done":
                         break
+            finally:
+                if hasattr(gen, "aclose"):
+                    with contextlib.suppress(Exception):
+                        await gen.aclose()
+        except Exception as stream_err:
+            err_code = 1037 if "1037" in str(stream_err) else (429 if "429" in str(stream_err) else 500)
+            await log_telemetry(status_code=err_code, full_resp_text="".join(full_text_chunks), error_str=str(stream_err))
+            raise
+        finally:
+            if client and hasattr(client, "close"):
+                with contextlib.suppress(Exception):
+                    await client.close()
 
-            # Rewrite or append generated images if present in done_metadata
-            gen_images = done_metadata.get("images")
-            if isinstance(gen_images, list) and gen_images:
-                for img_item in gen_images:
-                    if isinstance(img_item, dict) and not img_item.get("file") and isinstance(img_item.get("data"), (bytes, bytearray)):
-                        img_item["file"] = save_image(bytes(img_item["data"]), str(img_item.get("mime") or "image/png"))
-                base_u = str(request.base_url).rstrip("/") if request.base_url else ""
-                full_text = link_images(full_text, gen_images, base_url=base_u)
+        full_text = "".join(full_text_chunks)
 
-            _remember_turn(full_text)
-            await log_telemetry(status_code=200, full_resp_text=full_text)
+        # Apply stop sequence truncation if applicable
+        if stop_seqs:
+            for s in stop_seqs:
+                if s in full_text:
+                    full_text = full_text[:full_text.find(s)]
+                    break
 
-            resp_obj = format_non_streaming_response(
-                full_text=full_text,
-                request_id=request_id,
-                model_name=req.model,
-                created_at=created_at,
-                prompt_text=prompt,
-                has_tools=has_tools,
-            )
-            return JSONResponse(status_code=200, content=resp_obj.model_dump())
+        # Rewrite or append generated images if present in done_metadata
+        gen_images = done_metadata.get("images")
+        if isinstance(gen_images, list) and gen_images:
+            for img_item in gen_images:
+                if isinstance(img_item, dict) and not img_item.get("file") and isinstance(img_item.get("data"), (bytes, bytearray)):
+                    img_item["file"] = save_image(bytes(img_item["data"]), str(img_item.get("mime") or "image/png"))
+            base_u = str(request.base_url).rstrip("/") if request.base_url else ""
+            full_text = link_images(full_text, gen_images, base_url=base_u)
+
+        _remember_turn(full_text)
+        await log_telemetry(status_code=200, full_resp_text=full_text)
+
+        resp_obj = format_non_streaming_response(
+            full_text=full_text,
+            request_id=request_id,
+            model_name=req.model,
+            created_at=created_at,
+            prompt_text=prompt,
+            has_tools=has_tools,
+        )
+        return JSONResponse(status_code=200, content=resp_obj.model_dump())
 
     except AuthenticationError as e:
         return make_openai_error(f"Authentication failure: {e}", status_code=401, code="invalid_api_key")
