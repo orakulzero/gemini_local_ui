@@ -13,7 +13,6 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Dict, Optional
 
 # Ensure project root is on sys.path regardless of working directory
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +25,7 @@ from backend.app.bridge.notebooklm import NotebookLMClient
 from backend.app.bridge.session import SessionManager
 from backend.app.mcp.server import MCPServer
 from backend.app.storage.vault import CredentialVault
+import contextlib
 
 # Configure root logger strictly to sys.stderr to avoid polluting sys.stdout
 logging.basicConfig(
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("gemini_mcp.stdio")
 
 
-async def run_stdio_server(daemon_url: Optional[str] = "http://127.0.0.1:8000") -> None:
+async def run_stdio_server(daemon_url: str | None = "http://127.0.0.1:8000") -> None:
     """
     Main event loop for stdio transport.
     - Responds instantaneously (<1ms) to `initialize`, `ping`, `tools/list`, `resources/list`.
@@ -44,12 +44,12 @@ async def run_stdio_server(daemon_url: Optional[str] = "http://127.0.0.1:8000") 
       if reachable, or lazily initializes the local DPAPI Vault session in-process.
     """
     server = MCPServer()
-    session_manager: Optional[SessionManager] = None
-    client: Optional[GeminiWebClient] = None
-    notebooklm_client: Optional[NotebookLMClient] = None
+    session_manager: SessionManager | None = None
+    client: GeminiWebClient | None = None
+    notebooklm_client: NotebookLMClient | None = None
     http_proxy_client = httpx.AsyncClient(timeout=180.0)
 
-    async def _ensure_local_clients() -> tuple[Optional[GeminiWebClient], Optional[NotebookLMClient]]:
+    async def _ensure_local_clients() -> tuple[GeminiWebClient | None, NotebookLMClient | None]:
         nonlocal session_manager, client, notebooklm_client
         if client is not None:
             return client, notebooklm_client
@@ -143,10 +143,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    try:
+    with contextlib.suppress(KeyboardInterrupt, SystemExit):
         asyncio.run(run_stdio_server(daemon_url=args.daemon_url))
-    except (KeyboardInterrupt, SystemExit):
-        pass
 
 
 if __name__ == "__main__":
