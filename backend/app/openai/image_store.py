@@ -14,11 +14,11 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 NAME_RE = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp|gif)$")
 
-EXT_BY_MIME: Dict[str, str] = {
+EXT_BY_MIME: dict[str, str] = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
     "image/png": "png",
@@ -26,7 +26,7 @@ EXT_BY_MIME: Dict[str, str] = {
     "image/gif": "gif",
 }
 
-MIME_BY_EXT: Dict[str, str] = {
+MIME_BY_EXT: dict[str, str] = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
@@ -39,7 +39,7 @@ GG_DL_URL_RE = re.compile(r"https://lh3\.googleusercontent\.com/gg(?:-dl)?/[^\s)
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
-def _resolve_images_dir(data_dir: Optional[Union[str, Path]] = None) -> Path:
+def _resolve_images_dir(data_dir: str | Path | None = None) -> Path:
     base = Path(data_dir) if data_dir is not None else DEFAULT_DATA_DIR
     return base / "images"
 
@@ -47,7 +47,7 @@ def _resolve_images_dir(data_dir: Optional[Union[str, Path]] = None) -> Path:
 def save_image(
     data: bytes,
     mime: str = "image/png",
-    data_dir: Optional[Union[str, Path]] = None,
+    data_dir: str | Path | None = None,
 ) -> str:
     """
     Saves raw image bytes under `<data_dir>/images/<uuid32>.<ext>` and returns the filename.
@@ -63,8 +63,8 @@ def save_image(
 
 def read_image(
     name: str,
-    data_dir: Optional[Union[str, Path]] = None,
-) -> Optional[Tuple[bytes, str]]:
+    data_dir: str | Path | None = None,
+) -> tuple[bytes, str] | None:
     """
     Reads a stored image by filename after strict `NAME_RE` validation to prevent path traversal.
     Returns `(bytes, mime_type)` or `None` if invalid/missing.
@@ -80,7 +80,7 @@ def read_image(
 
 def link_images(
     text: str,
-    images: List[Dict[str, Any]],
+    images: list[dict[str, Any]],
     base_url: str = "",
 ) -> str:
     """
@@ -94,7 +94,7 @@ def link_images(
     body = text or ""
 
     # Collect local URLs for all images that have a saved `file` name (or explicit `local_url`)
-    local_entries: List[Tuple[str, str, str]] = []
+    local_entries: list[tuple[str, str, str]] = []
     for item in images:
         if not isinstance(item, dict):
             continue
@@ -150,7 +150,7 @@ def link_images(
             replaced_indices.add(idx)
 
     # 3. Append any images not yet referenced in the text
-    appended_blocks: List[str] = []
+    appended_blocks: list[str] = []
     for idx, (_, local_url, title) in enumerate(local_entries):
         if idx not in replaced_indices and local_url not in body:
             appended_blocks.append(f"![{title}]({local_url})")
