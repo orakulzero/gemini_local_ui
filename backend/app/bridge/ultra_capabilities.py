@@ -73,8 +73,97 @@ class UltraSubscriptionManager:
                 "monthly_ai_credits_remaining": self.DEFAULT_MONTHLY_CREDITS,
                 "individual_chat_quota_isolated": True,
                 "ledger": [],
+                "weekly_quota_ledger": [],
             }
+        elif "weekly_quota_ledger" not in self._accounts[account_id]:
+            self._accounts[account_id]["weekly_quota_ledger"] = []
         return self._accounts[account_id]
+
+    def record_weekly_quota_usage(
+        self,
+        account_id: str,
+        used_units: float,
+        tokens: int = 0,
+        job_id: str = "",
+        now_utc: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """REQ-ULTRA-WEEKLY-01: Records 168-hour rolling weekly quota usage and persists ledger."""
+        acc = self._ensure_account(account_id)
+        units_val = max(0.0, float(used_units))
+        ts_val = now_utc.isoformat() if hasattr(now_utc, "isoformat") else str(time.time())
+        entry = {
+            "account_id": account_id,
+            "used_units": units_val,
+            "tokens": max(0, int(tokens)),
+            "job_id": str(job_id),
+            "timestamp": ts_val,
+        }
+        weekly_ledger = list(acc.get("weekly_quota_ledger", []))
+        weekly_ledger.append(entry)
+        acc["weekly_quota_ledger"] = weekly_ledger
+        self._save()
+        return {
+            "ok": True,
+            "account_id": account_id,
+            "used_units": units_val,
+            "tokens": entry["tokens"],
+            "job_id": entry["job_id"],
+            "total_weekly_used_units": sum(float(x.get("used_units", 0.0)) for x in weekly_ledger),
+        }
+
+    def evaluate_weekly_quota_pacer(
+        self,
+        account_id: str,
+        estimated_units: float = 10.0,
+        priority: str = "P3_BACKGROUND_24X7",
+        now_utc: Optional[Any] = None,
+        weekly_budget_units: float = 1000.0,
+    ) -> Dict[str, Any]:
+        """REQ-ULTRA-WEEKLY-01: Evaluates 168-hour rolling quota pacer, GREEN/AMBER/RED zones, and 20% reserve."""
+        acc = self._ensure_account(account_id)
+        weekly_ledger = list(acc.get("weekly_quota_ledger", []))
+        used_total = sum(float(x.get("used_units", 0.0)) for x in weekly_ledger)
+        budget = max(1.0, float(weekly_budget_units))
+        remote_budget = 0.80 * budget
+        burn_fraction = used_total / budget
+
+        if burn_fraction < 0.60:
+            zone = "GREEN"
+        elif burn_fraction < 0.80:
+            zone = "AMBER"
+        else:
+            zone = "RED"
+
+        alpha = 1.0
+        if now_utc is not None and hasattr(now_utc, "weekday"):
+            if now_utc.weekday() in (5, 6):
+                alpha = 0.40
+            elif getattr(now_utc, "hour", 12) < 8:
+                alpha = 1.35
+
+        hourly_cap = (remote_budget / 168.0) * alpha
+        remaining_total = max(0.0, budget - used_total)
+        remaining_remote = max(0.0, remote_budget - used_total)
+
+        if priority == "P1_INTERACTIVE":
+            allowed = (used_total + float(estimated_units)) <= budget
+            should_terminate = not allowed
+        else:
+            allowed = zone != "RED" and (used_total + float(estimated_units)) <= remote_budget
+            should_terminate = not allowed
+
+        return {
+            "account_id": account_id,
+            "priority": priority,
+            "allowed": bool(allowed),
+            "zone": zone,
+            "burn_fraction": burn_fraction,
+            "alpha_multiplier": alpha,
+            "hourly_cap_units": hourly_cap,
+            "remaining_total_units": remaining_total,
+            "remaining_remote_units": remaining_remote,
+            "should_terminate_pre_invocation": bool(should_terminate),
+        }
 
     def detect_subscription_profile(
         self,
