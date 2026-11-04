@@ -1,17 +1,26 @@
-"""Locked Agile V verification suite for Remote Drive Bridge & 168-Hour Weekly Quota Pacer (REQ-ULTRA-WEEKLY-01, REQ-REMOTE-DRIVE-01)."""
+"""Locked Agile V verification suite for Remote Drive Bridge & 168-Hour Weekly Quota Pacer (REQ-ULTRA-WEEKLY-01..02, REQ-REMOTE-DRIVE-01..02)."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
+from typing import Any
 import pytest
 
-from backend.app.bridge.ultra_capabilities import UltraSubscriptionManager
+from backend.app.bridge.ultra_capabilities import UltraSubscriptionManager, calibrate_quota_units_from_tokens
 from backend.app.bridge.remote_drive_bridge import (
     RemoteDriveBridge,
     build_remote_agent_bootstrap_command,
     compute_adaptive_poll_interval_seconds,
+    reassemble_chunked_job,
+    stage_chunked_job_to_drive,
 )
+
+
+def _field(obj: Any, key: str) -> Any:
+    return obj[key] if isinstance(obj, dict) else getattr(obj, key)
 
 
 def test_req_ultra_weekly_01_quota_pacer_and_weekend_shield(tmp_path: Path) -> None:
@@ -34,8 +43,7 @@ def test_req_ultra_weekly_01_quota_pacer_and_weekend_shield(tmp_path: Path) -> N
     ):
         assert key in green_eval
     assert green_eval["zone"] == "GREEN" and green_eval["allowed"] is True
-    assert green_eval["burn_fraction"] == pytest.approx(0.10)
-    assert green_eval["alpha_multiplier"] == pytest.approx(1.0)
+    assert green_eval["burn_fraction"] == pytest.approx(0.10) and green_eval["alpha_multiplier"] == pytest.approx(1.0)
     assert green_eval["should_terminate_pre_invocation"] is False
 
     weekend_eval = reloaded.evaluate_weekly_quota_pacer(
@@ -54,14 +62,12 @@ def test_req_ultra_weekly_01_quota_pacer_and_weekend_shield(tmp_path: Path) -> N
         red_eval = reloaded.evaluate_weekly_quota_pacer(
             "acc_ultra_01", estimated_units=10.0, priority=prio, now_utc=tuesday_10_utc
         )
-        assert red_eval["zone"] == "RED" and red_eval["allowed"] is False
-        assert red_eval["should_terminate_pre_invocation"] is True
+        assert red_eval["zone"] == "RED" and red_eval["allowed"] is False and red_eval["should_terminate_pre_invocation"] is True
 
     red_interactive = reloaded.evaluate_weekly_quota_pacer(
         "acc_ultra_01", estimated_units=50.0, priority="P1_INTERACTIVE", now_utc=tuesday_10_utc
     )
-    assert red_interactive["zone"] == "RED" and red_interactive["allowed"] is True
-    assert red_interactive["should_terminate_pre_invocation"] is False
+    assert red_interactive["zone"] == "RED" and red_interactive["allowed"] is True and red_interactive["should_terminate_pre_invocation"] is False
 
 
 def test_req_remote_drive_01_stage_lease_outbox_and_bootstrap(tmp_path: Path) -> None:
@@ -73,12 +79,8 @@ def test_req_remote_drive_01_stage_lease_outbox_and_bootstrap(tmp_path: Path) ->
         assert (bridge_root / subdir).is_dir()
 
     manifest = bridge.stage_job_to_drive(
-        job_id="job-101",
-        payload_bytes=b"context-archive-bytes",
-        entrypoint_prompt="Execute verification suite",
-        priority="P2_BATCH",
-        github_repo="org/repo",
-        estimated_quota_units=12.0,
+        job_id="job-101", payload_bytes=b"context-archive-bytes", entrypoint_prompt="Execute verification suite",
+        priority="P2_BATCH", github_repo="org/repo", estimated_quota_units=12.0,
     )
     assert len(manifest["sha256"]) == 64
     assert (bridge_root / "drive_inbox" / "job-101.payload.bin").exists()
@@ -113,3 +115,58 @@ def test_req_remote_drive_01_stage_lease_outbox_and_bootstrap(tmp_path: Path) ->
         build_remote_agent_bootstrap_command("my-proj", effort="invalid")
     with pytest.raises(ValueError):
         build_remote_agent_bootstrap_command("   ", effort="high")
+
+
+def test_req_remote_drive_02_chunked_multi_volume_streaming(tmp_path: Path) -> None:
+    """Verify REQ-REMOTE-DRIVE-02 multi-volume chunked Drive staging and SHA-256 reassembly."""
+    bridge_root = tmp_path / "gdrive_chunked"
+    payload_bytes = b"0123456789abcdef" * 1250  # 20,000 bytes
+    expected_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+
+    manifest = stage_chunked_job_to_drive(
+        bridge_root, "job-chunk-202", payload_bytes, {"entrypoint_prompt": "Chunked job", "priority": "P2_BATCH"}, max_chunk_bytes=6000
+    )
+    inbox = bridge_root / "drive_inbox"
+    manifest_disk = json.loads((inbox / "job-chunk-202.manifest.json").read_text(encoding="utf-8"))
+    for doc in (manifest, manifest_disk):
+        assert doc["chunked"] is True and doc["chunk_count"] == 4
+        assert len(doc["chunk_hashes"]) == 4 and doc["sha256"] == expected_sha256
+    for idx in range(4):
+        assert (inbox / f"job-chunk-202.part{idx:03d}.bin").exists()
+
+    reassembled = reassemble_chunked_job(bridge_root, "job-chunk-202")
+    raw_bytes = reassembled if isinstance(reassembled, (bytes, bytearray)) else reassembled["payload_bytes"]
+    assert raw_bytes == payload_bytes
+
+    part1 = inbox / "job-chunk-202.part001.bin"
+    orig_part1 = part1.read_bytes()
+    part1.write_bytes(b"corrupted-chunk-data")
+    with pytest.raises(ValueError):
+        reassemble_chunked_job(bridge_root, "job-chunk-202")
+
+    part1.unlink()
+    with pytest.raises(ValueError):
+        reassemble_chunked_job(bridge_root, "job-chunk-202")
+    part1.write_bytes(orig_part1)
+
+
+def test_req_ultra_weekly_02_adaptive_token_calibrator() -> None:
+    """Verify REQ-ULTRA-WEEKLY-02 adaptive token-to-quota unit calibrator weights across tiers."""
+    base_prompt = calibrate_quota_units_from_tokens(
+        prompt_tokens=10_000, completion_tokens=2_000, thinking_tokens=0, model_tier="argon_high", observed_latency_sec=4.5
+    )
+    with_thinking = calibrate_quota_units_from_tokens(
+        prompt_tokens=0, completion_tokens=2_000, thinking_tokens=10_000, model_tier="argon_high", observed_latency_sec=4.5
+    )
+    deep_think = calibrate_quota_units_from_tokens(
+        prompt_tokens=10_000, completion_tokens=2_000, thinking_tokens=10_000, model_tier="deep_think", observed_latency_sec=12.0
+    )
+    flash_tier = calibrate_quota_units_from_tokens(
+        prompt_tokens=10_000, completion_tokens=2_000, thinking_tokens=0, model_tier="flash", observed_latency_sec=1.2
+    )
+
+    assert _field(base_prompt, "estimated_units") > 0.0 and _field(base_prompt, "total_tokens") == 12_000
+    assert _field(base_prompt, "model_tier") == "argon_high"
+    assert _field(with_thinking, "estimated_units") > _field(base_prompt, "estimated_units")
+    assert _field(deep_think, "effective_weight") > _field(base_prompt, "effective_weight")
+    assert _field(base_prompt, "effective_weight") > _field(flash_tier, "effective_weight")

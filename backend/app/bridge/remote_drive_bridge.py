@@ -1,4 +1,4 @@
-"""Google Drive Desktop File-Queue Bridge & Remote Agent Bootstrap (REQ-REMOTE-DRIVE-01)."""
+"""Google Drive Desktop File-Queue Bridge & Remote Agent Bootstrap (REQ-REMOTE-DRIVE-01, REQ-REMOTE-DRIVE-02)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 REQUIREMENT_ID = "REQ-REMOTE-DRIVE-01"
+REQUIREMENT_ID_CHUNKED = "REQ-REMOTE-DRIVE-02"
 MAX_UPLOAD_FILE_BYTES = 7_864_320
+MAX_BUNDLE_BYTES = MAX_UPLOAD_FILE_BYTES
 MAX_STAGED_FILES = 35
 _ALLOWED_EFFORTS = frozenset({"low", "medium", "high", "max"})
 _POLL_BACKOFF_SCHEDULE_SECONDS = (1800, 3600, 7200, 21600)
@@ -177,3 +179,77 @@ class RemoteDriveBridge:
             "result_bytes": result_bytes,
             "sha256": actual_sha256,
         }
+
+
+def stage_chunked_job_to_drive(
+    bridge_root: Path | str,
+    job_id: str,
+    payload_bytes: bytes,
+    metadata: dict[str, Any] | None = None,
+    max_chunk_bytes: int = MAX_BUNDLE_BYTES,
+) -> dict[str, Any]:
+    """Split a large payload into SHA-256 verified volume chunks in drive_inbox (REQ-REMOTE-DRIVE-02)."""
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("job_id must be a non-empty string.")
+    chunk_limit = max(1, int(max_chunk_bytes))
+    bridge = RemoteDriveBridge(bridge_root)
+
+    chunks = [
+        payload_bytes[offset : offset + chunk_limit]
+        for offset in range(0, len(payload_bytes), chunk_limit)
+    ] or [b""]
+    if len(chunks) > MAX_STAGED_FILES:
+        raise ValueError(f"Chunk count {len(chunks)} exceeds MAX_STAGED_FILES ({MAX_STAGED_FILES}).")
+
+    chunk_hashes: list[str] = []
+    for idx, chunk in enumerate(chunks):
+        part_path = bridge.inbox_dir / f"{job_id}.part{idx:03d}.bin"
+        part_path.write_bytes(chunk)
+        chunk_hashes.append(hashlib.sha256(chunk).hexdigest())
+
+    manifest: dict[str, Any] = dict(metadata or {})
+    manifest.update(
+        {
+            "requirement_id": REQUIREMENT_ID_CHUNKED,
+            "job_id": job_id,
+            "chunked": True,
+            "chunk_count": len(chunks),
+            "chunk_hashes": chunk_hashes,
+            "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+            "size_bytes": len(payload_bytes),
+            "max_chunk_bytes": chunk_limit,
+            "staged_at": time.time(),
+        }
+    )
+    manifest_path = bridge.inbox_dir / f"{job_id}.manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def reassemble_chunked_job(bridge_root: Path | str, job_id: str) -> bytes:
+    """Verify per-chunk and overall SHA-256 hashes and reassemble a chunked Drive job (REQ-REMOTE-DRIVE-02)."""
+    inbox_dir = Path(bridge_root) / "drive_inbox"
+    manifest_path = inbox_dir / f"{job_id}.manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"Manifest not found for chunked job {job_id!r}.")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk_count = int(manifest.get("chunk_count", 0))
+    chunk_hashes = list(manifest.get("chunk_hashes", []))
+    if chunk_count <= 0 or len(chunk_hashes) != chunk_count:
+        raise ValueError(f"Invalid chunk metadata in manifest for {job_id!r}.")
+
+    parts: list[bytes] = []
+    for idx in range(chunk_count):
+        part_path = inbox_dir / f"{job_id}.part{idx:03d}.bin"
+        if not part_path.exists():
+            raise ValueError(f"Missing chunk part {idx} for job {job_id!r}.")
+        chunk_data = part_path.read_bytes()
+        if hashlib.sha256(chunk_data).hexdigest() != chunk_hashes[idx]:
+            raise ValueError(f"SHA-256 mismatch on chunk {idx} for job {job_id!r}.")
+        parts.append(chunk_data)
+
+    assembled = b"".join(parts)
+    if hashlib.sha256(assembled).hexdigest() != manifest.get("sha256"):
+        raise ValueError(f"Overall SHA-256 mismatch for reassembled job {job_id!r}.")
+    return assembled
+

@@ -11,6 +11,7 @@ M35-M38 Google AI Ultra 5x Family Member & Advanced Studio Capabilities Bridge:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import ast
 import json
 import logging
@@ -708,3 +709,63 @@ def get_veo_ultra_engine() -> VeoUltraStudioEngine:
 
 def get_notebooklm_ultra_engine() -> NotebookLMUltraEngine:
     return _NOTEBOOKLM_ULTRA_ENGINE
+
+
+_MODEL_TIER_WEIGHTS: Dict[str, float] = {
+    "flash": 0.25,
+    "argon_standard": 1.0,
+    "argon_high": 1.5,
+    "deep_think": 3.5,
+}
+
+
+@dataclass(frozen=True)
+class QuotaCalibrationSample:
+    """REQ-ULTRA-WEEKLY-02: Calibrated token-to-quota unit sample across model tiers."""
+
+    model_tier: str
+    prompt_tokens: int
+    completion_tokens: int
+    thinking_tokens: int
+    total_tokens: int
+    effective_weight: float
+    estimated_units: float
+    observed_latency_sec: float = 0.0
+    requirement_id: str = "REQ-ULTRA-WEEKLY-02"
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+
+def calibrate_quota_units_from_tokens(
+    prompt_tokens: int,
+    completion_tokens: int,
+    thinking_tokens: int = 0,
+    model_tier: str = "argon_high",
+    observed_latency_sec: float = 0.0,
+) -> QuotaCalibrationSample:
+    """REQ-ULTRA-WEEKLY-02: Converts prompt, completion, and thinking tokens into calibrated weekly quota units."""
+    p_tok = max(0, int(prompt_tokens))
+    c_tok = max(0, int(completion_tokens))
+    t_tok = max(0, int(thinking_tokens))
+    total_tok = p_tok + c_tok + t_tok
+    tier_key = str(model_tier).strip().lower()
+    base_weight = _MODEL_TIER_WEIGHTS.get(tier_key, 1.5)
+    thinking_boost = 1.25 if t_tok > 0 else 1.0
+    effective_weight = round(base_weight * thinking_boost, 4)
+
+    weighted_token_sum = (p_tok * 1.0) + (c_tok * 2.5) + (t_tok * 3.0)
+    latency_penalty = max(0.0, float(observed_latency_sec)) * 0.02
+    estimated_units = round(max(0.01, (weighted_token_sum / 5000.0) * base_weight + latency_penalty), 4)
+
+    return QuotaCalibrationSample(
+        model_tier=tier_key,
+        prompt_tokens=p_tok,
+        completion_tokens=c_tok,
+        thinking_tokens=t_tok,
+        total_tokens=total_tok,
+        effective_weight=effective_weight,
+        estimated_units=estimated_units,
+        observed_latency_sec=float(observed_latency_sec),
+    )
+
