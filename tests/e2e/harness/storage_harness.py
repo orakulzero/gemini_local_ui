@@ -184,7 +184,8 @@ class FTS5SearchEngine:
                         if base:
                             safe_tokens.append(f'"{base}"*')
                     else:
-                        safe_tokens.append(f'"{clean_t.replace("\"", "")}"')
+                        clean_no_quotes = clean_t.replace('"', "")
+                        safe_tokens.append(f'"{clean_no_quotes}"')
 
         return " ".join(safe_tokens)
 
