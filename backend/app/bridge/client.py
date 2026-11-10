@@ -22,26 +22,6 @@ import uuid
 import threading
 import httpx
 
-
-@dataclass
-class CacheEntry:
-    """
-    Container circuit breaker cache entry for feature_mode=40 (task container).
-    Tracks fallback status, expiration timestamp, failure count, and half-open probe state.
-    """
-    fallback_mode: bool = True
-    expires_at: float = 0.0
-    failure_count: int = 1
-    is_half_open: bool = False
-
-    def is_expired(self, now: float | None = None) -> bool:
-        current_time = now if now is not None else time.time()
-        return current_time >= self.expires_at
-
-
-DEFAULT_CONTAINER_TTL: float = 3600.0  # 1 hour
-MAX_TOTAL_ATTEMPTS: int = 2            # Hard ceiling per client request
-
 from backend.app.bridge.exceptions import (
     AuthenticationError,
     GeminiBridgeError,
@@ -66,6 +46,27 @@ from backend.app.bridge.streaming_parser import (
     StreamingDeltaAccumulator,
     StreamingFrameParser,
 )
+
+
+@dataclass
+class CacheEntry:
+    """
+    Container circuit breaker cache entry for feature_mode=40 (task container).
+    Tracks fallback status, expiration timestamp, failure count, and half-open probe state.
+    """
+    fallback_mode: bool = True
+    expires_at: float = 0.0
+    failure_count: int = 1
+    is_half_open: bool = False
+
+    def is_expired(self, now: float | None = None) -> bool:
+        current_time = now if now is not None else time.time()
+        return current_time >= self.expires_at
+
+
+DEFAULT_CONTAINER_TTL: float = 3600.0  # 1 hour
+MAX_TOTAL_ATTEMPTS: int = 2            # Hard ceiling per client request
+DEEP_RESEARCH_TIMEOUT: float = 1800.0  # 30 minutes read timeout for Deep Research / Task containers
 
 logger = logging.getLogger("gemini_bridge.client")
 
@@ -861,9 +862,15 @@ class GeminiWebClient:
         }
 
         url = f"{self.base_url}/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
+        is_container_request = (eff_feature_mode == 40)
+        if is_container_request and self.timeout < DEEP_RESEARCH_TIMEOUT:
+            self.timeout = DEEP_RESEARCH_TIMEOUT
+            if self._client is not None and not self._client.is_closed:
+                self._client.timeout = httpx.Timeout(
+                    self.timeout, connect=20.0, read=self.timeout, write=60.0
+                )
         client = await self._get_client()
 
-        is_container_request = (eff_feature_mode == 40)
         container_fallback_occurred = False
         max_attempts = MAX_TOTAL_ATTEMPTS if is_container_request else 3
         for attempt in range(max_attempts):
@@ -888,7 +895,12 @@ class GeminiWebClient:
                             chunks = accumulator.process_frame(frame)
                             for chunk in chunks:
                                 yield chunk
-                if accumulator.full_raw_text.strip() == "" and inner_req[49] == 40 and attempt < effective_limit - 1:
+                has_valid_container_output = bool(
+                    accumulator.full_raw_text.strip()
+                    or accumulator.research_plan
+                    or "### 📋" in accumulator.full_raw_thoughts
+                )
+                if not has_valid_container_output and inner_req[49] == 40 and attempt < effective_limit - 1:
                     logger.warning("Task container (feature_mode=40) produced empty text; falling back to standard stream envelope")
                     container_fallback_occurred = True
                     inner_req[49] = None
