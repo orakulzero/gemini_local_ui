@@ -818,7 +818,11 @@ class GeminiWebClient:
         if eff_feature_mode is None:
             eff_feature_mode = getattr(model_info, "feature_mode", 0)
         elif isinstance(eff_feature_mode, str):
-            eff_feature_mode = 40 if eff_feature_mode.lower() in ("task", "tasks", "40", "spark") else 0
+            eff_feature_mode = (
+                40
+                if eff_feature_mode.lower() in ("task", "tasks", "40", "spark", "deep-research", "deep_research", "deepresearch", "research")
+                else 0
+            )
 
         acc_key = self._get_account_key()
         if eff_feature_mode == 40 and self.is_feature_mode_40_unsupported(acc_key):

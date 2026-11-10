@@ -102,6 +102,9 @@ class ChatGenerateRequest(BaseModel):
     feature_mode: str | None = "chat"
     incognito: bool = False
     system_instruction: str | None = None
+    cid: str | None = None
+    rid: str | None = None
+    rcid: str | None = None
 
 
 def format_ui_sse(event_data: dict[str, Any]) -> str:
@@ -327,11 +330,14 @@ async def generate_chat_turn(
         fulfilled_by_name = orig_sess.profile.name if orig_sess and orig_sess.profile else current_acc_id
 
         # Determine model tier requirements
+        is_task_or_research = (req.feature_mode or "").lower() in (
+            "task", "tasks", "40", "spark", "deep-research", "deep_research", "deepresearch", "research"
+        )
         is_high_tier_mode = (
             req.model in ("95a4c0abcba24364", "e6fa609c3fa255c0")
             or "pro" in req.model.lower()
             or "argon" in req.model.lower()
-            or req.feature_mode == "task"
+            or is_task_or_research
         )
         required_tier = "pro" if is_high_tier_mode else "free"
 
@@ -362,17 +368,21 @@ async def generate_chat_turn(
             client_active = client
 
         effective_model = req.model
-        if req.feature_mode in ("task", "tasks", "40", "spark") and "@mode=" not in effective_model:
-            effective_model = f"{effective_model}@mode=task"
+        if is_task_or_research and "@mode=" not in effective_model:
+            mode_suffix = "deep-research" if "research" in (req.feature_mode or "").lower() else "task"
+            effective_model = f"{effective_model}@mode={mode_suffix}"
 
         async def run_stream(active_cli: GeminiWebClient) -> AsyncIterator[Any]:
             async for chk in active_cli.generate_stream(
                 prompt=effective_prompt,
                 model=effective_model,
                 gem_id=req.gem_id,
+                cid=req.cid,
+                rid=req.rid,
+                rcid=req.rcid,
                 attachments=bridge_attachments,
                 incognito=is_incognito,
-                feature_mode=40 if req.feature_mode in ("task", "tasks", "40", "spark") else None,
+                feature_mode=40 if is_task_or_research else None,
             ):
                 yield chk
 

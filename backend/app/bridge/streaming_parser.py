@@ -187,32 +187,81 @@ class StreamingFrameParser:
                 yield frame
 
 
+def _get_rich_node(rich: Any, key_or_idx: int) -> Any:
+    if isinstance(rich, dict):
+        return rich.get(str(key_or_idx))
+    if isinstance(rich, list) and len(rich) > key_or_idx:
+        return rich[key_or_idx]
+    return None
+
+
+def extract_research_plan_from_candidate(candidate: List[Any]) -> Optional[Dict[str, Any]]:
+    """Extracts structured Deep Research / Task plan from candidate[12]['56'] or candidate[12][56]."""
+    if len(candidate) <= 12 or candidate[12] is None:
+        return None
+    plan_node = _get_rich_node(candidate[12], 56)
+    if not isinstance(plan_node, list) or not plan_node:
+        return None
+    if len(plan_node) >= 2 and isinstance(plan_node[1], list):
+        plan_title = str(plan_node[0]) if plan_node[0] else "Deep Research Plan"
+        steps: List[Dict[str, str]] = []
+        for idx, step in enumerate(plan_node[1], 1):
+            if isinstance(step, list) and len(step) >= 2:
+                s_num = str(step[0] if step[0] is not None else idx)
+                s_title = str(step[1] or "").strip()
+                s_desc = str(step[2] or "").strip() if len(step) > 2 and step[2] else ""
+                if s_title or s_desc:
+                    steps.append({"number": s_num, "title": s_title, "description": s_desc})
+        if steps:
+            return {"title": plan_title, "steps": steps}
+    if isinstance(plan_node[0], list) and len(plan_node[0]) > 3 and plan_node[0][3]:
+        return {"title": str(plan_node[0][3]), "steps": []}
+    return None
+
+
 def extract_task_thoughts_and_immersive(
     candidate: List[Any], raw_thoughts: str, raw_text: str
 ) -> Tuple[str, str]:
     """
-    Extracts Tasks / Spark mode (featureMode=40) agency steps & plans from candidate[12] ("56", "58")
+    Extracts Tasks / Deep Research (featureMode=40) agency steps & plans from candidate[12] ("56", "57", "58")
     and immersive Markdown documents from candidate[30][0][4].
     """
     extra_thought_parts: List[str] = []
 
-    # 1. Extract Task Plan ("56") and Agency Progress Steps ("58") from candidate[12]
-    if len(candidate) > 12 and isinstance(candidate[12], dict):
+    # 1. Extract Task Plan ("56"), Deep Research Steps ("57"), and Agency Progress Steps ("58") from candidate[12]
+    if len(candidate) > 12 and candidate[12] is not None:
         rich = candidate[12]
-        plan_node = rich.get("56")
-        if isinstance(plan_node, list) and len(plan_node) >= 2 and isinstance(plan_node[1], list):
-            plan_title = str(plan_node[0]) if plan_node[0] else "Task Plan"
-            plan_lines = [f"### 📋 {plan_title}"]
-            for step in plan_node[1]:
-                if isinstance(step, list) and len(step) >= 2:
-                    s_num = step[0]
-                    s_title = step[1] or ""
-                    s_desc = f" — {step[2]}" if len(step) > 2 and step[2] else ""
-                    plan_lines.append(f"{s_num}. **{s_title}**{s_desc}")
-            if len(plan_lines) > 1:
-                extra_thought_parts.append("\n".join(plan_lines))
+        plan_info = extract_research_plan_from_candidate(candidate)
+        if plan_info and plan_info.get("steps"):
+            plan_lines = [f"### 📋 {plan_info['title']}"]
+            for st in plan_info["steps"]:
+                desc_sfx = f" — {st['description']}" if st.get("description") else ""
+                plan_lines.append(f"{st['number']}. **{st['title']}**{desc_sfx}")
+            extra_thought_parts.append("\n".join(plan_lines))
 
-        agency_node = rich.get("58")
+        dr_node = _get_rich_node(rich, 57)
+        if (
+            isinstance(dr_node, list)
+            and len(dr_node) > 1
+            and isinstance(dr_node[1], list)
+            and len(dr_node[1]) > 4
+            and isinstance(dr_node[1][4], list)
+        ):
+            dr_inner = dr_node[1][4]
+            dr_title = str(dr_inner[0] or "Deep Research Execution") if len(dr_inner) > 0 else "Deep Research Execution"
+            dr_steps = dr_inner[2] if len(dr_inner) > 2 and isinstance(dr_inner[2], list) else []
+            dr_lines = [f"### 🔬 {dr_title}"]
+            for s_entry in dr_steps:
+                if isinstance(s_entry, list) and len(s_entry) > 5 and isinstance(s_entry[5], list):
+                    s_info = s_entry[5]
+                    st_t = str(s_info[0] or "").strip() if len(s_info) > 0 else ""
+                    st_b = str(s_info[1] or "").strip() if len(s_info) > 1 else ""
+                    if st_t or st_b:
+                        dr_lines.append(f"- **{st_t}**: {st_b}" if st_t and st_b else f"- {st_t or st_b}")
+            if len(dr_lines) > 1:
+                extra_thought_parts.append("\n".join(dr_lines))
+
+        agency_node = _get_rich_node(rich, 58)
         if (
             isinstance(agency_node, list)
             and len(agency_node) > 1
@@ -245,7 +294,7 @@ def extract_task_thoughts_and_immersive(
             if isinstance(imm, list) and len(imm) > 4 and isinstance(imm[4], str) and imm[4].strip():
                 imm_title = str(imm[2]).strip() if len(imm) > 2 and imm[2] else ""
                 imm_body = imm[4].strip()
-                if imm_title and not imm_body.startswith("#"):
+                if imm_title and not imm_body.startswith("# "):
                     immersive_docs.append(f"# {imm_title}\n\n{imm_body}")
                 else:
                     immersive_docs.append(imm_body)
@@ -365,6 +414,7 @@ class StreamingDeltaAccumulator:
         self.speculative_tail_buffer: int = 12
         self._extracted_code_executions: List[Dict[str, Any]] = []
         self._extracted_draft_candidates: List[Dict[str, Any]] = []
+        self.research_plan: Optional[Dict[str, Any]] = None
 
     def _normalize_citations(self, raw: Any) -> List[Any]:
         if not raw or not isinstance(raw, list):
@@ -619,6 +669,9 @@ class StreamingDeltaAccumulator:
                         if isinstance(candidate[1][0], str):
                             raw_text = candidate[1][0]
 
+                    plan_extracted = extract_research_plan_from_candidate(candidate)
+                    if plan_extracted is not None:
+                        self.research_plan = plan_extracted
                     raw_thoughts, raw_text = extract_task_thoughts_and_immersive(candidate, raw_thoughts, raw_text)
 
                     if raw_thoughts:
@@ -842,6 +895,7 @@ class StreamingDeltaAccumulator:
                 "continuation_token": self.continuation_token,
                 "full_text": self.full_raw_text,
                 "full_thoughts": self.full_raw_thoughts,
+                "research_plan": self.research_plan,
                 "citations": self.citations,
                 "images": self.images,
                 "grounding_sources": self.grounding_sources,

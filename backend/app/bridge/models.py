@@ -282,15 +282,23 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-task": "95a4c0abcba24364@mode=task",
     "gemini-4-task": "95a4c0abcba24364@mode=task",
     "gemini-task-mode": "95a4c0abcba24364@mode=task",
+    "deep-research": "95a4c0abcba24364@mode=deep-research",
+    "deep_research": "95a4c0abcba24364@mode=deep-research",
+    "gemini-deep-research": "95a4c0abcba24364@mode=deep-research",
+    "gemini-4-deep-research": "95a4c0abcba24364@mode=deep-research",
     "gemini-4-argon-deep-think": "gemini-4-argon-deep-think",
     "deep-think": "gemini-4-argon-deep-think",
     "deep_think": "gemini-4-argon-deep-think",
 }
 
+TASK_AND_RESEARCH_MODES: frozenset[str] = frozenset({
+    "task", "tasks", "40", "spark", "deep-research", "deep_research", "deepresearch", "research",
+})
+
 
 def resolve_model(model_name: str) -> ModelInfo:
     """Resolves an alias or canonical model string into a ModelInfo instance."""
-    clean_name = model_name.strip()
+    clean_name = OPENAI_MODEL_ALIASES.get(model_name.strip(), model_name.strip())
     override_thinking: int | None = None
     override_feature_mode: int = 0
     force_deep_think: bool = False
@@ -306,7 +314,7 @@ def resolve_model(model_name: str) -> ModelInfo:
                     override_thinking = int(val)
             elif p.startswith("mode="):
                 val = p.split("=", 1)[1].strip().lower()
-                if val in ("task", "tasks", "40", "spark"):
+                if val in TASK_AND_RESEARCH_MODES:
                     override_feature_mode = 40
                 elif val in ("deep-think", "deep_think", "deepthink"):
                     override_thinking = 3

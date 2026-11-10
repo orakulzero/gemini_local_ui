@@ -1,21 +1,27 @@
 ---
 name: gemini-task
 description: >
-  Direct execution bridge to Google Gemini Task Mode (Agency / Plan Steps container)
+  Direct execution bridge to Google Gemini Task Mode and 2-Phase Deep Research (Agency / "Этапы плана" container)
   powered by Gemini 4 Argon with High Reasoning (thinking=2) via local daemon.
-  Supports full context archive ingestion (-c/--context), automated output material extraction
+  Supports 2-turn autonomous Deep Research (-dr / --deep-research, --plan-only, --approve-prompt) with grounded
+  citation synthesis, full context archive ingestion (-c/--context), automated output material extraction
   (-x/--extract-dir), and output packaging (-p/--pack-output).
-  Use when asked for "/gemini-task", "/task-plan", "gemini task mode", "task mode",
-  "plan via argon", "gemini 4 argon", "gemini task", "break into stages via gemini",
-  "upload context to gemini", "gemini context archive", or when complex multi-step reasoning
-  and code generation over full codebases is needed via Ultra account.
+  Use when asked for "/gemini-task", "/task-plan", "deep research", "глубокое исследование", "задача в gemini",
+  "task mode", "план через argon", "gemini 4 argon", "gemini task", "разбей на этапы через gemini",
+  "загрузить контекст в gemini", "архив контекста gemini", or when deep web research or multi-step reasoning
+  over full codebases is needed via Ultra account.
 ---
 
-# Gemini Task Mode (Gemini 4 Argon High Reasoning)
+# Gemini Task Mode & Deep Research (Gemini 4 Argon High Reasoning)
 
-Native bridge to Google Gemini's **Task Mode** (`featureMode = 40`, Agency container) on **Gemini 4 Argon** (`95a4c0abcba24364`) with deep reasoning thoughts (`thinking=2`), routed through the local authenticated daemon on `http://127.0.0.1:8000`.
+Native bridge to Google Gemini's **Task Mode & 2-Phase Deep Research** (`featureMode = 40`, Agency container) on **Gemini 4 Argon** (`95a4c0abcba24364`) with deep reasoning thoughts (`thinking=2`), routed through the local authenticated daemon on `http://127.0.0.1:8000`.
 
 ## Key Capabilities
+
+0. **Autonomous 2-Phase Deep Research (`-dr`, `--deep-research`, `--mode deep-research`)**:
+   - **Phase 1 (Research Plan)**: Sends the research topic to `gemini-4-argon` with `featureMode = 40` (`inner[49] = 40`), extracts the structured multi-step research plan from `candidate[12]["56"]`, and captures the session identifiers (`cid`, `rid`, `rcid`).
+   - **Phase 2 (Auto-Approve & Web Synthesis)**: Automatically submits the plan approval in Turn 2 within the exact same Google session (`cid / rid / rcid`), streams live multi-source search progress from `candidate[12]["57"]` & `"58"`, unpacks the full Immersive Markdown report from `candidate[30]` (`immersive_entry_chip`), and appends deduplicated **Grounded Sources & Citations** (`candidate[12]["43"]` & `"16"/"23"/"27"`).
+   - Supports `--plan-only` (stops after Phase 1 to inspect the plan) and `--approve-prompt "..."` (custom steering instructions for Phase 2).
 
 1. **Native Context Archive Ingestion (`-c`, `--context`)**:
    - Accepts a directory path or existing `.zip`/`.tar.gz` archive.
@@ -38,33 +44,60 @@ Native bridge to Google Gemini's **Task Mode** (`featureMode = 40`, Agency conta
 ## Quick Start & CLI Examples
 
 ```bash
-# 1. Send task with a full codebase context directory
-python .agents/skills/gemini-task/scripts/gemini_task.py \
-  "Inspect the project structure and implement the authentication module" \
+# 1. Send task with a full codebase context directory into isolated staging
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" \
+  "Изучи структуру проекта и добавь модуль аутентификации" \
   -c ./my_project \
-  -x ./my_project \
+  -x .argon_staging/latest \
   -p ./my_project_updated.zip \
   -o ./task_plan.md
 
 # 2. Planning with context from existing zip archive
-python .agents/skills/gemini-task/scripts/gemini_task.py \
-  "Analyze security vulnerabilities in the attached codebase" \
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" \
+  "Проанализируй уязвимости в прикреплённом коде" \
   -c project_backup.zip \
   -o security_audit.md
 
 # 3. Direct task request (no archive)
-python .agents/skills/gemini-task/scripts/gemini_task.py \
-  "Draft an architectural database migration plan" \
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" \
+  "Составь архитектурный план миграции БД" \
   -o migration_plan.md
 
-# 4. Continue existing session (multi-turn task execution)
-python .agents/skills/gemini-task/scripts/gemini_task.py \
-  "Now implement auth.py based on the plan above" \
-  -s conv_4b9a8f21 \
-  -x ./my_project
+# 4. Run 2-Phase Autonomous Deep Research with Gemini 4 Argon (Plan -> Web Synthesis + Citations)
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" \
+  "Сравни архитектуры MoE-оффлоадинга (SGLang, vLLM, ktransformers) в 2026 году" \
+  --deep-research \
+  -o ./moe_deep_research_report.md
 
-# 5. Check daemon connection and active Ultra account
-python .agents/skills/gemini-task/scripts/gemini_task.py --status
+# 5. Deep Research combined with local codebase archive (-c)
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" \
+  "Найди свежие SOTA-методы защиты MCP-серверов и сопоставь с нашим кодом" \
+  -dr \
+  -c ./src \
+  -o ./mcp_security_research.md
+
+# 6. Check daemon connection and active Ultra account
+python -u "%USERPROFILE%\.gemini\config\skills\gemini-task\scripts\gemini_task.py" --status
+```
+
+### Antigravity Asynchronous Execution Pattern (Watchdog Guard)
+
+Because deep reasoning on Gemini 4 Argon (`thinking=2`) typically spans 180–300 seconds, synchronous execution inside an agent turn can trigger the 240s Cloud Code SSE stream disconnection. Always dispatch long tasks as detached background jobs with an armed Dead-Man watchdog:
+
+```python
+# Launch background command
+run_command(
+    CommandLine='python -u "%USERPROFILE%\\.gemini\\config\\skills\\gemini-task\\scripts\\gemini_task.py" "..." -c ./src -x .argon_staging/task_01 -o plan.md',
+    WaitMsBeforeAsync=500,
+    toolSummary="Argon offload task"
+)
+
+# Arm watchdog in the same turn
+schedule(
+    DurationSeconds=60,
+    TimerCondition="<conv-id>/<task-id>",
+    Prompt="Watchdog: inspect task status; re-arm if streaming"
+)
 ```
 
 ---
@@ -76,7 +109,6 @@ python .agents/skills/gemini-task/scripts/gemini_task.py --status
 | `prompt` | - | The instruction or task prompt to execute | Positional |
 | `-f` | `--file` | Path to markdown/text file containing prompt | None |
 | `-c` | `--context` | **Path to project directory or .zip archive to upload as context** | None |
-| `-s` | `--session` | **Conversation / session ID to continue multi-turn Task execution** | None (new session) |
 | `-x` | `--extract-dir` | **Target directory to extract generated files into** | None |
 | `-p` | `--pack-output` | **Path to output .zip archive of generated materials** | None |
 | `-o` | `--output` | Destination path to write generated markdown plan | None (stdout) |
@@ -114,7 +146,7 @@ The local daemon exposes standard endpoints for programmatic file uploads:
 - **Payload**:
   ```json
   {
-    "prompt": "Task description",
+    "prompt": "Текст задачи",
     "model": "gemini-4-task",
     "feature_mode": "task",
     "attachments": [

@@ -254,6 +254,7 @@ class DeepResearchEngine:
         rcid = f"rc_dr_{plan_id}"
         raw_text = ""
 
+        native_plan: Optional[Dict[str, Any]] = None
         if client is not None:
             try:
                 prompt = (
@@ -261,7 +262,11 @@ class DeepResearchEngine:
                     "List 3 to 5 numbered research sub-questions."
                 )
                 parts: List[str] = []
-                async for chunk in client.generate_stream(prompt=prompt, model="gemini-4-argon"):
+                async for chunk in client.generate_stream(
+                    prompt=prompt,
+                    model="gemini-4-argon@mode=deep-research",
+                    feature_mode=40,
+                ):
                     if chunk.type == "text":
                         parts.append(chunk.delta)
                     elif chunk.type == "done" and isinstance(chunk.metadata, dict):
@@ -270,6 +275,8 @@ class DeepResearchEngine:
                         rcid = str(chunk.metadata.get("rcid") or rcid)
                         if chunk.metadata.get("full_text"):
                             raw_text = str(chunk.metadata["full_text"])
+                        if isinstance(chunk.metadata.get("research_plan"), dict):
+                            native_plan = chunk.metadata["research_plan"]
                 if not raw_text:
                     raw_text = "".join(parts)
             except Exception as exc:
@@ -279,6 +286,13 @@ class DeepResearchEngine:
                     await client.close()
 
         sub_questions: List[str] = []
+        if native_plan and isinstance(native_plan.get("steps"), list):
+            for st in native_plan["steps"]:
+                if isinstance(st, dict):
+                    t_str = str(st.get("title") or "").strip()
+                    d_str = str(st.get("description") or "").strip()
+                    if t_str or d_str:
+                        sub_questions.append(f"{t_str}: {d_str}" if t_str and d_str else (t_str or d_str))
         for line in raw_text.splitlines():
             m = _NUMBERED_LINE_RE.match(line)
             if m:
@@ -335,10 +349,11 @@ class DeepResearchEngine:
                 text_parts: List[str] = []
                 async for chunk in client.generate_stream(
                     prompt=exec_prompt,
-                    model="gemini-4-argon",
+                    model="gemini-4-argon@mode=deep-research",
                     cid=plan.get("cid"),
                     rid=plan.get("rid"),
                     rcid=plan.get("rcid"),
+                    feature_mode=40,
                 ):
                     if chunk.type == "text":
                         text_parts.append(chunk.delta)
