@@ -122,6 +122,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         while True:
             try:
                 await _aio.sleep(30.0)
+                if os.environ.get("GEMINI_ENABLE_PIPELINE_SCHEDULER") != "1":
+                    continue
                 orch = get_task_pipeline_orchestrator()
                 due = orch.get_due_schedules()
                 if due:
