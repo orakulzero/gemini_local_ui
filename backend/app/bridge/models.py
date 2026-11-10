@@ -242,13 +242,52 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
         ),
         mode_tag="Argon4p0",
     ),
+    "gemini-4-carbon": ModelInfo(
+        id="gemini-4-carbon",
+        display_name="4 Carbon",
+        description="Most complex work",
+        model_number=8,
+        thinking_flag=2,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=2_000_000,
+            max_output_tokens=16_384,
+        ),
+        mode_tag=None,
+    ),
+    "gemini-4-carbon-deep-think": ModelInfo(
+        id="gemini-4-carbon",
+        display_name="4 Carbon Deep Think",
+        description="Extended long-horizon verification & Deep Think reasoning (Ultra)",
+        model_number=8,
+        thinking_flag=3,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=2_000_000,
+            max_output_tokens=16_384,
+        ),
+        mode_tag=None,
+    ),
 }
+
+_HEX16_RE = re.compile(r"^[0-9a-f]{16}$")
 
 UI_PRIMARY_MODEL_IDS: list[str] = [
     "8c46e95b1a07cecc",
     "56fdd199312815e2",
     "e6fa609c3fa255c0",
     "95a4c0abcba24364",
+    "gemini-4-carbon",
 ]
 
 OPENAI_MODEL_ALIASES: dict[str, str] = {
@@ -264,6 +303,7 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-3.8-flash": "56fdd199312815e2",
     "gemini-3.1-pro": "e6fa609c3fa255c0",
     "gemini-4-argon": "95a4c0abcba24364",
+    "gemini-4-carbon": "gemini-4-carbon",
     "3.5-flash-lite": "8c46e95b1a07cecc",
     "3.5 flash-lite": "8c46e95b1a07cecc",
     "3.5 Flash-Lite": "8c46e95b1a07cecc",
@@ -277,6 +317,12 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "4 argon": "95a4c0abcba24364",
     "4 Argon": "95a4c0abcba24364",
     "argon": "95a4c0abcba24364",
+    "4-carbon": "gemini-4-carbon",
+    "4 carbon": "gemini-4-carbon",
+    "4 Carbon": "gemini-4-carbon",
+    "carbon": "gemini-4-carbon",
+    "carbon-task": "gemini-4-carbon@mode=task",
+    "carbon-deep-research": "gemini-4-carbon@mode=deep-research",
     "task": "95a4c0abcba24364@mode=task",
     "tasks": "95a4c0abcba24364@mode=task",
     "gemini-task": "95a4c0abcba24364@mode=task",
@@ -287,9 +333,54 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-deep-research": "95a4c0abcba24364@mode=deep-research",
     "gemini-4-deep-research": "95a4c0abcba24364@mode=deep-research",
     "gemini-4-argon-deep-think": "gemini-4-argon-deep-think",
+    "gemini-4-carbon-deep-think": "gemini-4-carbon-deep-think",
     "deep-think": "gemini-4-argon-deep-think",
     "deep_think": "gemini-4-argon-deep-think",
 }
+
+
+def register_discovered_carbon_model(
+    hex_id: str,
+    display_name: str = "4 Carbon",
+    description: str = "Most complex work",
+    model_number: int = 8,
+    thinking_flag: int = 2,
+) -> ModelInfo:
+    """REQ-FORGE-CARBON-01: Bind dynamically discovered otAQ7b 16-hex Carbon ID into canonical registry."""
+    clean_hex = hex_id.strip()
+    caps = ModelCapabilities(
+        supports_thinking=True,
+        supports_vision=True,
+        supports_file_upload=True,
+        supports_code_execution=True,
+        context_window_tokens=2_000_000,
+        max_output_tokens=16_384,
+    )
+    info = ModelInfo(
+        id=clean_hex,
+        display_name=display_name or "4 Carbon",
+        description=description or "Most complex work",
+        model_number=model_number,
+        thinking_flag=thinking_flag,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=caps,
+        mode_tag=None,
+    )
+    DEFAULT_MODELS["gemini-4-carbon"] = info
+    DEFAULT_MODELS[clean_hex] = info
+    DEFAULT_MODELS["gemini-4-carbon-deep-think"] = ModelInfo(
+        id=clean_hex,
+        display_name="4 Carbon Deep Think",
+        description="Extended long-horizon verification & Deep Think reasoning (Ultra)",
+        model_number=model_number,
+        thinking_flag=3,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=caps,
+        mode_tag=None,
+    )
+    return info
 
 TASK_AND_RESEARCH_MODES: frozenset[str] = frozenset({
     "task", "tasks", "40", "spark", "deep-research", "deep_research", "deepresearch", "research",
@@ -357,10 +448,11 @@ def resolve_model(model_name: str) -> ModelInfo:
         return base_info
 
     # Dynamic fallback based on naming heuristics
+    is_carbon = "carbon" in target_id.lower()
     is_argon = "argon" in target_id.lower() or target_id == "95a4c0abcba24364"
-    is_thinking = "thinking" in target_id.lower() or "pro" in target_id.lower() or is_argon
-    is_pro = "pro" in target_id.lower() or "ultra" in target_id.lower() or is_argon
-    model_number = 8 if is_argon else (3 if is_pro else 1)
+    is_thinking = "thinking" in target_id.lower() or "pro" in target_id.lower() or is_argon or is_carbon
+    is_pro = "pro" in target_id.lower() or "ultra" in target_id.lower() or is_argon or is_carbon
+    model_number = 8 if (is_argon or is_carbon) else (3 if is_pro else 1)
     thinking_flag = override_thinking if override_thinking is not None else (2 if is_thinking else 1)
     capacity_tail = 15 if is_pro else 12
 
@@ -566,7 +658,7 @@ class HeaderBuilder:
         """
         info = resolve_model(model) if isinstance(model, str) else model
         model_hash = info.id
-        if model_hash not in DEFAULT_MODELS:
+        if model_hash not in DEFAULT_MODELS and not _HEX16_RE.fullmatch(model_hash.lower()):
             mode_hashes = {
                 1: "56fdd199312815e2",
                 3: "e6fa609c3fa255c0",

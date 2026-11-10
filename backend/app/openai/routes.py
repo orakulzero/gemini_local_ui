@@ -340,7 +340,14 @@ async def chat_completions(
     async def create_stream_with_failover():
         nonlocal client, target_account_id, failover_occurred, failover_from, fulfilled_by_id, done_metadata
         current_acc_id = target_account_id
-        required_tier = "pro" if (canonical_model in ("95a4c0abcba24364", "e6fa609c3fa255c0") or "pro" in req.model.lower()) else "free"
+        required_tier = (
+            "pro"
+            if (
+                canonical_model in ("95a4c0abcba24364", "e6fa609c3fa255c0", "gemini-4-carbon")
+                or any(k in req.model.lower() for k in ("pro", "argon", "carbon"))
+            )
+            else "free"
+        )
 
         # Check pre-flight cooldown
         if session_mgr and session_mgr.is_in_cooldown(current_acc_id, model_id=canonical_model):

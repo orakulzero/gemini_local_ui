@@ -38,6 +38,7 @@ from backend.app.bridge.models import (
     ModelCapabilities,
     ModelInfo,
     WorkspaceExtensionRegistry,
+    register_discovered_carbon_model,
     resolve_model,
 )
 from backend.app.bridge.session import SessionContext
@@ -528,9 +529,17 @@ class GeminiWebClient:
                             if isinstance(item[-1], str) and item[-1].strip():
                                 disp = item[-1].strip()
                             model_num = known.model_number if known else (int(item[4]) if len(item) > 4 and isinstance(item[4], int) else 1)
-                            is_pro_model = "pro" in disp.lower() or "argon" in disp.lower()
+                            is_pro_model = any(k in disp.lower() for k in ("pro", "argon", "carbon"))
                             thinking_f = known.thinking_flag if known else (2 if is_pro_model else 1)
                             is_thinking = True
+                            if "carbon" in disp.lower() and len(m_id) == 16 and all(c in "0123456789abcdef" for c in m_id.lower()):
+                                register_discovered_carbon_model(
+                                    m_id,
+                                    display_name=disp,
+                                    description=desc,
+                                    model_number=model_num,
+                                    thinking_flag=thinking_f,
+                                )
                         else:
                             # Mock server structure: item[3] is model_number, item[4] is thinking_flag
                             model_num = int(item[3]) if len(item) > 3 and isinstance(item[3], int) else 1

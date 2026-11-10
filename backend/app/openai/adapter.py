@@ -6,7 +6,6 @@ Bidirectional translation between OpenAI Chat Completions format and Gemini Web 
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import mimetypes
@@ -88,7 +87,11 @@ class OpenAIAdapter:
         # Alias resolution
         resolved = OPENAI_MODEL_ALIASES.get(clean_name, clean_name)
 
-        if resolved in DEFAULT_MODELS or resolved.startswith("gemini-") or resolved in ("8c46e95b1a07cecc", "56fdd199312815e2", "e6fa609c3fa255c0", "95a4c0abcba24364"):
+        if (
+            resolved in DEFAULT_MODELS
+            or resolved.startswith("gemini-")
+            or (len(resolved) == 16 and all(c in "0123456789abcdef" for c in resolved.lower()))
+        ):
             return f"{resolved}{modifier}", gem_id
 
         # Direct check on raw name in aliases or models
