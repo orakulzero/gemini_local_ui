@@ -69,10 +69,10 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
             max_output_tokens=8_192,
         ),
     ),
-    "56fdd199312815e2": ModelInfo(
+    "gemini-4-hydrogen": ModelInfo(
         id="56fdd199312815e2",
-        display_name="3.8 Flash",
-        description="All-round help",
+        display_name="4 Hydrogen",
+        description="Everyday help · Fast execution",
         model_number=1,
         thinking_flag=1,
         capacity_tail=12,
@@ -86,6 +86,26 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
             max_output_tokens=8_192,
         ),
         is_default=True,
+        mode_tag="Flash4p0",
+    ),
+    "56fdd199312815e2": ModelInfo(
+        id="56fdd199312815e2",
+        display_name="4 Hydrogen",
+        description="Everyday help · Fast execution",
+        model_number=1,
+        thinking_flag=1,
+        capacity_tail=12,
+        tier=ModelTier.FREE,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=1_000_000,
+            max_output_tokens=8_192,
+        ),
+        is_default=True,
+        mode_tag="Flash4p0",
     ),
     "e6fa609c3fa255c0": ModelInfo(
         id="e6fa609c3fa255c0",
@@ -103,6 +123,24 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
             context_window_tokens=2_000_000,
             max_output_tokens=16_384,
         ),
+    ),
+    "gemini-4-argon": ModelInfo(
+        id="95a4c0abcba24364",
+        display_name="4 Argon",
+        description="Complex tasks · New",
+        model_number=8,
+        thinking_flag=2,
+        capacity_tail=15,
+        tier=ModelTier.PRO,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=2_000_000,
+            max_output_tokens=16_384,
+        ),
+        mode_tag="Argon4p0",
     ),
     "95a4c0abcba24364": ModelInfo(
         id="95a4c0abcba24364",
@@ -278,13 +316,31 @@ DEFAULT_MODELS: dict[str, ModelInfo] = {
         ),
         mode_tag=None,
     ),
+    "gemini-4-neon": ModelInfo(
+        id="e6fa609c3fa255c0",
+        display_name="4 Neon",
+        description="Deep Think · Глубокий анализ",
+        model_number=3,
+        thinking_flag=2,
+        capacity_tail=15,
+        tier=ModelTier.ULTRA,
+        capabilities=ModelCapabilities(
+            supports_thinking=True,
+            supports_vision=True,
+            supports_file_upload=True,
+            supports_code_execution=True,
+            context_window_tokens=2_000_000,
+            max_output_tokens=16_384,
+        ),
+        mode_tag="Neon4p0",
+    ),
 }
 
 _HEX16_RE = re.compile(r"^[0-9a-f]{16}$")
 
 UI_PRIMARY_MODEL_IDS: list[str] = [
+    "gemini-4-hydrogen",
     "8c46e95b1a07cecc",
-    "56fdd199312815e2",
     "e6fa609c3fa255c0",
     "95a4c0abcba24364",
     "gemini-4-carbon",
@@ -300,16 +356,25 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-flash": "gemini-2.5-flash",
     "gemini-pro": "gemini-2.5-pro",
     "gemini-3.5-flash-lite": "8c46e95b1a07cecc",
-    "gemini-3.8-flash": "56fdd199312815e2",
+    "gemini-4-hydrogen": "gemini-4-hydrogen",
+    "hydrogen": "gemini-4-hydrogen",
+    "4-hydrogen": "gemini-4-hydrogen",
+    "4 hydrogen": "gemini-4-hydrogen",
+    "4 Hydrogen": "gemini-4-hydrogen",
+    "gemini-4-hydrogen-low": "gemini-4-hydrogen@thinking=1",
+    "gemini-4-hydrogen-medium": "gemini-4-hydrogen@thinking=4",
+    "gemini-4-hydrogen-high": "gemini-4-hydrogen@thinking=2",
+    "gemini-4-hydrogen-xhigh": "gemini-4-hydrogen@thinking=3",
+    "gemini-3.8-flash": "gemini-4-hydrogen",
     "gemini-3.1-pro": "e6fa609c3fa255c0",
     "gemini-4-argon": "95a4c0abcba24364",
     "gemini-4-carbon": "gemini-4-carbon",
     "3.5-flash-lite": "8c46e95b1a07cecc",
     "3.5 flash-lite": "8c46e95b1a07cecc",
     "3.5 Flash-Lite": "8c46e95b1a07cecc",
-    "3.8-flash": "56fdd199312815e2",
-    "3.8 flash": "56fdd199312815e2",
-    "3.8 Flash": "56fdd199312815e2",
+    "3.8-flash": "gemini-4-hydrogen",
+    "3.8 flash": "gemini-4-hydrogen",
+    "3.8 Flash": "gemini-4-hydrogen",
     "3.1-pro": "e6fa609c3fa255c0",
     "3.1 pro": "e6fa609c3fa255c0",
     "3.1 Pro": "e6fa609c3fa255c0",
@@ -334,6 +399,14 @@ OPENAI_MODEL_ALIASES: dict[str, str] = {
     "gemini-4-deep-research": "95a4c0abcba24364@mode=deep-research",
     "gemini-4-argon-deep-think": "gemini-4-argon-deep-think",
     "gemini-4-carbon-deep-think": "gemini-4-carbon-deep-think",
+    "gemini-4-neon": "gemini-4-neon",
+    "neon": "gemini-4-neon",
+    "4-neon": "gemini-4-neon",
+    "4 neon": "gemini-4-neon",
+    "4 Neon": "gemini-4-neon",
+    "deepthink-neon": "gemini-4-neon",
+    "deepthink-neon-high": "gemini-4-neon@thinking=2",
+    "neon-high": "gemini-4-neon@thinking=2",
     "deep-think": "gemini-4-argon-deep-think",
     "deep_think": "gemini-4-argon-deep-think",
 }
@@ -368,7 +441,8 @@ def register_discovered_carbon_model(
         mode_tag=None,
     )
     DEFAULT_MODELS["gemini-4-carbon"] = info
-    DEFAULT_MODELS[clean_hex] = info
+    if clean_hex != "95a4c0abcba24364":
+        DEFAULT_MODELS[clean_hex] = info
     DEFAULT_MODELS["gemini-4-carbon-deep-think"] = ModelInfo(
         id=clean_hex,
         display_name="4 Carbon Deep Think",
@@ -450,8 +524,9 @@ def resolve_model(model_name: str) -> ModelInfo:
     # Dynamic fallback based on naming heuristics
     is_carbon = "carbon" in target_id.lower()
     is_argon = "argon" in target_id.lower() or target_id == "95a4c0abcba24364"
-    is_thinking = "thinking" in target_id.lower() or "pro" in target_id.lower() or is_argon or is_carbon
-    is_pro = "pro" in target_id.lower() or "ultra" in target_id.lower() or is_argon or is_carbon
+    is_neon = "neon" in target_id.lower()
+    is_thinking = "thinking" in target_id.lower() or "pro" in target_id.lower() or is_argon or is_carbon or is_neon
+    is_pro = "pro" in target_id.lower() or "ultra" in target_id.lower() or is_argon or is_carbon or is_neon
     model_number = 8 if (is_argon or is_carbon) else (3 if is_pro else 1)
     thinking_flag = override_thinking if override_thinking is not None else (2 if is_thinking else 1)
     capacity_tail = 15 if is_pro else 12
@@ -466,7 +541,7 @@ def resolve_model(model_name: str) -> ModelInfo:
             supports_thinking=is_thinking or thinking_flag in (2, 3, 4),
             context_window_tokens=2_000_000 if (is_pro or thinking_flag == 3) else 1_000_000,
         ),
-        mode_tag="Argon4p0" if is_argon else None,
+        mode_tag="Neon4p0" if is_neon else ("Argon4p0" if is_argon else None),
         feature_mode=override_feature_mode,
     )
 
@@ -807,7 +882,11 @@ KNOWN_MODEL_LABELS: set[str] = {
     "3.5 Flash-Lite",
     "3.8 Flash",
     "3.1 Pro",
+    "4 Hydrogen",
     "4 Argon",
+    "4 Carbon",
+    "4 Neon",
+    "Neon",
 }
 
 

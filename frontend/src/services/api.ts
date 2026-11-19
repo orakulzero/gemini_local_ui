@@ -390,3 +390,191 @@ export async function exportToNotebook(req: {
 }
 
 
+
+export async function uploadAttachment(file: File): Promise<{
+  uri: string;
+  filename: string;
+  mime_type: string;
+  file_size: number;
+}> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/api/chat/upload', {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Upload failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function normalizeGemItem(g: any): GemOption {
+  return {
+    id: g.id,
+    title: g.title || g.name || g.id,
+    name: g.name || g.title || g.id,
+    description: g.description || '',
+    prompt: g.prompt || g.system_prompt || '',
+    system_prompt: g.system_prompt || g.prompt || '',
+    icon: g.icon,
+    is_builtin: Boolean(g.is_builtin),
+    created_at: g.created_at,
+  };
+}
+
+export async function createGem(req: {
+  name: string;
+  description?: string;
+  prompt: string;
+}): Promise<GemOption> {
+  const res = await fetch('/api/gems', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to create Gem: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return normalizeGemItem(data.gem || data);
+}
+
+export async function updateGem(
+  gemId: string,
+  req: { name?: string; description?: string; prompt?: string }
+): Promise<GemOption> {
+  const res = await fetch(`/api/gems/${encodeURIComponent(gemId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to update Gem: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return normalizeGemItem(data.gem || data);
+}
+
+export async function deleteGem(gemId: string): Promise<boolean> {
+  const res = await fetch(`/api/gems/${encodeURIComponent(gemId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to delete Gem: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return Boolean(data.deleted ?? data.ok);
+}
+
+export function exportConversationUrl(
+  id: string,
+  format: 'markdown' | 'json' = 'markdown'
+): string {
+  return `/api/conversations/${encodeURIComponent(id)}/export?format=${format}`;
+}
+
+export async function modifyResponse(req: {
+  text: string;
+  modifier: string;
+  cid?: string;
+  rid?: string;
+  rcid?: string;
+}): Promise<{ ok?: boolean; modified_text?: string; modifier?: string }> {
+  const res = await fetch('/api/v1/capabilities/modify-response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Modify response failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function doubleCheckResponse(req: {
+  text: string;
+  cid?: string;
+  rid?: string;
+  rcid?: string;
+}): Promise<{
+  ok?: boolean;
+  verified_claims?: Array<{ claim: string; status: string; source_url: string; confidence: number; index: number }>;
+  trust_score?: number;
+  citations?: any[];
+}> {
+  const res = await fetch('/api/v1/capabilities/double-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Double-check failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchSavedInfo(): Promise<
+  Array<{ id: string; content: string; category: string; created_at?: number }>
+> {
+  const res = await fetch('/api/v1/capabilities/saved-info');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const list = Array.isArray(data.memories) ? data.memories : [];
+  return list.map((m: any) => ({
+    ...m,
+    id: m.id || m.memory_id || '',
+  }));
+}
+
+export async function addSavedInfo(
+  content: string,
+  category = 'user_preference'
+): Promise<{ id: string; content: string; category: string }> {
+  const res = await fetch('/api/v1/capabilities/saved-info', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, category }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Add saved info failed: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  const mem = data.memory || data;
+  return {
+    ...mem,
+    id: mem.id || mem.memory_id || '',
+  };
+}
+
+export async function deleteSavedInfo(memoryId: string): Promise<boolean> {
+  const res = await fetch(`/api/v1/capabilities/saved-info/${encodeURIComponent(memoryId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return Boolean(data.deleted ?? data.ok);
+}
+
+export async function synthesizeSpeech(
+  text: string,
+  language?: string
+): Promise<Blob> {
+  const res = await fetch('/api/chat/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, ...(language ? { language } : {}) }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Speech synthesis failed: HTTP ${res.status}`);
+  }
+  return res.blob();
+}

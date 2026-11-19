@@ -25,6 +25,21 @@ _FLICKER_ESC_RE = re.compile(r"(?:\\+[`*_~])+\S*$")
 _YOUTUBE_RE = re.compile(
     r"(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?(?:.*?&)?v=|shorts/)|youtu\.be/)([\w-]{11})"
 )
+_IMAGE_PLACEHOLDER_STRIP_RE = re.compile(
+    r"https?://[a-zA-Z0-9.-]*googleusercontent\.com/image_generation_content/\S+"
+)
+
+
+def _clean_image_placeholders(text: str) -> str:
+    """Strips Google internal image placeholder URLs and collapses excess blank lines."""
+    if not text:
+        return ""
+    cleaned = _IMAGE_PLACEHOLDER_STRIP_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if cleaned.startswith("\n\n"):
+        cleaned = cleaned.lstrip("\n")
+    return cleaned
 
 MAX_FRAME_CODE_UNITS: int = 16 * 1024 * 1024  # 16M UTF-16 code units (32 MB)
 
@@ -175,6 +190,14 @@ class StreamingFrameParser:
                 else:
                     logger.debug("Skipping non-list frame envelope: %s", type(frame_data))
             except json.JSONDecodeError as err:
+                try:
+                    obj, end_idx = json.JSONDecoder().raw_decode(remainder)
+                    if isinstance(obj, list):
+                        completed_frames.append(obj)
+                        self._buffer = remainder[end_idx:].lstrip("\r\n")
+                        continue
+                except Exception:
+                    pass
                 logger.warning("Failed to decode JSON frame payload: %s; payload preview: %r", err, payload_str[:120])
                 continue
 
@@ -443,64 +466,104 @@ class StreamingDeltaAccumulator:
                 })
         return result
 
-    def _normalize_images(self, raw: Any) -> List[Any]:
-        if not raw or not isinstance(raw, list):
+    def _normalize_images(self, raw: Any) -> List[Dict[str, Any]]:
+        if not raw:
             return []
-        # Unwrap nested outer list if candidate[12][7] is [ [gen1, gen2, ...] ]
-        items = raw
-        if (
-            len(raw) == 1
-            and isinstance(raw[0], list)
-            and len(raw[0]) > 0
-            and isinstance(raw[0][0], list)
-            and not isinstance(raw[0][0], str)
-        ):
-            items = raw[0]
 
-        result = []
-        for idx, item in enumerate(items):
-            if isinstance(item, dict):
-                result.append(item)
-            elif isinstance(item, list):
-                # Check for real nested Google gg-dl image structure: item[0][3][3]
-                nested_url = None
-                try:
-                    if (
-                        len(item) > 0
-                        and isinstance(item[0], list)
-                        and len(item[0]) > 3
-                        and isinstance(item[0][3], list)
-                        and len(item[0][3]) > 3
-                        and isinstance(item[0][3][3], str)
-                    ):
-                        nested_url = item[0][3][3]
-                except Exception:
-                    nested_url = None
+        result: List[Dict[str, Any]] = []
+        seen_urls: set[str] = set()
 
-                if nested_url:
-                    image_id = (
-                        item[1][0]
-                        if len(item) > 1 and isinstance(item[1], list) and len(item[1]) > 0 and isinstance(item[1][0], str)
-                        else f"http://googleusercontent.com/image_generation_content/{idx}"
+        def _walk(node: Any) -> None:
+            if not node:
+                return
+
+            # (a) Dict items with string URL
+            if isinstance(node, dict):
+                u = node.get("url")
+                if isinstance(u, str) and u.startswith("http"):
+                    if u not in seen_urls:
+                        seen_urls.add(u)
+                        result.append(node)
+                return
+
+            if not isinstance(node, list):
+                return
+
+            # (b) Nested list `gen` items where gen[0][3][3] is an http* URL string
+            is_gen = False
+            try:
+                if (
+                    len(node) > 0
+                    and isinstance(node[0], list)
+                    and len(node[0]) > 3
+                    and isinstance(node[0][3], list)
+                    and len(node[0][3]) > 3
+                    and isinstance(node[0][3][3], str)
+                    and node[0][3][3].startswith("http")
+                ):
+                    is_gen = True
+            except (IndexError, TypeError):
+                is_gen = False
+
+            if is_gen:
+                url = node[0][3][3]
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    inner_arr = node[0][3]
+                    alt = str(inner_arr[0] or (inner_arr[2] if len(inner_arr) > 2 else "") or "")
+                    placeholder = (
+                        node[1][0]
+                        if len(node) > 1 and isinstance(node[1], list) and len(node[1]) > 0 and isinstance(node[1][0], str)
+                        else f"http://googleusercontent.com/image_generation_content/{len(result)}"
                     )
+                    image_id = (
+                        next((x for x in reversed(node) if isinstance(x, str) and x.startswith("im_")), None)
+                        or placeholder
+                    )
+                    width = None
+                    height = None
+                    if len(inner_arr) > 15 and isinstance(inner_arr[15], list) and len(inner_arr[15]) >= 2:
+                        try:
+                            width = int(inner_arr[15][0])
+                            height = int(inner_arr[15][1])
+                        except (ValueError, TypeError):
+                            width = None
+                            height = None
+
                     result.append({
-                        "url": nested_url,
+                        "url": url,
                         "image_id": image_id,
-                        "alt": str(item[0][3][0]) if len(item[0][3]) > 0 and item[0][3][0] else "",
-                        "width": None,
-                        "height": None,
+                        "placeholder": placeholder,
+                        "alt": alt,
+                        "width": width,
+                        "height": height,
                     })
-                else:
-                    url = item[0] if len(item) > 0 and item[0] else ""
-                    alt = item[1] if len(item) > 1 and item[1] else ""
-                    width = item[2] if len(item) > 2 and isinstance(item[2], int) else None
-                    height = item[3] if len(item) > 3 and isinstance(item[3], int) else None
+                return
+
+            # (c) Legacy flat [url_str, alt, width, height] ONLY when isinstance(item[0], str)
+            if (
+                len(node) > 0
+                and isinstance(node[0], str)
+                and node[0].startswith("http")
+            ):
+                url = node[0]
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    alt = node[1] if len(node) > 1 and isinstance(node[1], str) else ""
+                    width = node[2] if len(node) > 2 and isinstance(node[2], int) else None
+                    height = node[3] if len(node) > 3 and isinstance(node[3], int) else None
                     result.append({
                         "url": url,
                         "alt": alt,
                         "width": width,
                         "height": height,
                     })
+                return
+
+            for child in node:
+                _walk(child)
+
+        _walk(raw)
         return result
 
     @property
@@ -612,6 +675,9 @@ class StreamingDeltaAccumulator:
             if not isinstance(part_json, list):
                 continue
 
+            while len(part_json) == 1 and isinstance(part_json[0], list) and len(part_json[0]) > 1:
+                part_json = part_json[0]
+
             # 0. Check for error payload inside part_json[5]
             if len(part_json) > 5 and part_json[5] is not None:
                 self._check_envelope_error(part_json[5])
@@ -641,7 +707,9 @@ class StreamingDeltaAccumulator:
                 self._extracted_draft_candidates = [
                     {
                         "rcid": str(c[0] or ""),
-                        "text": str(c[1][0] if len(c) > 1 and isinstance(c[1], list) and len(c[1]) > 0 else ""),
+                        "text": _clean_image_placeholders(
+                            str(c[1][0] if len(c) > 1 and isinstance(c[1], list) and len(c[1]) > 0 else "")
+                        ),
                         "index": idx,
                     }
                     for idx, c in enumerate(candidates_list)
@@ -686,6 +754,8 @@ class StreamingDeltaAccumulator:
                     # 3c. Extract Generated Cumulative Text: candidate[1][0] + candidate[30] immersive document
                     new_youtube = False
                     if raw_text:
+                        raw_text = _clean_image_placeholders(raw_text)
+                    if raw_text:
                         self.full_raw_text = raw_text
                         if not self._done_emitted:
                             text_delta, self.last_sent_text = self._compute_delta(
@@ -711,6 +781,7 @@ class StreamingDeltaAccumulator:
 
                     # 3d. Extract Rich Content: candidate[12] (can be dict or list)
                     new_images = False
+                    new_code_exec = False
                     if len(candidate) > 12 and candidate[12] is not None:
                         rich = candidate[12]
 
@@ -822,6 +893,7 @@ class StreamingDeltaAccumulator:
                                         new_youtube = True
 
                         # Extract Cloud Python Code Execution (REQ-CAP-01)
+                        new_code_exec = False
                         if isinstance(rich, dict):
                             exec_code = rich.get("executable_code")
                             exec_res = rich.get("code_execution_result")
@@ -837,11 +909,13 @@ class StreamingDeltaAccumulator:
                                 }
                                 if exec_entry not in self._extracted_code_executions:
                                     self._extracted_code_executions.append(exec_entry)
+                                    new_code_exec = True
                             raw_exec_list = rich.get("code_executions")
                             if isinstance(raw_exec_list, list):
                                 for item in raw_exec_list:
                                     if isinstance(item, dict) and item not in self._extracted_code_executions:
                                         self._extracted_code_executions.append(item)
+                                        new_code_exec = True
                         elif isinstance(rich, list):
                             for item in rich:
                                 if isinstance(item, dict) and ("executable_code" in item or "code" in item):
@@ -864,17 +938,21 @@ class StreamingDeltaAccumulator:
                                     }
                                     if exec_entry not in self._extracted_code_executions:
                                         self._extracted_code_executions.append(exec_entry)
+                                        new_code_exec = True
 
-                    # Emit media chunk if new images or YouTube videos were found
-                    if new_images or new_youtube:
+                    # Emit media chunk if new images, YouTube videos, or code executions were found
+                    if new_images or new_youtube or new_code_exec:
+                        meta_payload: Dict[str, Any] = {
+                            "images": self.images,
+                            "youtube": self.youtube_videos,
+                        }
+                        if self._extracted_code_executions:
+                            meta_payload["code_executions"] = list(self._extracted_code_executions)
                         chunks.append(
                             StreamChunk(
                                 type="media",
                                 delta="",
-                                metadata={
-                                    "images": self.images,
-                                    "youtube": self.youtube_videos,
-                                },
+                                metadata=meta_payload,
                             )
                         )
 
@@ -923,22 +1001,47 @@ class StreamingDeltaAccumulator:
     def _check_envelope_error(self, err_node: Any) -> None:
         """Parses Google RPC error codes from error payload node."""
         try:
-            # Check nested structure: err_node[2][0][1][0] or err_node[0][1][0]
-            code = None
-            msg = None
+            # Check nested structure: err_node[2][0][1][0], err_node[0][1][0], or flat [code, msg]
+            code: int | None = None
+            msg: str | None = None
+
+            def _extract_non_empty_str(val: Any) -> str | None:
+                if val is None:
+                    return None
+                s = str(val).strip()
+                if not s or s.lower() == "none":
+                    return None
+                return s
+
             if isinstance(err_node, list):
                 if len(err_node) > 2 and isinstance(err_node[2], list) and len(err_node[2]) > 0:
                     inner = err_node[2][0]
-                    if isinstance(inner, list) and len(inner) > 1 and isinstance(inner[1], list):
-                        code = inner[1][0]
+                    if isinstance(inner, list) and len(inner) > 1 and isinstance(inner[1], list) and len(inner[1]) > 0:
+                        raw_code = inner[1][0]
+                        if isinstance(raw_code, (int, float)) and not isinstance(raw_code, bool):
+                            code = int(raw_code)
                         if len(inner[1]) > 1:
-                            msg = str(inner[1][1])
-                elif len(err_node) > 0 and isinstance(err_node[0], (int, float)):
+                            msg = _extract_non_empty_str(inner[1][1])
+                    if msg is None and len(err_node) > 1 and isinstance(err_node[1], str):
+                        msg = _extract_non_empty_str(err_node[1])
+                elif (
+                    len(err_node) > 0
+                    and isinstance(err_node[0], list)
+                    and len(err_node[0]) > 1
+                    and isinstance(err_node[0][1], list)
+                    and len(err_node[0][1]) > 0
+                ):
+                    raw_code = err_node[0][1][0]
+                    if isinstance(raw_code, (int, float)) and not isinstance(raw_code, bool):
+                        code = int(raw_code)
+                    if len(err_node[0][1]) > 1:
+                        msg = _extract_non_empty_str(err_node[0][1][1])
+                elif len(err_node) > 0 and isinstance(err_node[0], (int, float)) and not isinstance(err_node[0], bool):
                     code = int(err_node[0])
                     if len(err_node) > 1 and isinstance(err_node[1], str):
-                        msg = err_node[1]
+                        msg = _extract_non_empty_str(err_node[1])
 
-            if code is not None and isinstance(code, int):
+            if code is not None:
                 if (self._done_emitted or self.full_raw_text.strip()) and code == 1096:
                     logger.debug("Ignored trailing post-completion 1096 frame after stream finished")
                     return

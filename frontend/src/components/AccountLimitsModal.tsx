@@ -74,7 +74,7 @@ export const AccountLimitsModal: React.FC = () => {
   const canonicalModelLabels: Record<string, string> = {
     '4 Argon': 'Gemini 4 Argon (Experimental)',
     '3.1 Pro': 'Gemini 3.1 Pro (Analytical)',
-    '3.8 Flash': 'Gemini 3.8 Flash (Low Latency)',
+    '4 Hydrogen': 'Gemini 4 Hydrogen (Fast Execution)',
     'Task': 'Gemini Task / Deep Research',
   };
 

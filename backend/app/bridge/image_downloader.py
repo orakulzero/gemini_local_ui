@@ -31,7 +31,7 @@ FOREIGN_SERVICE_COOKIES = {
 GET_FULL_SIZE_IMAGE_RPC = "c8o8Fe"
 
 _PLACEHOLDER_RE = re.compile(
-    r"https?://[a-zA-Z0-9.-]*googleusercontent\.com/image_generation_content/(\d+)|/image_generation_content/(\d+)"
+    r"https?://[a-zA-Z0-9.-]*googleusercontent\.com/image_generation_content/(\d+)(?:_\d+)?|/image_generation_content/(\d+)(?:_\d+)?"
 )
 _REAL_GUSER_URL_RE = re.compile(
     r'https?://[a-zA-Z0-9.-]*googleusercontent\.com/[^\s"\'\\\}\],]+'
@@ -165,18 +165,22 @@ class GeminiImageDownloader:
         """Calls `c8o8Fe` (GetFullSizeImage) RPC via `bridge_client` if available."""
         if not self.bridge_client or not hasattr(self.bridge_client, "get_full_size_image_url"):
             return ""
-        image_id = meta.get("image_id", "")
+        image_id = meta.get("image_id", "") or meta.get("placeholder", "")
         cid = meta.get("cid", "")
         rid = meta.get("rid", "")
         rcid = meta.get("rcid", "")
         if not (image_id and cid and rid and rcid):
             return ""
-        return await self.bridge_client.get_full_size_image_url(
-            image_id=image_id,
-            cid=cid,
-            rid=rid,
-            rcid=rcid,
-        )
+        try:
+            return await self.bridge_client.get_full_size_image_url(
+                image_id=image_id,
+                cid=cid,
+                rid=rid,
+                rcid=rcid,
+            )
+        except Exception as e:
+            logger.debug("Failed resolving full-size image url via c8o8Fe: %s", e)
+            return ""
 
     async def follow_alr_chain(
         self,
@@ -237,8 +241,9 @@ class GeminiImageDownloader:
     ) -> tuple[bytes | None, str | None]:
         """
         Downloads a generated image:
-        1. Attempts full-size resolution via `c8o8Fe` RPC + `=d-I?alr=yes` chain.
-        2. Falls back to `meta['url'] + '=s2048-rj'` if full-size RPC is unavailable.
+        1. Attempts full-size resolution via `c8o8Fe` RPC (`image_id` or `placeholder`) + `=d-I?alr=yes` chain.
+        2. Falls back to `meta['url'] + '=s2048-rj'`.
+        3. Falls back to bare `meta['url']` via `follow_alr_chain` (stripping OSID/LSID).
         """
         original_url = await self.get_full_size_url(meta)
         if original_url:
@@ -255,4 +260,13 @@ class GeminiImageDownloader:
             if preview_url.endswith(("-rj", "?alr=yes"))
             else f"{preview_url}=s2048-rj"
         )
-        return await self.follow_alr_chain(fallback_url, http_client=http_client)
+        data, mime = await self.follow_alr_chain(fallback_url, http_client=http_client)
+        if data:
+            return data, mime
+
+        if fallback_url != preview_url:
+            data, mime = await self.follow_alr_chain(preview_url, http_client=http_client)
+            if data:
+                return data, mime
+
+        return None, None

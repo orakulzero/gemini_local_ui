@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSessionStore } from '../store/sessionStore';
 import { useChatStore } from '../store/chatStore';
+import * as api from '../services/api';
 
 export const SettingsModal: React.FC = () => {
   const isSettingsOpen = useSessionStore((s) => s.isSettingsOpen);
@@ -13,10 +14,46 @@ export const SettingsModal: React.FC = () => {
   const error = useSessionStore((s) => s.error);
   const syncRemoteConversations = useChatStore((s) => s.syncRemoteConversations);
 
+  const [activeTab, setActiveTab] = useState<'session' | 'saved_info'>('session');
   const [cookieInput, setCookieInput] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [memories, setMemories] = useState<Array<{ id: string; content: string; category: string }>>([]);
+  const [newMemory, setNewMemory] = useState('');
+  const [memoryLoading, setMemoryLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isSettingsOpen || activeTab !== 'saved_info') return;
+    setMemoryLoading(true);
+    api
+      .fetchSavedInfo()
+      .then((items) => setMemories(items))
+      .catch((err) => console.warn('Failed loading saved info:', err))
+      .finally(() => setMemoryLoading(false));
+  }, [isSettingsOpen, activeTab]);
 
   if (!isSettingsOpen) return null;
+
+  const handleAddMemory = async () => {
+    if (!newMemory.trim()) return;
+    setMemoryLoading(true);
+    try {
+      await api.addSavedInfo(newMemory.trim());
+      setNewMemory('');
+      setMemories(await api.fetchSavedInfo());
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleDeleteMemory = async (id: string) => {
+    setMemoryLoading(true);
+    try {
+      await api.deleteSavedInfo(id);
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
 
   const handleSubmit = async (autoImport = false) => {
     setSuccessMsg('');
@@ -42,7 +79,31 @@ export const SettingsModal: React.FC = () => {
         className="relative w-full max-w-md rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl overflow-hidden z-10 p-5 space-y-4 text-xs text-zinc-300"
       >
         <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-          <h2 className="text-sm font-semibold text-zinc-100">Session & Credentials</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-zinc-100">Settings</h2>
+            <div className="flex bg-zinc-950 rounded-lg p-0.5 border border-zinc-800 text-[11px]">
+              <button
+                type="button"
+                data-testid="settings-tab-session"
+                onClick={() => setActiveTab('session')}
+                className={`px-2 py-0.5 rounded-md ${
+                  activeTab === 'session' ? 'bg-zinc-800 text-zinc-100 font-medium' : 'text-zinc-400'
+                }`}
+              >
+                Session
+              </button>
+              <button
+                type="button"
+                data-testid="settings-tab-saved-info"
+                onClick={() => setActiveTab('saved_info')}
+                className={`px-2 py-0.5 rounded-md ${
+                  activeTab === 'saved_info' ? 'bg-blue-600 text-white font-medium' : 'text-zinc-400'
+                }`}
+              >
+                Saved Info
+              </button>
+            </div>
+          </div>
           <button
             type="button"
             onClick={() => toggleSettings(false)}
@@ -51,6 +112,62 @@ export const SettingsModal: React.FC = () => {
             ✕
           </button>
         </div>
+
+        {activeTab === 'saved_info' ? (
+          <div className="space-y-3" data-testid="saved-info-panel">
+            <p className="text-[11px] text-zinc-400">
+              Persistent preferences & instructions Gemini remembers across conversations.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                data-testid="saved-info-input"
+                value={newMemory}
+                onChange={(e) => setNewMemory(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleAddMemory();
+                }}
+                placeholder="e.g. Always respond with concise Rust examples"
+                className="flex-1 bg-zinc-950 text-zinc-100 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-blue-500"
+              />
+              <button
+                type="button"
+                data-testid="saved-info-add-btn"
+                disabled={memoryLoading || !newMemory.trim()}
+                onClick={handleAddMemory}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg font-medium"
+              >
+                Add
+              </button>
+            </div>
+            <div className="max-h-56 overflow-y-auto space-y-1.5">
+              {memoryLoading && memories.length === 0 ? (
+                <div className="text-center text-zinc-500 py-4">Loading Saved Info...</div>
+              ) : memories.length === 0 ? (
+                <div className="text-center text-zinc-500 py-4">No Saved Info items yet</div>
+              ) : (
+                memories.map((m) => (
+                  <div
+                    key={m.id}
+                    data-testid="saved-info-item"
+                    className="flex items-start justify-between gap-2 p-2 rounded-lg bg-zinc-950 border border-zinc-800"
+                  >
+                    <span className="text-zinc-200 leading-relaxed">{m.content}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMemory(m.id)}
+                      className="text-zinc-500 hover:text-red-400 shrink-0 px-1"
+                      title="Delete memory"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
 
         {/* Health status */}
         <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800/80 space-y-1">
@@ -144,6 +261,8 @@ export const SettingsModal: React.FC = () => {
             Clear All
           </button>
         </div>
+          </>
+        )}
       </div>
     </div>
   );

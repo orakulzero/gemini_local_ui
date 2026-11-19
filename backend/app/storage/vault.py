@@ -249,7 +249,9 @@ class CredentialVault:
         self.entropy = entropy or b"gemini_ui_local_entropy"
 
         if vault_path is None:
-            if IS_WINDOWS:
+            if "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ:
+                base_dir = Path(tempfile.gettempdir()) / f"gemini_local_ui_pytest_{os.getpid()}"
+            elif IS_WINDOWS:
                 base_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "gemini_local_ui"
             else:
                 base_dir = Path.home() / ".gemini_local_ui"

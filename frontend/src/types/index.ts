@@ -6,6 +6,9 @@ export interface ChatAttachment {
   uri?: string;
   previewUrl?: string;
   storage_path?: string;
+  uploading?: boolean;
+  error?: string;
+  file?: File;
 }
 
 export interface BranchInfo {
@@ -100,6 +103,8 @@ export type StreamEvent =
   | { type: 'failover'; from: string; to: string; error_code?: number; reason?: string; timestamp?: number }
   | { type: 'citation' | 'grounding'; metadata: any }
   | { type: 'media'; metadata: any }
+  | { type: 'tool_call'; metadata: { tool_calls: ToolCallRecord[] } }
+  | { type: 'tool_approval_required'; metadata: ToolApprovalRequest }
   | { type: 'saved'; assistant_message_id?: number }
   | { type: 'done'; metadata?: any }
   | { type: 'error'; error: string };
@@ -248,6 +253,90 @@ export interface NotebookAttachContextResponse {
   notebook_title: string;
   source_count: number;
   note_count: number;
+}
+
+export interface GlobalPromptItem {
+  id: string;
+  name: string;
+  description?: string;
+  content: string;
+  apply_mode: 'turn0' | 'every_turn';
+  is_active: boolean;
+  is_builtin?: boolean;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface WorkspaceSkillItem {
+  id: string;
+  slug?: string;
+  name: string;
+  description?: string;
+  content?: string;
+  body?: string;
+  source: 'gemini-pack' | 'custom' | 'claude-repo' | 'user-gemini' | string;
+  compatibility: 'native' | 'mcp-bridged' | 'ide-only' | string;
+  triggers?: string[];
+  is_enabled?: boolean;
+  file_path?: string;
+}
+
+export interface MCPDiscoveredTool {
+  name: string;
+  namespaced_name?: string;
+  description?: string;
+  input_schema?: Record<string, any>;
+}
+
+export type ApprovalPolicy = 'auto_allow_readonly' | 'always_ask' | 'auto_allow_all' | 'deny';
+export type MCPSchemaPinStatus = 'unpinned' | 'pinned' | 'verified' | 'drift_detected';
+
+export interface MCPConnectorItem {
+  id: string;
+  name: string;
+  description?: string;
+  transport: 'stdio' | 'streamable_http' | 'sse' | string;
+  enabled: boolean;
+  is_builtin?: boolean;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  env_keys?: string[];
+  header_keys?: string[];
+  allowed_tools?: string[];
+  timeout_seconds?: number;
+  approval_policy?: ApprovalPolicy;
+  pin_status?: MCPSchemaPinStatus;
+  pin_sha256?: string | null;
+  pin_changed_tools?: string[];
+  discovered_tools?: MCPDiscoveredTool[];
+}
+
+export interface ToolApprovalRequest {
+  approval_id: string;
+  connector_id: string;
+  tool_name: string;
+  namespaced_name: string;
+  arguments: Record<string, any>;
+  approval_policy?: ApprovalPolicy;
+  read_only_hint?: boolean | null;
+  destructive_hint?: boolean | null;
+}
+
+export interface ToolCallRecord {
+  id?: string;
+  connector_id?: string;
+  tool_name?: string;
+  name?: string;
+  namespaced_name?: string;
+  arguments?: Record<string, any> | string;
+  result?: string;
+  status?: 'running' | 'ok' | 'error' | 'denied' | string;
+  is_error?: boolean;
+  ok?: boolean;
+  duration_ms?: number;
 }
 
 

@@ -1,6 +1,8 @@
 import React, { useMemo, useEffect, useState, useRef } from 'react';
 import { CodeBlock } from './CodeBlock';
 import { MathBlock } from './MathBlock';
+import { MermaidBlock } from './MermaidBlock';
+import { LightboxModal, LightboxImage } from './LightboxModal';
 
 export interface StreamingMarkdownProps {
   content: string;
@@ -17,16 +19,31 @@ export interface MarkdownBlockItem {
 
 const BLOCK_SPLIT_REGEX = /\n\n+/;
 const INLINE_MATH_REGEX = /(?<!\$)\$(?!\s)([^$\n]+?)(?<![\s\-/])\$(?!\$|\d)/g;
+const IMAGE_GEN_MD_WRAPPER_RE =
+  /!?\[[^\]]*\]\(https?:\/\/[a-zA-Z0-9.-]*googleusercontent\.com\/image_generation_content\/[^)\s]+\)/g;
+const IMAGE_GEN_PLACEHOLDER_RE =
+  /https?:\/\/[a-zA-Z0-9.-]*googleusercontent\.com\/image_generation_content\/\S+/g;
+
+function stripImageGenPlaceholders(text: string): string {
+  if (!text || !text.includes('image_generation_content')) return text;
+  return text
+    .replace(IMAGE_GEN_MD_WRAPPER_RE, '')
+    .replace(IMAGE_GEN_PLACEHOLDER_RE, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^[ \t]+|[ \t]+$/g, '');
+}
 
 /**
  * Splits raw markdown buffer into immutable completed blocks and mutable active tail block.
  */
-export function segmentStreamingMarkdown(rawBuffer: string): {
+export function segmentStreamingMarkdown(rawBufferInput: string): {
   immutableBlocks: MarkdownBlockItem[];
   tailBlock: string;
   isInCodeBlock: boolean;
   codeLanguage: string;
 } {
+  const rawBuffer = stripImageGenPlaceholders(rawBufferInput);
   if (!rawBuffer) {
     return { immutableBlocks: [], tailBlock: '', isInCodeBlock: false, codeLanguage: '' };
   }
@@ -157,8 +174,12 @@ function parseParagraphsAndHeadings(text: string, output: MarkdownBlockItem[]) {
   }
 }
 
-function renderFormattedSpan(text: string, keyPrefix: string): React.ReactNode {
-  const tokenRegex = /(\*\*[^*]+\*\*|`[^`\n]+`|\[[^\]]+\]\([^)]+\))/g;
+function renderFormattedSpan(
+  text: string,
+  keyPrefix: string,
+  onImageClick?: (img: LightboxImage) => void
+): React.ReactNode {
+  const tokenRegex = /(\*\*[^*]+\*\*|`[^`\n]+`|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\))/g;
   const parts: React.ReactNode[] = [];
   let lastIdx = 0;
   let match: RegExpExecArray | null;
@@ -183,6 +204,29 @@ function renderFormattedSpan(text: string, keyPrefix: string): React.ReactNode {
           {token.slice(1, -1)}
         </code>
       );
+    } else if (token.startsWith('![')) {
+      const imgMatch = token.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (imgMatch) {
+        const alt = imgMatch[1].trim();
+        const url = imgMatch[2].trim();
+        const safeUrl = /^(https?:\/\/|\/(?!\/)|data:image\/)/i.test(url) ? url : '';
+        if (safeUrl) {
+          parts.push(
+            <img
+              key={`${keyPrefix}_img_${match.index}`}
+              data-testid="inline-markdown-image"
+              src={safeUrl}
+              alt={alt || 'Generated image'}
+              onClick={() => onImageClick?.({ url: safeUrl, alt: alt || undefined })}
+              className="my-2 max-h-80 rounded-xl border border-zinc-700/60 cursor-pointer object-contain bg-zinc-950/60 hover:border-blue-500/60 transition-colors"
+            />
+          );
+        } else {
+          parts.push(token);
+        }
+      } else {
+        parts.push(token);
+      }
     } else if (token.startsWith('[')) {
       const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       if (linkMatch) {
@@ -208,10 +252,13 @@ function renderFormattedSpan(text: string, keyPrefix: string): React.ReactNode {
     parts.push(text.slice(lastIdx));
   }
 
-  return <>{parts}</>;
+  return <React.Fragment key={keyPrefix}>{parts}</React.Fragment>;
 }
 
-function renderInlineContent(text: string): React.ReactNode {
+function renderInlineContent(
+  text: string,
+  onImageClick?: (img: LightboxImage) => void
+): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -219,7 +266,9 @@ function renderInlineContent(text: string): React.ReactNode {
   INLINE_MATH_REGEX.lastIndex = 0;
   while ((match = INLINE_MATH_REGEX.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(renderFormattedSpan(text.slice(lastIndex, match.index), `pre_${match.index}`));
+      parts.push(
+        renderFormattedSpan(text.slice(lastIndex, match.index), `pre_${match.index}`, onImageClick)
+      );
     }
     parts.push(
       <MathBlock
@@ -232,13 +281,18 @@ function renderInlineContent(text: string): React.ReactNode {
   }
 
   if (lastIndex < text.length) {
-    parts.push(renderFormattedSpan(text.slice(lastIndex), `tail_${lastIndex}`));
+    parts.push(renderFormattedSpan(text.slice(lastIndex), `tail_${lastIndex}`, onImageClick));
   }
 
   return <>{parts}</>;
 }
 
-function renderRichParagraphBlock(content: string, key: string, extraTailNode?: React.ReactNode): React.ReactNode {
+function renderRichParagraphBlock(
+  content: string,
+  key: string,
+  extraTailNode?: React.ReactNode,
+  onImageClick?: (img: LightboxImage) => void
+): React.ReactNode {
   const trimmed = content.trim();
   if (trimmed === '---' || trimmed === '***') {
     return <hr key={key} className="my-3 border-zinc-800/80" />;
@@ -270,7 +324,7 @@ function renderRichParagraphBlock(content: string, key: string, extraTailNode?: 
             <tr className="border-b border-zinc-800 bg-zinc-900/80 text-zinc-200">
               {headers.map((h, i) => (
                 <th key={i} className="px-3 py-2 font-semibold">
-                  {renderInlineContent(h)}
+                  {renderInlineContent(h, onImageClick)}
                 </th>
               ))}
             </tr>
@@ -280,7 +334,7 @@ function renderRichParagraphBlock(content: string, key: string, extraTailNode?: 
               <tr key={rIdx} className="hover:bg-zinc-900/30">
                 {row.map((cell, cIdx) => (
                   <td key={cIdx} className="px-3 py-2 align-top text-zinc-300">
-                    {renderInlineContent(cell)}
+                    {renderInlineContent(cell, onImageClick)}
                   </td>
                 ))}
               </tr>
@@ -307,7 +361,7 @@ function renderRichParagraphBlock(content: string, key: string, extraTailNode?: 
                   {bulletMatch[1].endsWith('.') ? bulletMatch[1] : '•'}
                 </span>
                 <span className="flex-1">
-                  {renderInlineContent(bulletMatch[2])}
+                  {renderInlineContent(bulletMatch[2], onImageClick)}
                   {idx === lines.length - 1 ? extraTailNode : null}
                 </span>
               </div>
@@ -315,7 +369,7 @@ function renderRichParagraphBlock(content: string, key: string, extraTailNode?: 
           }
           return (
             <p key={idx}>
-              {renderInlineContent(l)}
+              {renderInlineContent(l, onImageClick)}
               {idx === lines.length - 1 ? extraTailNode : null}
             </p>
           );
@@ -326,7 +380,7 @@ function renderRichParagraphBlock(content: string, key: string, extraTailNode?: 
 
   return (
     <p key={key} className="my-1.5">
-      {renderInlineContent(content)}
+      {renderInlineContent(content, onImageClick)}
       {extraTailNode}
     </p>
   );
@@ -337,6 +391,7 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = React.memo(({
   isStreaming = false,
 }) => {
   const [segmented, setSegmented] = useState(() => segmentStreamingMarkdown(content));
+  const [lightboxImage, setLightboxImage] = useState<LightboxImage | null>(null);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -368,63 +423,74 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = React.memo(({
   }, [isInCodeBlock, tailBlock]);
 
   return (
-    <div className="markdown-content text-zinc-200 text-sm leading-relaxed space-y-2 select-text">
-      {/* Immutable Completed Blocks */}
-      {immutableBlocks.map((block) => {
-        if (block.type === 'code') {
-          return (
-            <CodeBlock
-              key={block.id}
-              language={block.language}
-              code={block.content}
-              isStreaming={false}
-            />
-          );
-        }
+    <>
+      <div className="markdown-content text-zinc-200 text-sm leading-relaxed space-y-2 select-text">
+        {/* Immutable Completed Blocks */}
+        {immutableBlocks.map((block) => {
+          if (block.type === 'code') {
+            if (!isStreaming && block.language?.toLowerCase() === 'mermaid') {
+              return <MermaidBlock key={block.id} code={block.content} />;
+            }
+            return (
+              <CodeBlock
+                key={block.id}
+                language={block.language}
+                code={block.content}
+                isStreaming={false}
+              />
+            );
+          }
 
-        if (block.type === 'display_math') {
-          return (
-            <MathBlock
-              key={block.id}
-              formula={block.content}
-              displayMode={true}
-            />
-          );
-        }
+          if (block.type === 'display_math') {
+            return (
+              <MathBlock
+                key={block.id}
+                formula={block.content}
+                displayMode={true}
+              />
+            );
+          }
 
-        if (block.type === 'heading') {
-          const Tag = `h${Math.min(block.level || 2, 6)}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
-          return (
-            <Tag key={block.id} className="font-semibold text-zinc-100 mt-3 mb-1.5">
-              {renderInlineContent(block.content)}
-            </Tag>
-          );
-        }
+          if (block.type === 'heading') {
+            const Tag = `h${Math.min(block.level || 2, 6)}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+            return (
+              <Tag key={block.id} className="font-semibold text-zinc-100 mt-3 mb-1.5">
+                {renderInlineContent(block.content, setLightboxImage)}
+              </Tag>
+            );
+          }
 
-        return renderRichParagraphBlock(block.content, block.id);
-      })}
+          return renderRichParagraphBlock(block.content, block.id, undefined, setLightboxImage);
+        })}
 
-      {/* Mutable Active Tail Block */}
-      {tailBlock && (
-        <div className="streaming-tail">
-          {isInCodeBlock ? (
-            <CodeBlock
-              language={codeLanguage}
-              code={tailCode}
-              isStreaming={true}
-            />
-          ) : (
-            renderRichParagraphBlock(
-              tailBlock,
-              'tail_block',
-              isStreaming ? (
-                <span className="inline-block w-1.5 h-4 ml-1 bg-blue-400 animate-pulse align-middle" />
-              ) : undefined
-            )
-          )}
-        </div>
-      )}
-    </div>
+        {/* Mutable Active Tail Block */}
+        {tailBlock && (
+          <div className="streaming-tail">
+            {isInCodeBlock ? (
+              <CodeBlock
+                language={codeLanguage}
+                code={tailCode}
+                isStreaming={true}
+              />
+            ) : (
+              renderRichParagraphBlock(
+                tailBlock,
+                'tail_block',
+                isStreaming ? (
+                  <span className="inline-block w-1.5 h-4 ml-1 bg-blue-400 animate-pulse align-middle" />
+                ) : undefined,
+                setLightboxImage
+              )
+            )}
+          </div>
+        )}
+      </div>
+
+      <LightboxModal
+        image={lightboxImage}
+        onClose={() => setLightboxImage(null)}
+      />
+    </>
   );
 });
 

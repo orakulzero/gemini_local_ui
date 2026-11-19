@@ -20,25 +20,33 @@ export const ModelSelector: React.FC = () => {
   const selectedGemId = useSessionStore((s) => s.selectedGemId);
   const setSelectedGemId = useSessionStore((s) => s.setSelectedGemId);
 
-  const visibleModels =
-    featureMode === 'task'
-      ? models.filter((m) => m.id === '56fdd199312815e2' || m.id === '95a4c0abcba24364' || m.display_name.includes('Argon') || m.display_name.includes('3.8'))
-      : models;
+  const isTaskOrResearch = featureMode === 'task' || featureMode === 'deep-research';
+  const visibleModels = isTaskOrResearch
+    ? models.filter(
+        (m) =>
+          m.id === '56fdd199312815e2' ||
+          m.id === '95a4c0abcba24364' ||
+          m.id === 'gemini-4-carbon' ||
+          m.display_name.includes('Argon') ||
+          m.display_name.includes('Carbon') ||
+          m.display_name.includes('Hydrogen')
+      )
+    : models;
 
   const activeModelObj = models.find((m) => m.id === selectedModel);
   const activeGemObj = gems.find((g) => g.id === selectedGemId);
   const activeReasoningObj = REASONING_LEVELS.find((r) => r.value === reasoningLevel) || REASONING_LEVELS[0];
 
   return (
-    <div className="relative flex items-center gap-2">
+    <div className="relative flex items-center gap-1.5 shrink-0">
       <div
         data-testid="header-mode-toggle"
-        className="flex items-center p-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-[11px]"
+        className="flex items-center p-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-[11px] shrink-0"
       >
         <button
           type="button"
           onClick={() => setFeatureMode('chat')}
-          className={`px-2.5 py-0.5 rounded-full transition-colors ${
+          className={`px-2 py-0.5 rounded-full transition-colors whitespace-nowrap ${
             featureMode === 'chat'
               ? 'bg-zinc-800 text-zinc-100 font-medium shadow-sm'
               : 'text-zinc-400 hover:text-zinc-200'
@@ -49,7 +57,7 @@ export const ModelSelector: React.FC = () => {
         <button
           type="button"
           onClick={() => setFeatureMode('task')}
-          className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full transition-colors ${
+          className={`flex items-center gap-1 px-2 py-0.5 rounded-full transition-colors whitespace-nowrap ${
             featureMode === 'task'
               ? 'bg-blue-600/30 text-blue-200 border border-blue-500/40 font-medium shadow-sm'
               : 'text-zinc-400 hover:text-zinc-200'
@@ -58,13 +66,24 @@ export const ModelSelector: React.FC = () => {
           <span>✦</span>
           <span>Task</span>
         </button>
+        <button
+          type="button"
+          onClick={() => setFeatureMode('deep-research')}
+          className={`flex items-center gap-1 px-2 py-0.5 rounded-full transition-colors whitespace-nowrap ${
+            featureMode === 'deep-research'
+              ? 'bg-emerald-600/30 text-emerald-200 border border-emerald-500/40 font-medium shadow-sm'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          <span>Research</span>
+        </button>
       </div>
 
       <button
         type="button"
         data-testid="model-selector-btn"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/50 text-xs font-medium text-zinc-200 transition-colors"
+        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/50 text-xs font-medium text-zinc-200 transition-colors whitespace-nowrap shrink-0"
       >
         <span>
           {activeGemObj ? `Gem: ${activeGemObj.title}` : activeModelObj?.display_name || selectedModel}
@@ -88,7 +107,11 @@ export const ModelSelector: React.FC = () => {
             className="absolute left-0 top-full mt-1.5 w-72 p-1.5 rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl z-50 text-xs space-y-1"
           >
             <div className="px-2 py-1 text-[10px] font-semibold uppercase text-zinc-500">
-              {featureMode === 'task' ? 'Task Models' : 'Models'}
+              {featureMode === 'deep-research'
+                ? 'Deep Research Models'
+                : featureMode === 'task'
+                ? 'Task Models'
+                : 'Models'}
             </div>
             {(visibleModels.length > 0 ? visibleModels : models).map((m) => {
               const isSelected = selectedModel === m.id && !selectedGemId;
@@ -127,6 +150,22 @@ export const ModelSelector: React.FC = () => {
                       }`}
                     >
                       New
+                    </span>
+                  ) : m.id === 'gemini-4-neon' ? (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                        isSelected ? 'bg-blue-500 text-white' : 'bg-cyan-950/70 text-cyan-300 border border-cyan-700/40'
+                      }`}
+                    >
+                      DeepThink
+                    </span>
+                  ) : m.id === 'gemini-4-carbon' ? (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                        isSelected ? 'bg-blue-500 text-white' : 'bg-amber-950/70 text-amber-300 border border-amber-700/40'
+                      }`}
+                    >
+                      Ultra
                     </span>
                   ) : m.supports_thinking ? (
                     <span className="text-[10px] opacity-75 font-mono shrink-0">Thinking</span>

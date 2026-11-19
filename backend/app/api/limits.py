@@ -66,18 +66,19 @@ class ThresholdsUpdateRequest(BaseModel):
 CANONICAL_TELEMETRY_MODELS = [
     ("4 Argon", "95a4c0abcba24364"),
     ("3.1 Pro", "e6fa609c3fa255c0"),
-    ("3.8 Flash", "56fdd199312815e2"),
+    ("4 Hydrogen", "56fdd199312815e2"),
     ("Task", "task_mode"),
 ]
 
 MODEL_ID_TO_CANONICAL_NAME: dict[str, str] = {
     "95a4c0abcba24364": "4 Argon",
     "e6fa609c3fa255c0": "3.1 Pro",
-    "56fdd199312815e2": "3.8 Flash",
+    "56fdd199312815e2": "4 Hydrogen",
     "task_mode": "Task",
     "4 Argon": "4 Argon",
     "3.1 Pro": "3.1 Pro",
-    "3.8 Flash": "3.8 Flash",
+    "4 Hydrogen": "4 Hydrogen",
+    "3.8 Flash": "4 Hydrogen",
     "Task": "Task",
 }
 
@@ -152,12 +153,29 @@ async def get_limits(
         # Policy string & Health status
         tier = prof.tier.lower()
         policy_string = f"launch_{tier}_policy"
+        is_active_acc = (prof.id == session_mgr.active_account_id)
+        has_access_token = bool(sess.context.access_token) if (sess and sess.context) else bool(prof.snlm0e)
+        last_error = (sess.context.last_error if (sess and sess.context) else None) or (sess.last_error if sess else None)
         if is_cooling:
             health_str = "cooldown"
         elif sess and sess.context and sess.context.status:
-            health_str = sess.context.status.value if isinstance(sess.context.status, SessionHealthStatus) else str(sess.context.status)
+            raw_status = (
+                sess.context.status.value
+                if isinstance(sess.context.status, SessionHealthStatus)
+                else str(sess.context.status)
+            )
+            if raw_status == "healthy" and (not has_access_token or bool(sess.context.last_error)):
+                health_str = "degraded"
+            else:
+                health_str = raw_status
         else:
             health_str = prof.health_status
+        is_authenticated = bool(
+            sess
+            and sess.context
+            and sess.context.status == SessionHealthStatus.HEALTHY
+            and has_access_token
+        )
 
         # Aggregate per_model_24h by canonical display name to prevent duplicate rows
         aggregated_model_usage: dict[str, dict[str, Any]] = {}
@@ -245,8 +263,13 @@ async def get_limits(
             "account_id": prof.id,
             "name": prof.name,
             "tier": prof.tier,
+            "active": is_active_acc,
+            "is_active": is_active_acc,
+            "authenticated": is_authenticated,
+            "has_access_token": has_access_token,
             "policy_string": policy_string,
             "health_status": health_str,
+            "last_error": last_error,
             "cooldown": {
                 "is_active": is_cooling,
                 "reset_timestamp": int(cooldown_until) if cooldown_until else None,

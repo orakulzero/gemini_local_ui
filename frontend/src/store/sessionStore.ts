@@ -9,7 +9,7 @@ interface SessionState {
   models: ModelOption[];
   selectedModel: string;
   reasoningLevel: 1 | 4 | 2;
-  featureMode: 'chat' | 'task';
+  featureMode: 'chat' | 'task' | 'deep-research';
   gems: GemOption[];
   selectedGemId: string | null;
   isSettingsOpen: boolean;
@@ -27,7 +27,7 @@ interface SessionState {
   fetchModels: () => Promise<void>;
   setSelectedModel: (modelId: string) => void;
   setReasoningLevel: (level: 1 | 4 | 2) => void;
-  setFeatureMode: (mode: 'chat' | 'task') => void;
+  setFeatureMode: (mode: 'chat' | 'task' | 'deep-research') => void;
   setSelectedGemId: (gemId: string | null) => void;
   toggleSettings: (open?: boolean) => void;
   toggleSearch: (open?: boolean) => void;
@@ -39,18 +39,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   health: null,
   models: [
     {
+      id: '56fdd199312815e2',
+      display_name: '4 Hydrogen',
+      description: 'Everyday help · Fast execution',
+      supports_thinking: true,
+      is_default: true,
+    },
+    {
       id: '8c46e95b1a07cecc',
       display_name: '3.5 Flash-Lite',
       description: 'Fastest responses',
       supports_thinking: true,
       is_default: false,
-    },
-    {
-      id: '56fdd199312815e2',
-      display_name: '3.8 Flash',
-      description: 'All-round help',
-      supports_thinking: true,
-      is_default: true,
     },
     {
       id: 'e6fa609c3fa255c0',
@@ -63,6 +63,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       id: '95a4c0abcba24364',
       display_name: '4 Argon',
       description: 'Complex tasks · New',
+      supports_thinking: true,
+      is_default: false,
+    },
+    {
+      id: 'gemini-4-carbon',
+      display_name: '4 Carbon',
+      description: 'Most complex work',
+      supports_thinking: true,
+      is_default: false,
+    },
+    {
+      id: 'gemini-4-neon',
+      display_name: '4 Neon',
+      description: 'Deep Think · Глубокий анализ',
       supports_thinking: true,
       is_default: false,
     },
@@ -149,7 +163,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           selectedModel: exists ? current : defModel,
         });
       }
-      if (gems.length > 0) {
+      if (Array.isArray(gems)) {
         set({ gems });
       }
     } catch (err) {
@@ -159,9 +173,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setSelectedModel: (modelId: string) => set({ selectedModel: modelId }),
   setReasoningLevel: (level: 1 | 4 | 2) => set({ reasoningLevel: level }),
-  setFeatureMode: (mode: 'chat' | 'task') =>
+  setFeatureMode: (mode: 'chat' | 'task' | 'deep-research') =>
     set((s) => {
-      if (mode === 'task' && s.selectedModel !== '95a4c0abcba24364' && s.selectedModel !== '56fdd199312815e2') {
+      const taskCapable = new Set(['95a4c0abcba24364', '56fdd199312815e2', 'gemini-4-carbon', 'gemini-4-argon']);
+      if ((mode === 'task' || mode === 'deep-research') && !taskCapable.has(s.selectedModel)) {
         return { featureMode: mode, selectedModel: '95a4c0abcba24364' };
       }
       return { featureMode: mode };

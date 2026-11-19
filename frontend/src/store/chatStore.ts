@@ -3,6 +3,76 @@ import { Message, ConversationSummary, ChatAttachment } from '../types';
 import { streamChatGenerate } from '../services/streaming';
 import * as api from '../services/api';
 import { useSessionStore } from './sessionStore';
+import { useWorkspaceStore } from './workspaceStore';
+
+const pendingUploadPromises = new Map<
+  string,
+  Promise<{ uri: string; mime_type: string; file_size: number }>
+>();
+
+function getWorkspaceRequestPayload() {
+  const ws = useWorkspaceStore.getState();
+  return {
+    use_global_prompt: Boolean(ws.promptsEnabled && ws.useGlobalPromptForChat && ws.activePromptId),
+    skill_ids: ws.enabledSkillIds,
+    connector_ids: ws.connectors.filter((c) => c.enabled).map((c) => c.id),
+  };
+}
+
+function selectMergedImages(prevImages: any, metaUpdate: any) {
+  const incoming =
+    Array.isArray(metaUpdate.images) && metaUpdate.images.length > 0
+      ? metaUpdate.images
+      : Array.isArray(metaUpdate.generated_images) && metaUpdate.generated_images.length > 0
+        ? metaUpdate.generated_images
+        : null;
+  if (!incoming) return prevImages;
+
+  const incomingHasLocal = incoming.some(
+    (img: any) => typeof img?.url === 'string' && img.url.startsWith('/files/')
+  );
+  if (incomingHasLocal) return incoming;
+
+  const prevHasLocal =
+    Array.isArray(prevImages) &&
+    prevImages.some((img: any) => typeof img?.url === 'string' && img.url.startsWith('/files/'));
+  if (!prevHasLocal) return incoming;
+
+  return incoming.map((inc: any, idx: number) => {
+    const matched =
+      prevImages.find(
+        (p: any) =>
+          (p?.original_url && p.original_url === inc?.url) ||
+          (p?.image_id && p.image_id === inc?.image_id) ||
+          (p?.url && p.url === inc?.url)
+      ) || prevImages[idx];
+    return matched?.url?.startsWith('/files/') ? { ...inc, ...matched } : inc;
+  });
+}
+
+function mergeAssistantMetadata(prevMeta: any, metaUpdate: any) {
+  const base = prevMeta || {};
+  const nextImages = selectMergedImages(base.images, metaUpdate);
+  const nextExecutions =
+    Array.isArray(metaUpdate.code_executions) && metaUpdate.code_executions.length > 0
+      ? metaUpdate.code_executions
+      : base.code_executions;
+  const nextToolCalls =
+    Array.isArray(metaUpdate.tool_calls) && metaUpdate.tool_calls.length > 0
+      ? metaUpdate.tool_calls
+      : base.tool_calls;
+  return {
+    ...base,
+    ...metaUpdate,
+    citations: metaUpdate.citations || base.citations,
+    images: nextImages,
+    youtube: metaUpdate.youtube || base.youtube,
+    grounding: metaUpdate.grounding || base.grounding,
+    code_executions: nextExecutions,
+    tool_calls: nextToolCalls,
+    pending_approval: null,
+  };
+}
 
 interface ChatState {
   conversations: ConversationSummary[];
@@ -36,6 +106,8 @@ interface ChatState {
   setIncognito: (incognito: boolean) => void;
   switchBranch: (targetMessageId: number) => Promise<void>;
   editMessageAndBranch: (messageId: number, newContent: string) => Promise<void>;
+  updateMessageContent: (messageId: number, content: string, extraMeta?: any) => void;
+  clearPendingApproval: (messageId: number) => void;
   sendMessage: (prompt: string) => Promise<void>;
   abortGeneration: () => void;
   addAttachment: (file: File) => void;
@@ -231,6 +303,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isPinnedToBottom: true,
     });
 
+    let activeAsstId = tempAsstId;
     let pendingThoughtDelta = '';
     let pendingTextDelta = '';
     let rafHandle: number | null = null;
@@ -252,7 +325,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingThought: updatedThought,
           streamingText: updatedText,
           activeThread: s.activeThread.map((m) =>
-            m.id === tempAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
+            m.id === activeAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
           ),
         };
       });
@@ -268,18 +341,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!metaUpdate) return;
       set((s) => ({
         activeThread: s.activeThread.map((m) =>
-          m.id === tempAsstId
+          m.id === activeAsstId
             ? {
                 ...m,
-                metadata: {
-                  ...(m.metadata || {}),
-                  ...metaUpdate,
-                  citations: metaUpdate.citations || m.metadata?.citations,
-                  images: metaUpdate.images || metaUpdate.generated_images || m.metadata?.images,
-                  youtube: metaUpdate.youtube || m.metadata?.youtube,
-                  grounding: metaUpdate.grounding || m.metadata?.grounding,
-                },
+                metadata: mergeAssistantMetadata(m.metadata, metaUpdate),
               }
+            : m
+        ),
+      }));
+    };
+
+    const appendToolCalls = (metaUpdate: any) => {
+      if (!metaUpdate?.tool_calls?.length) return;
+      set((s) => ({
+        activeThread: s.activeThread.map((m) => {
+          if (m.id !== activeAsstId) return m;
+          const prev = Array.isArray(m.metadata?.tool_calls) ? m.metadata.tool_calls : [];
+          return {
+            ...m,
+            metadata: {
+              ...(m.metadata || {}),
+              pending_approval: null,
+              tool_calls: [...prev, ...metaUpdate.tool_calls],
+            },
+          };
+        }),
+      }));
+    };
+
+    const setPendingApproval = (approvalMeta: any) => {
+      if (!approvalMeta) return;
+      set((s) => ({
+        activeThread: s.activeThread.map((m) =>
+          m.id === activeAsstId
+            ? { ...m, metadata: { ...(m.metadata || {}), pending_approval: approvalMeta } }
             : m
         ),
       }));
@@ -293,6 +388,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           existing_user_message_id: userMsg.id,
           prompt: userMsg.content,
           model: effectiveModel,
+          ...getWorkspaceRequestPayload(),
         },
         {
           signal: abortController.signal,
@@ -306,9 +402,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           },
           onCitation: updateAsstMeta,
           onMedia: updateAsstMeta,
+          onToolCall: appendToolCalls,
+          onToolApprovalRequired: setPendingApproval,
           onSaved: (serverAsstMsgId) => {
             flushDeltas();
             if (serverAsstMsgId) {
+              activeAsstId = serverAsstMsgId;
               set((s) => ({
                 activeLeafMessageId: serverAsstMsgId,
                 activeThread: s.activeThread.map((m) =>
@@ -322,7 +421,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set((s) => ({
               error: errMsg,
               activeThread: s.activeThread.map((m) =>
-                m.id === tempAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
+                m.id === activeAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
               ),
             }));
           },
@@ -400,6 +499,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isPinnedToBottom: true,
       });
 
+      let activeAsstId = tempAsstId;
       let pendingThoughtDelta = '';
       let pendingTextDelta = '';
       let rafHandle: number | null = null;
@@ -421,7 +521,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingThought: updatedThought,
             streamingText: updatedText,
             activeThread: s.activeThread.map((m) =>
-              m.id === tempAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
+              m.id === activeAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
             ),
           };
         });
@@ -440,6 +540,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           existing_user_message_id: createdUserMsg.id,
           prompt: newContent,
           model: effectiveModel,
+          feature_mode: featureMode,
           gem_id: selectedGemId,
         },
         {
@@ -455,6 +556,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           onSaved: (serverAsstMsgId) => {
             flushDeltas();
             if (serverAsstMsgId) {
+              activeAsstId = serverAsstMsgId;
               set((s) => ({
                 activeLeafMessageId: serverAsstMsgId,
                 activeThread: s.activeThread.map((m) =>
@@ -468,7 +570,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set((s) => ({
               error: errMsg,
               activeThread: s.activeThread.map((m) =>
-                m.id === tempAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
+                m.id === activeAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
               ),
             }));
           },
@@ -518,8 +620,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const tempUserId = Date.now();
     const tempAsstId = tempUserId + 1;
 
+    const initialAttachments = [...pendingAttachments];
     const newThread = [...get().activeThread];
-    if (prompt.trim() || pendingAttachments.length > 0) {
+    if (prompt.trim() || initialAttachments.length > 0) {
       newThread.push({
         id: tempUserId,
         conversation_id: convId,
@@ -528,7 +631,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content: prompt,
         model: selectedModel,
         created_at: tempUserId,
-        attachments: [...pendingAttachments],
+        attachments: initialAttachments,
       });
     }
 
@@ -556,6 +659,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isPinnedToBottom: true,
     });
 
+    let activeAsstId = tempAsstId;
     let pendingThoughtDelta = '';
     let pendingTextDelta = '';
     let rafHandle: number | null = null;
@@ -577,7 +681,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingThought: updatedThought,
           streamingText: updatedText,
           activeThread: s.activeThread.map((m) =>
-            m.id === tempAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
+            m.id === activeAsstId ? { ...m, thoughts: updatedThought, content: updatedText } : m
           ),
         };
       });
@@ -593,39 +697,96 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!metaUpdate) return;
       set((s) => ({
         activeThread: s.activeThread.map((m) =>
-          m.id === tempAsstId
+          m.id === activeAsstId
             ? {
                 ...m,
-                metadata: {
-                  ...(m.metadata || {}),
-                  ...metaUpdate,
-                  citations: metaUpdate.citations || m.metadata?.citations,
-                  images: metaUpdate.images || metaUpdate.generated_images || m.metadata?.images,
-                  youtube: metaUpdate.youtube || m.metadata?.youtube,
-                  grounding: metaUpdate.grounding || m.metadata?.grounding,
-                },
+                metadata: mergeAssistantMetadata(m.metadata, metaUpdate),
               }
             : m
         ),
       }));
     };
 
+    const appendToolCalls = (metaUpdate: any) => {
+      if (!metaUpdate?.tool_calls?.length) return;
+      set((s) => ({
+        activeThread: s.activeThread.map((m) => {
+          if (m.id !== activeAsstId) return m;
+          const prev = Array.isArray(m.metadata?.tool_calls) ? m.metadata.tool_calls : [];
+          return {
+            ...m,
+            metadata: {
+              ...(m.metadata || {}),
+              pending_approval: null,
+              tool_calls: [...prev, ...metaUpdate.tool_calls],
+            },
+          };
+        }),
+      }));
+    };
+
+    const setPendingApproval = (approvalMeta: any) => {
+      if (!approvalMeta) return;
+      set((s) => ({
+        activeThread: s.activeThread.map((m) =>
+          m.id === activeAsstId
+            ? { ...m, metadata: { ...(m.metadata || {}), pending_approval: approvalMeta } }
+            : m
+        ),
+      }));
+    };
+
     try {
+      const resolvedAttachments: Array<{
+        uri?: string;
+        filename: string;
+        mime_type: string;
+        file_size: number;
+        storage_path?: string;
+      }> = [];
+
+      for (const a of initialAttachments) {
+        let resolvedUri = a.uri;
+        let resolvedMime = a.mime_type;
+        let resolvedSize = a.size_bytes;
+
+        if (!resolvedUri && a.id && pendingUploadPromises.has(a.id)) {
+          try {
+            const up = await pendingUploadPromises.get(a.id)!;
+            resolvedUri = up.uri;
+            resolvedMime = up.mime_type || resolvedMime;
+            resolvedSize = up.file_size ?? resolvedSize;
+          } catch {
+            // Retry once below if File handle is present
+          }
+        }
+        if (!resolvedUri && a.file) {
+          const up = await api.uploadAttachment(a.file);
+          resolvedUri = up.uri;
+          resolvedMime = up.mime_type || resolvedMime;
+          resolvedSize = up.file_size ?? resolvedSize;
+        }
+
+        resolvedAttachments.push({
+          uri: resolvedUri,
+          filename: a.filename,
+          mime_type: resolvedMime,
+          file_size: resolvedSize,
+          storage_path: a.storage_path,
+        });
+      }
+
       await streamChatGenerate(
         {
           conversation_id: convId,
           parent_message_id: parentId,
           prompt,
           model: effectiveModel,
+          feature_mode: featureMode,
           gem_id: selectedGemId,
+          attachments: resolvedAttachments,
           incognito: isIncognito,
-          attachments: pendingAttachments.map((a) => ({
-            uri: a.uri,
-            filename: a.filename,
-            mime_type: a.mime_type,
-            file_size: a.size_bytes,
-            storage_path: a.storage_path,
-          })),
+          ...getWorkspaceRequestPayload(),
         },
         {
           signal: abortController.signal,
@@ -648,9 +809,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           },
           onCitation: updateAsstMeta,
           onMedia: updateAsstMeta,
+          onToolCall: appendToolCalls,
+          onToolApprovalRequired: setPendingApproval,
           onSaved: (serverAsstMsgId) => {
             flushDeltas();
             if (serverAsstMsgId) {
+              activeAsstId = serverAsstMsgId;
               set((s) => ({
                 activeLeafMessageId: serverAsstMsgId,
                 activeThread: s.activeThread.map((m) =>
@@ -664,7 +828,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set((s) => ({
               error: errMsg,
               activeThread: s.activeThread.map((m) =>
-                m.id === tempAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
+                m.id === activeAsstId ? { ...m, is_error: true, content: `Error: ${errMsg}` } : m
               ),
             }));
           },
@@ -697,19 +861,59 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addAttachment: (file: File) => {
+    const clientId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
     const item: ChatAttachment = {
+      id: clientId,
       filename: file.name,
       mime_type: file.type || 'application/octet-stream',
       size_bytes: file.size,
       previewUrl,
+      uploading: true,
+      file,
     };
     set((s) => ({ pendingAttachments: [...s.pendingAttachments, item] }));
+
+    const uploadPromise = api.uploadAttachment(file).then(
+      (res) => {
+        pendingUploadPromises.delete(clientId);
+        set((s) => ({
+          pendingAttachments: s.pendingAttachments.map((a) =>
+            a.id === clientId
+              ? {
+                  ...a,
+                  uri: res.uri,
+                  mime_type: res.mime_type || a.mime_type,
+                  size_bytes: res.file_size ?? a.size_bytes,
+                  uploading: false,
+                  error: undefined,
+                }
+              : a
+          ),
+        }));
+        return res;
+      },
+      (err: any) => {
+        pendingUploadPromises.delete(clientId);
+        set((s) => ({
+          pendingAttachments: s.pendingAttachments.map((a) =>
+            a.id === clientId
+              ? { ...a, uploading: false, error: err?.message || 'Upload failed' }
+              : a
+          ),
+        }));
+        throw err;
+      }
+    );
+    pendingUploadPromises.set(clientId, uploadPromise);
   },
 
   removeAttachment: (index: number) => {
     set((s) => {
       const att = s.pendingAttachments[index];
+      if (att?.id) {
+        pendingUploadPromises.delete(att.id);
+      }
       if (att && att.previewUrl) {
         URL.revokeObjectURL(att.previewUrl);
       }
@@ -722,9 +926,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearAttachments: () => {
     const { pendingAttachments } = get();
     for (const a of pendingAttachments) {
+      if (a.id) pendingUploadPromises.delete(a.id);
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
     }
     set({ pendingAttachments: [] });
+  },
+
+  updateMessageContent: (messageId: number, content: string, extraMeta?: any) => {
+    set((s) => {
+      const patchMsg = (m: Message): Message =>
+        m.id === messageId
+          ? {
+              ...m,
+              content,
+              metadata: extraMeta ? { ...(m.metadata || {}), ...extraMeta } : m.metadata,
+            }
+          : m;
+      const updatedMap = { ...s.allMessagesMap };
+      if (updatedMap[messageId]) {
+        updatedMap[messageId] = patchMsg(updatedMap[messageId]);
+      }
+      return {
+        activeThread: s.activeThread.map(patchMsg),
+        allMessagesMap: updatedMap,
+      };
+    });
+  },
+
+  clearPendingApproval: (messageId: number) => {
+    set((s) => {
+      const patchMsg = (m: Message): Message =>
+        m.id === messageId && m.metadata?.pending_approval
+          ? { ...m, metadata: { ...m.metadata, pending_approval: null } }
+          : m;
+      const updatedMap = { ...s.allMessagesMap };
+      if (updatedMap[messageId]) {
+        updatedMap[messageId] = patchMsg(updatedMap[messageId]);
+      }
+      return {
+        activeThread: s.activeThread.map(patchMsg),
+        allMessagesMap: updatedMap,
+      };
+    });
   },
 
   recallPromptUp: (currentText: string) => {

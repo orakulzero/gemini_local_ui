@@ -246,15 +246,27 @@ class GeminiUploader:
         and supports single-step multipart upload (with automatic Scotty step-2 completion if
         the server returns `X-Goog-Upload-URL`).
         """
-        if use_resumable is True:
-            return await self.upload_file_resumable(
-                data=data,
-                filename=filename,
-                mime_type=mime_type,
-                push_id=push_id,
-            )
+        raw_mime = (mime_type or "").strip()
+        effective_mime = (
+            raw_mime
+            if (raw_mime and raw_mime != "application/octet-stream")
+            else self.detect_mime_type(filename, data=data)
+        )
+        if use_resumable is True or (use_resumable is None and "content-push.googleapis.com" in self.upload_url):
+            try:
+                return await self.upload_file_resumable(
+                    data=data,
+                    filename=filename,
+                    mime_type=effective_mime,
+                    push_id=push_id,
+                )
+            except AuthenticationError:
+                raise
+            except Exception as res_err:
+                if use_resumable is True:
+                    raise
+                logger.warning("Resumable Scotty upload failed (%s); falling back to multipart", res_err)
 
-        effective_mime = mime_type or self.detect_mime_type(filename, data=data)
         ctx_push_id = getattr(self.ctx, "push_id", None) if self.ctx else None
         effective_push_id = push_id or ctx_push_id or self.DEFAULT_PUSH_ID
         cookies = self._get_clean_cookies()

@@ -34,6 +34,7 @@ from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
 from backend.app.bridge.session import SessionHealthReport, SessionHealthStatus, SessionManager
 from backend.app.anthropic.routes import router as anthropic_router
+from backend.app.api.workspace import router as workspace_router
 from backend.app.mcp.routes import router as mcp_router
 from backend.app.mcp.server import MCPServer
 from backend.app.openai.routes import router as openai_router
@@ -50,6 +51,11 @@ session_manager: Optional[SessionManager] = None
 db: Database = Database()
 repository: ConversationRepository = ConversationRepository(db)
 search_engine: SearchEngine = SearchEngine(db)
+
+
+def get_mcp_manager():
+    from backend.app.api.workspace import get_mcp_manager as _get
+    return _get()
 
 
 @asynccontextmanager
@@ -138,6 +144,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     scheduler_task.cancel()
+    try:
+        from backend.app.api.workspace import get_mcp_manager as _get_mcp_mgr
+        await _get_mcp_mgr().close_all()
+    except Exception as mcp_err:
+        logger.debug("Error closing MCP manager: %s", mcp_err)
     if session_manager:
         await session_manager.close()
     await db.close()
@@ -161,19 +172,21 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def enforce_local_host(request: Request, call_next: Any) -> Response:
-    """Security middleware: Enforces local-only Host header validation."""
-    raw_host = request.headers.get("host")
-    host_header = raw_host.split(":")[0].strip().lower() if raw_host else ""
-    allowed_hosts = {"127.0.0.1", "localhost", "testserver"}
-
-    if not host_header or host_header not in allowed_hosts:
+async def security_guard_middleware(request: Request, call_next: Any) -> Response:
+    """Security middleware: Enforces local Host/Origin validation and GEMINI_LOCAL_API_TOKEN."""
+    try:
+        from backend.app.security.origin_guard import validate_host_and_origin, validate_local_api_token
+        validate_host_and_origin(
+            host=request.headers.get("host"),
+            origin=request.headers.get("origin"),
+        )
+        validate_local_api_token(request)
+    except HTTPException as exc:
         return Response(
-            content=b"Invalid Host header: Access restricted to local loopback interface.",
-            status_code=status.HTTP_400_BAD_REQUEST,
+            content=exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+            status_code=exc.status_code,
             media_type="text/plain",
         )
-
     return await call_next(request)
 
 
@@ -229,10 +242,18 @@ async def get_session_status() -> Dict[str, Any]:
         for a in vdata.accounts.values()
     ]
 
+    transport_name = "httpx"
+    try:
+        from backend.app.bridge.client import GeminiWebClient
+        transport_name = GeminiWebClient().get_transport_name()
+    except Exception:
+        pass
+
     return {
         "authenticated": health.is_authenticated,
         "active_account": session_manager.active_account_id,
         "accounts": accounts_info,
+        "transport": transport_name,
         "health": {
             "status": health.status.value if isinstance(health.status, SessionHealthStatus) else health.status,
             "is_authenticated": health.is_authenticated,
@@ -352,7 +373,7 @@ async def get_admin_session_status() -> Dict[str, Any]:
         "status": "ok" if health.is_authenticated else "unauthenticated",
         "authenticated": health.is_authenticated,
         "account": session_manager.active_account_id,
-        "models": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
+        "models": ["gemini-4-argon", "gemini-4-hydrogen", "gemini-3.5-flash-lite"],
         "health": {
             "status": status_val,
             "is_authenticated": health.is_authenticated,
@@ -429,7 +450,7 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
     return {
         "ok": True,
         "status": "ok",
-        "models": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
+        "models": ["gemini-4-argon", "gemini-4-hydrogen", "gemini-3.5-flash-lite"],
         "skipped": [],
         "account": target_account_id,
         "authenticated": health.is_authenticated,
@@ -452,22 +473,42 @@ async def list_models() -> Dict[str, Any]:
     from backend.app.bridge.models import UI_PRIMARY_MODEL_IDS
 
     seen_ids: set[str] = set()
+    seen_names: set[str] = set()
     models_list = []
 
-    # 1. Primary modern UI models (3.5 Flash-Lite, 3.8 Flash, 3.1 Pro, 4 Argon, Auto Gemini 3)
+    # 1. Primary modern UI models (4 Hydrogen, 3.5 Flash-Lite, 3.1 Pro, 4 Argon, 4 Carbon)
     for m_id in UI_PRIMARY_MODEL_IDS:
         m = DEFAULT_MODELS.get(m_id)
-        if m and m.id not in seen_ids:
+        if not m:
+            continue
+        entry_id = "gemini-4-carbon" if m_id == "gemini-4-carbon" else m.id
+        if entry_id not in seen_ids:
+            seen_ids.add(entry_id)
             seen_ids.add(m.id)
+            seen_names.add(m.display_name.strip().lower())
             models_list.append(
                 {
-                    "id": m.id,
+                    "id": entry_id,
                     "display_name": m.display_name,
                     "description": m.description,
                     "supports_thinking": m.supports_thinking,
                     "is_default": m.is_default,
                 }
             )
+
+    neon_model = DEFAULT_MODELS.get("gemini-4-neon")
+    if neon_model and "gemini-4-neon" not in seen_ids:
+        seen_ids.add("gemini-4-neon")
+        seen_names.add(neon_model.display_name.strip().lower())
+        models_list.append(
+            {
+                "id": "gemini-4-neon",
+                "display_name": neon_model.display_name,
+                "description": neon_model.description,
+                "supports_thinking": neon_model.supports_thinking,
+                "is_default": False,
+            }
+        )
 
     # 2. Dynamically discovered models via otAQ7b if authenticated
     if session_manager and session_manager.get_health().is_authenticated:
@@ -479,17 +520,28 @@ async def list_models() -> Dict[str, Any]:
         try:
             discovered = await client.list_models()
             for m in discovered:
-                if m.id not in seen_ids:
-                    seen_ids.add(m.id)
-                    models_list.append(
-                        {
-                            "id": m.id,
-                            "display_name": m.display_name,
-                            "description": m.description,
-                            "supports_thinking": m.supports_thinking,
-                            "is_default": False,
-                        }
-                    )
+                if m.id in seen_ids:
+                    continue
+                disp_name = m.display_name
+                desc = m.description
+                if m.id == "cf41b0e0dd7d53e5":
+                    disp_name = "Auto (Gemini)"
+                    if not desc or desc == "3.5 Flash-Lite":
+                        desc = "Automatic Gemini model selection"
+                norm_name = disp_name.strip().lower()
+                if norm_name in seen_names:
+                    continue
+                seen_ids.add(m.id)
+                seen_names.add(norm_name)
+                models_list.append(
+                    {
+                        "id": m.id,
+                        "display_name": disp_name,
+                        "description": desc,
+                        "supports_thinking": m.supports_thinking,
+                        "is_default": False,
+                    }
+                )
         except Exception as e:
             logger.debug("Live /api/models discovery skipped: %s", e)
         finally:
@@ -636,6 +688,7 @@ app.include_router(ecosystem_scout_router)
 app.include_router(stations_router)
 app.include_router(stations_legacy_router)
 app.include_router(openai_router)
+app.include_router(workspace_router)
 app.include_router(anthropic_router, prefix="/v1", tags=["anthropic"])
 app.include_router(mcp_router, prefix="/mcp", tags=["mcp"])
 

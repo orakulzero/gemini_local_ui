@@ -1,4 +1,4 @@
-import { StreamEvent } from '../types';
+import { StreamEvent, ToolApprovalRequest } from '../types';
 
 export interface ChatGeneratePayload {
   conversation_id?: string;
@@ -6,9 +6,13 @@ export interface ChatGeneratePayload {
   existing_user_message_id?: number | null;
   prompt: string;
   model: string;
+  feature_mode?: string;
   gem_id?: string | null;
   incognito?: boolean;
   system_instruction?: string;
+  use_global_prompt?: boolean;
+  skill_ids?: string[];
+  connector_ids?: string[];
   attachments?: Array<{
     uri?: string;
     filename: string;
@@ -25,6 +29,8 @@ export interface StreamCallbacks {
   onText?: (delta: string) => void;
   onCitation?: (metadata: any) => void;
   onMedia?: (metadata: any) => void;
+  onToolCall?: (metadata: { tool_calls: any[] }) => void;
+  onToolApprovalRequired?: (metadata: ToolApprovalRequest) => void;
   onSaved?: (assistantMessageId?: number) => void;
   onDone?: (metadata?: any) => void;
   onError?: (error: string) => void;
@@ -57,6 +63,12 @@ function dispatchSseLine(rawLine: string, callbacks: StreamCallbacks) {
       case 'media':
         callbacks.onMedia?.(event.metadata);
         callbacks.onCitation?.(event.metadata);
+        break;
+      case 'tool_call':
+        callbacks.onToolCall?.(event.metadata);
+        break;
+      case 'tool_approval_required':
+        callbacks.onToolApprovalRequired?.(event.metadata);
         break;
       case 'saved':
         callbacks.onSaved?.(event.assistant_message_id);

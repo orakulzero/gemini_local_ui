@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from backend.app.api.chat import stream_with_disconnect_check
+from backend.app.api.chat import _needs_image_localization, stream_with_disconnect_check
 from backend.app.bridge.client import GeminiWebClient
 from backend.app.bridge.exceptions import (
     AuthenticationError,
@@ -82,7 +82,7 @@ def get_gemini_client(request: Request) -> GeminiWebClient:
         session_mgr = getattr(main_mod, "session_manager", None)
 
     if not session_mgr:
-        raise HTTPException(status_code=500, detail="Gemini Session Manager is not initialized")
+        return GeminiWebClient()
 
     account_id = request.headers.get("x-gemini-account")
     ctx = session_mgr.get_session_context(account_id)
@@ -97,7 +97,7 @@ def get_gemini_uploader(request: Request) -> GeminiUploader:
         session_mgr = getattr(main_mod, "session_manager", None)
 
     if not session_mgr:
-        raise HTTPException(status_code=500, detail="Gemini Session Manager is not initialized")
+        return GeminiWebClient()
 
     account_id = request.headers.get("x-gemini-account")
     ctx = session_mgr.get_session_context(account_id)
@@ -523,9 +523,45 @@ async def chat_completions(
             # Rewrite or append generated images if present in done_metadata
             gen_images = done_metadata.get("images")
             if isinstance(gen_images, list) and gen_images:
+                downloader = None
+                img_dir = getattr(request.app.state, "image_data_dir", None)
                 for img_item in gen_images:
-                    if isinstance(img_item, dict) and not img_item.get("file") and isinstance(img_item.get("data"), (bytes, bytearray)):
-                        img_item["file"] = save_image(bytes(img_item["data"]), str(img_item.get("mime") or "image/png"))
+                    if not isinstance(img_item, dict):
+                        continue
+                    if not img_item.get("file"):
+                        if isinstance(img_item.get("data"), (bytes, bytearray)):
+                            img_item["file"] = save_image(
+                                bytes(img_item["data"]),
+                                str(img_item.get("mime") or "image/png"),
+                                data_dir=img_dir,
+                            )
+                        else:
+                            raw_u = img_item.get("url")
+                            if _needs_image_localization(raw_u):
+                                try:
+                                    if downloader is None:
+                                        from backend.app.bridge.image_downloader import GeminiImageDownloader
+                                        downloader = GeminiImageDownloader(client=client)
+                                    dl_meta = {
+                                        "url": raw_u,
+                                        "image_id": img_item.get("image_id", ""),
+                                        "placeholder": img_item.get("placeholder", ""),
+                                        "cid": done_metadata.get("cid", "") or "",
+                                        "rid": done_metadata.get("rid", "") or "",
+                                        "rcid": done_metadata.get("rcid", "") or "",
+                                    }
+                                    dl_data, dl_mime = await downloader.download_image(dl_meta)
+                                    if dl_data:
+                                        saved_f = save_image(
+                                            dl_data,
+                                            str(dl_mime or img_item.get("mime") or "image/png"),
+                                            data_dir=img_dir,
+                                        )
+                                        img_item["file"] = saved_f
+                                        img_item["original_url"] = raw_u
+                                        img_item["url"] = f"/files/{saved_f}"
+                                except Exception as dl_err:
+                                    logger.warning("Failed downloading gg image in openai route: %s", dl_err)
                 base_u = str(request.base_url).rstrip("/") if request.base_url else ""
                 full_text = link_images(full_text, gen_images, base_url=base_u)
 

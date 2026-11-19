@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface LightboxImage {
   url: string;
@@ -47,10 +48,10 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ image, onClose }) 
     return null;
   }
 
-  return (
+  const modalContent = (
     <div
       data-testid="lightbox-modal"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
@@ -102,4 +103,6 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ image, onClose }) 
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modalContent, document.body) : modalContent;
 };

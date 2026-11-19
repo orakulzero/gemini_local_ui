@@ -1,8 +1,7 @@
-// Keeps the gateway's copy of the session in step with the browser.
-//
-// Google rotates __Secure-1PSIDTS and friends in the browser; the gateway's old
-// copy stops working minutes later. So besides a periodic sync, every change of
-// a sign-in cookie triggers a sync shortly after.
+// Background Service Worker:
+// 1. Keeps Google/Gemini cookies + SNlM0e token synced to http://localhost:8000/admin/session
+// 2. Relays real-time Guided Learning turns & visuals from content_script.js to
+//    http://localhost:8000/api/learning/* without Content-Security-Policy (CSP) restrictions.
 importScripts("common.js");
 
 const ROTATING_COOKIES = new Set([
@@ -10,14 +9,19 @@ const ROTATING_COOKIES = new Set([
   "__Secure-3PSID", "__Secure-3PSIDTS", "__Secure-3PSIDCC"
 ]);
 const CHANGE_DEBOUNCE_MS = 5000;
-// SIDCC changes on almost every Google page load; one push a minute is plenty.
 const MIN_INTERVAL_MS = 60000;
 let changeTimer = null;
 let syncing = false;
 
+async function getGatewayBase() {
+  const settings = await loadSettings();
+  const raw = (settings.gatewayUrl || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
+  return raw || "http://127.0.0.1:8000";
+}
+
 async function runScheduledSync(reason) {
   const settings = await loadSettings();
-  if (!settings.keepFresh || !settings.configured || syncing) return;
+  if (!settings.keepFresh || syncing) return;
   const sinceLast = Date.now() - (settings.lastSync?.at || 0);
   if (sinceLast < MIN_INTERVAL_MS) {
     clearTimeout(changeTimer);
@@ -45,7 +49,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) runScheduledSync("Scheduled sync");
 });
 
-// Alarms survive restarts, but re-create them in case the browser dropped them.
 chrome.runtime.onStartup.addListener(async () => {
   const settings = await loadSettings();
   await scheduleSync(settings.keepFresh);
@@ -55,4 +58,57 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await loadSettings();
   await scheduleSync(settings.keepFresh);
+  runScheduledSync("Extension installed");
+});
+
+// Relay messages from content_script.js on gemini.google.com to the local Antigravity + Obsidian bridge
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.type) return false;
+
+  (async () => {
+    const base = await getGatewayBase();
+    try {
+      if (message.type === "LEARNING_STATUS") {
+        const resp = await fetch(`${base}/api/learning/status`, { method: "GET" });
+        const data = await resp.json();
+        sendResponse({ ok: resp.ok, data });
+        return;
+      }
+      if (message.type === "LEARNING_INGEST") {
+        const resp = await fetch(`${base}/api/learning/ingest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(message.payload || {})
+        });
+        const data = await resp.json();
+        sendResponse({ ok: resp.ok, data });
+        return;
+      }
+      if (message.type === "LEARNING_SYNC_MAIN") {
+        const resp = await fetch(`${base}/api/learning/sync-to-main`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        const data = await resp.json();
+        sendResponse({ ok: resp.ok, data });
+        return;
+      }
+      if (message.type === "LEARNING_PULL_CID") {
+        const resp = await fetch(`${base}/api/learning/pull-cid`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(message.payload || {})
+        });
+        const data = await resp.json();
+        sendResponse({ ok: resp.ok, data });
+        return;
+      }
+      sendResponse({ ok: false, error: `Unknown message type: ${message.type}` });
+    } catch (err) {
+      sendResponse({ ok: false, error: err?.message || String(err) });
+    }
+  })();
+
+  return true; // keep channel open for async sendResponse
 });

@@ -191,7 +191,7 @@ class EcosystemIntelligenceScout:
             )
             parts: list[str] = []
             try:
-                async for chunk in client.generate_stream(prompt=prompt, model="gemini-3.8-flash"):
+                async for chunk in client.generate_stream(prompt=prompt, model="gemini-4-hydrogen"):
                     piece = getattr(chunk, "text_delta", "") or getattr(chunk, "delta", "")
                     if piece and getattr(chunk, "type", "text") in ("text", "delta", ""):
                         parts.append(str(piece))

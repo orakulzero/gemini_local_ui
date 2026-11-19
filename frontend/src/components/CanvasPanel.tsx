@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 import { useChatStore } from '../store/chatStore';
+import { MermaidBlock } from './MermaidBlock';
 
 const EXTENSION_MAP: Record<string, string> = {
   python: 'py',
@@ -18,6 +19,7 @@ const EXTENSION_MAP: Record<string, string> = {
   json: 'json',
   markdown: 'md',
   md: 'md',
+  mermaid: 'mmd',
   rust: 'rs',
   rs: 'rs',
   go: 'go',
@@ -34,6 +36,7 @@ const MIME_MAP: Record<string, string> = {
   json: 'application/json',
   markdown: 'text/markdown',
   md: 'text/markdown',
+  mermaid: 'text/vnd.mermaid',
   css: 'text/css',
   javascript: 'application/javascript',
   typescript: 'application/typescript',
@@ -105,6 +108,7 @@ export const CanvasPanel: React.FC = () => {
   const isHtml = language === 'html' || language === 'htm';
   const isSvg = language === 'svg';
   const isMarkdown = language === 'markdown' || language === 'md';
+  const isMermaid = language === 'mermaid';
 
   return (
     <div
@@ -237,6 +241,13 @@ export const CanvasPanel: React.FC = () => {
                 className="w-full h-full p-6 bg-zinc-900 rounded-lg border border-zinc-800 overflow-auto prose prose-invert prose-sm max-w-none whitespace-pre-wrap font-sans"
               >
                 {activeArtifact.content}
+              </div>
+            ) : isMermaid ? (
+              <div
+                data-testid="canvas-preview-mermaid"
+                className="w-full h-full overflow-auto p-2"
+              >
+                <MermaidBlock code={activeArtifact.content} />
               </div>
             ) : (
               <div

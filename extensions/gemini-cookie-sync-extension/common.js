@@ -340,12 +340,43 @@ function gatewayEndpoint(gatewayUrl) {
   return `${url.origin}/admin/session`;
 }
 
+async function syncViaNativeMessaging(payload) {
+  return new Promise((resolve, reject) => {
+    if (!chrome.runtime?.sendNativeMessage) {
+      return reject(new Error("Native messaging not supported"));
+    }
+    chrome.runtime.sendNativeMessage("com.orakulzero.gemini_local_ui", {
+      type: "sync_session",
+      ...payload
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error(chrome.runtime.lastError.message));
+      }
+      if (response && response.ok) {
+        return resolve(response);
+      }
+      reject(new Error(response?.error || "Native host sync failed"));
+    });
+  });
+}
+
 // Reads the current session and POSTs it to the gateway. Returns the gateway reply.
 async function syncToGateway(settings) {
   const info = await buildInspection();
   if (!info.validation.valid) {
     throw new Error("Not signed in to Google in this browser: open Gemini and sign in.");
   }
+  const payload = buildSessionPayload(info);
+
+  try {
+    const nmhReply = await syncViaNativeMessaging(payload);
+    if (nmhReply && nmhReply.ok) {
+      return nmhReply;
+    }
+  } catch {
+    // Fall back to HTTP gateway POST
+  }
+
   const headers = { "Content-Type": "application/json" };
   if (settings.adminKey) headers["X-Admin-Key"] = settings.adminKey;
 
@@ -354,7 +385,7 @@ async function syncToGateway(settings) {
     response = await fetch(gatewayEndpoint(settings.gatewayUrl), {
       method: "POST",
       headers,
-      body: JSON.stringify(buildSessionPayload(info)),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(90000)
     });
   } catch (error) {

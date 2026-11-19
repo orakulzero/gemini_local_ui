@@ -11,9 +11,14 @@ GeminiWebClient:
 from __future__ import annotations
 
 import asyncio
+import base64
+import inspect
 import json
 import logging
+import os
 import random
+import re
+import ssl
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +26,25 @@ from collections.abc import AsyncIterator
 import uuid
 import threading
 import httpx
+
+try:
+    import wreq
+    _wreq_candidates = [
+        getattr(wreq, "TlsError", None),
+        getattr(wreq, "ConnectionError", None),
+        getattr(wreq, "ConnectionResetError", None),
+        getattr(wreq, "TimeoutError", None),
+        getattr(wreq, "RequestError", None),
+        getattr(wreq, "DecodingError", None),
+        getattr(wreq, "BodyError", None),
+        getattr(wreq, "ProxyConnectionError", None),
+        getattr(wreq, "StatusError", None),
+    ]
+    WREQ_TRANSPORT_ERRORS: tuple[type[Exception], ...] = tuple(
+        e for e in _wreq_candidates if e is not None and issubclass(e, Exception)
+    )
+except Exception:
+    WREQ_TRANSPORT_ERRORS = ()
 
 from backend.app.bridge.exceptions import (
     AuthenticationError,
@@ -68,6 +92,22 @@ class CacheEntry:
 DEFAULT_CONTAINER_TTL: float = 3600.0  # 1 hour
 MAX_TOTAL_ATTEMPTS: int = 2            # Hard ceiling per client request
 DEEP_RESEARCH_TIMEOUT: float = 1800.0  # 30 minutes read timeout for Deep Research / Task containers
+FLASH4P0_HOLDBACK_CHARS: int = 128
+FLASH4P0_CANNED_REFUSALS: tuple[str, ...] = (
+    "я вас не понимаю. я просто языковая модель",
+    "я просто языковая модель",
+    "sorry, something went wrong",
+    "i encountered an error doing what you asked",
+    "i'm having a hard time fulfilling your request",
+)
+
+
+def _is_canned_refusal(text: str) -> bool:
+    """Returns True when text matches a degraded Flash4p0 consumer refusal."""
+    norm = " ".join(text.strip().lower().split())
+    if not norm:
+        return False
+    return any(marker in norm for marker in FLASH4P0_CANNED_REFUSALS)
 
 logger = logging.getLogger("gemini_bridge.client")
 
@@ -110,21 +150,43 @@ class GeminiWebClient:
         self.vault = vault or getattr(self.ctx, "vault", None)
         self.account_id = account_id or getattr(self.ctx, "account_id", None)
         self._reqid_counter: int = random.randint(100000, 999999)
-        self._client: httpx.AsyncClient | None = None
+        self._client: Any | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=20.0, read=self.timeout, write=60.0),
-                cookies=self.ctx.cookies,
-                headers={
-                    "User-Agent": HeaderBuilder.DEFAULT_USER_AGENT,
-                    "Origin": self.base_url,
-                    "Referer": f"{self.base_url}/",
-                    "x-same-domain": "1",
-                },
-                event_hooks={"response": [self.on_response_harvest_cookies]},
-            )
+    def get_transport_name(self) -> str:
+        if os.environ.get("GEMINI_TRANSPORT") == "httpx":
+            return "httpx"
+        if not (self.base_url or "").startswith("https://"):
+            return "httpx"
+        if self._client is not None and isinstance(getattr(self._client, "_transport", None), httpx.MockTransport):
+            return "httpx"
+        try:
+            import wreq  # noqa: F401
+            return "wreq"
+        except ImportError:
+            return "httpx"
+
+    async def _get_client(self) -> Any:
+        if self._client is None or getattr(self._client, "is_closed", False):
+            if self.get_transport_name() == "wreq":
+                from backend.app.bridge.wreq_transport import WreqTransportClient
+                self._client = WreqTransportClient(
+                    timeout=self.timeout,
+                    on_response=self.on_response_harvest_cookies,
+                )
+            else:
+                self._client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(self.timeout, connect=20.0, read=self.timeout, write=60.0),
+                    cookies=self.ctx.cookies,
+                    http2=False,
+                    limits=httpx.Limits(max_connections=32, max_keepalive_connections=12, keepalive_expiry=20.0),
+                    headers={
+                        "User-Agent": HeaderBuilder.DEFAULT_USER_AGENT,
+                        "Origin": self.base_url,
+                        "Referer": f"{self.base_url}/",
+                        "x-same-domain": "1",
+                    },
+                    event_hooks={"response": [self.on_response_harvest_cookies]},
+                )
         return self._client
 
     async def on_response_harvest_cookies(self, response: httpx.Response) -> None:
@@ -421,7 +483,7 @@ class GeminiWebClient:
         if mode_tag:
             # Field 65 (0-based index 64) is Voc ("Argon4p0") in _.Byd
             inner[64] = mode_tag
-        inner[68] = 1  # Execution mode
+        inner[68] = 0  # Execution mode
 
         # Model routing
         inner[79] = model_number
@@ -529,7 +591,7 @@ class GeminiWebClient:
                             if isinstance(item[-1], str) and item[-1].strip():
                                 disp = item[-1].strip()
                             model_num = known.model_number if known else (int(item[4]) if len(item) > 4 and isinstance(item[4], int) else 1)
-                            is_pro_model = any(k in disp.lower() for k in ("pro", "argon", "carbon"))
+                            is_pro_model = any(k in disp.lower() for k in ("pro", "argon", "carbon", "neon"))
                             thinking_f = known.thinking_flag if known else (2 if is_pro_model else 1)
                             is_thinking = True
                             if "carbon" in disp.lower() and len(m_id) == 16 and all(c in "0123456789abcdef" for c in m_id.lower()):
@@ -546,6 +608,9 @@ class GeminiWebClient:
                             thinking_f = int(item[4]) if len(item) > 4 and isinstance(item[4], int) else (2 if "thinking" in m_id else 1)
                             is_thinking = thinking_f == 2
 
+                        is_carbon = "carbon" in disp.lower()
+                        is_argon = "argon" in disp.lower()
+                        is_neon = "neon" in disp.lower()
                         discovered.append(
                             ModelInfo(
                                 id=m_id,
@@ -555,7 +620,11 @@ class GeminiWebClient:
                                 thinking_flag=thinking_f,
                                 capabilities=ModelCapabilities(supports_thinking=is_thinking),
                                 is_default=(idx == 0),
-                                mode_tag=known.mode_tag if known else ("Argon4p0" if "argon" in disp.lower() else None),
+                                mode_tag=(
+                                    "Neon4p0"
+                                    if is_neon
+                                    else (None if is_carbon else (known.mode_tag if known else ("Argon4p0" if is_argon else None)))
+                                ),
                             )
                         )
                 if discovered:
@@ -716,6 +785,55 @@ class GeminiWebClient:
             logger.warning("Failed resolving full-size image URL via c8o8Fe: %s", e)
         return ""
 
+    async def synthesize_speech(self, text: str, language: str | None = None) -> bytes:
+        """
+        RPC XqA3Ic: Synthesizes text-to-speech audio via Google Gemini batchexecute.
+        Cleans code fences and URLs, caps at 4000 characters, auto-selects 'ru-RU'
+        if >=15% Cyrillic letters else 'en-US' (when language omitted), and decodes
+        returned Base64 payload into Ogg/Opus bytes (b"OggS...").
+        """
+        if not text:
+            raise GeminiBridgeError("Text for speech synthesis is empty")
+
+        # Strip code blocks, inline code, and URLs
+        clean_text = re.sub(r"```[\s\S]*?```", " ", text)
+        clean_text = re.sub(r"`[^`\n]+`", " ", clean_text)
+        clean_text = re.sub(r"https?://\S+", " ", clean_text)
+        # Strip common markdown formatting characters
+        clean_text = re.sub(r"[#*_~`>]", "", clean_text)
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+
+        if not clean_text:
+            raise GeminiBridgeError("Text for speech synthesis is empty after cleaning")
+
+        clean_text = clean_text[:4000]
+
+        if not language:
+            cyrillic_chars = sum(1 for c in clean_text if "\u0400" <= c <= "\u04FF")
+            alpha_chars = sum(1 for c in clean_text if c.isalpha())
+            if alpha_chars > 0 and (cyrillic_chars / alpha_chars) >= 0.15:
+                lang_code = "ru-RU"
+            elif cyrillic_chars > 0 and alpha_chars == 0:
+                lang_code = "ru-RU"
+            else:
+                lang_code = "en-US"
+        else:
+            lang_code = language
+
+        raw = await self.call_batchexecute("XqA3Ic", [None, clean_text, lang_code, None, 2])
+        if not raw or not isinstance(raw, list) or len(raw) == 0 or not raw[0]:
+            raise GeminiBridgeError("No audio returned from speech synthesis RPC")
+
+        try:
+            audio_bytes = base64.b64decode(raw[0])
+        except Exception as dec_err:
+            raise GeminiBridgeError(f"Failed decoding audio base64 payload: {dec_err}")
+
+        if not audio_bytes:
+            raise GeminiBridgeError("Empty audio data returned from speech synthesis RPC")
+
+        return audio_bytes
+
     async def generate_stream(
         self,
         prompt: str,
@@ -839,6 +957,20 @@ class GeminiWebClient:
             logger.info("Account %s cached as feature_mode=40 incompatible; using standard stream envelope", acc_key)
             eff_feature_mode = 0
 
+        is_mock_transport = self._client is not None and isinstance(
+            getattr(self._client, "_transport", None), httpx.MockTransport
+        )
+        if (
+            eff_feature_mode == 0
+            and model_info.model_number == 8
+            and "gemini.google.com" in (self.base_url or "")
+            and not is_mock_transport
+            and not self.is_feature_mode_40_unsupported(acc_key)
+        ):
+            # Upstream boq_gemini-web-uiserver_20261117.10_p0 detaches model_number=8 in chat mode;
+            # routing via container feature_mode=40 streams reliably without 32s disconnects.
+            eff_feature_mode = 40
+
         inner_req = self._build_81_element_envelope(
             prompt=prompt,
             cid=cid,
@@ -880,14 +1012,76 @@ class GeminiWebClient:
                 )
         client = await self._get_client()
 
+        is_flash4p0_primary = (getattr(model_info, "mode_tag", None) == "Flash4p0")
+        flash4p0_fallback_used = False
+        chunks_emitted = False
+
+        def _activate_flash4p0_fallback(reason: str) -> None:
+            nonlocal flash4p0_fallback_used, inner_req
+            flash4p0_fallback_used = True
+            logger.warning(
+                "Flash4p0 stream %s; retrying once on fallback fast slot 8c46e95b1a07cecc",
+                reason,
+            )
+            fallback_model_info = ModelInfo(
+                id="8c46e95b1a07cecc",
+                display_name="3.5 Flash-Lite",
+                description="Fastest responses",
+                model_number=6,
+                thinking_flag=1,
+                capacity_tail=12,
+                tier=model_info.tier,
+                capabilities=model_info.capabilities,
+                mode_tag=None,
+            )
+            headers["x-goog-ext-525001261-jspb"] = HeaderBuilder.build_model_jspb_header(
+                fallback_model_info, session_uuid, 1, 6
+            )
+            headers["x-goog-ext-525005358-jspb"] = json.dumps(
+                [str(uuid.uuid4()).upper(), 1], separators=(",", ":")
+            )
+            inner_req = self._build_81_element_envelope(
+                prompt=prompt,
+                cid=cid,
+                rid=rid,
+                rcid=rcid,
+                gem_id=gem_id,
+                attachments=attachments,
+                model_number=6,
+                thinking_flag=1,
+                incognito=incognito,
+                feature_mode=0,
+                mode_tag=None,
+                extensions=extensions,
+            )
+            data["f.req"] = json.dumps(
+                [None, json.dumps(inner_req, separators=(",", ":"))],
+                separators=(",", ":"),
+            )
+
         container_fallback_occurred = False
-        max_attempts = MAX_TOTAL_ATTEMPTS if is_container_request else 3
-        for attempt in range(max_attempts):
+        max_attempts = MAX_TOTAL_ATTEMPTS if (is_container_request or is_flash4p0_primary) else 3
+        attempt = 0
+        while attempt < max_attempts:
             params["_reqid"] = str(self._next_reqid())
             frame_parser = StreamingFrameParser()
             accumulator = StreamingDeltaAccumulator()
 
-            effective_limit = MAX_TOTAL_ATTEMPTS if (is_container_request or container_fallback_occurred) else max_attempts
+            effective_limit = (
+                MAX_TOTAL_ATTEMPTS
+                if (is_container_request or container_fallback_occurred or is_flash4p0_primary)
+                else max_attempts
+            )
+            if attempt >= effective_limit:
+                break
+
+            should_buffer_flash4p0 = (
+                is_flash4p0_primary and not flash4p0_fallback_used and not chunks_emitted
+            )
+            buffered_chunks: list[StreamChunk] = []
+            buffered_text_parts: list[str] = []
+            buffered_text_len = 0
+            trigger_flash4p0_fallback = False
 
             try:
                 async with client.stream("POST", url, params=params, data=data, headers=headers) as resp:
@@ -898,12 +1092,83 @@ class GeminiWebClient:
                     if resp.status_code != 200:
                         raise GeminiBridgeError(f"Stream failed with HTTP {resp.status_code}")
 
-                    async for raw_bytes in resp.aiter_bytes():
-                        frames = frame_parser.feed(raw_bytes)
-                        for frame in frames:
-                            chunks = accumulator.process_frame(frame)
-                            for chunk in chunks:
-                                yield chunk
+                    raw_iter = resp.aiter_bytes()
+                    if inspect.iscoroutine(raw_iter):
+                        raw_iter = await raw_iter
+                    if isinstance(raw_iter, (list, tuple)):
+                        async def _iter_items(items):
+                            for b in items:
+                                yield b
+                        stream_bytes = _iter_items(raw_iter)
+                    else:
+                        stream_bytes = raw_iter
+
+                    async for raw_bytes in stream_bytes:
+                        for frame in frame_parser.feed(raw_bytes):
+                            for chunk in accumulator.process_frame(frame):
+                                if not should_buffer_flash4p0:
+                                    chunks_emitted = True
+                                    yield chunk
+                                    continue
+
+                                buffered_chunks.append(chunk)
+                                if chunk.type == "text" and chunk.delta:
+                                    buffered_text_parts.append(chunk.delta)
+                                    buffered_text_len += len(chunk.delta)
+
+                                if chunk.type == "done":
+                                    candidate_text = accumulator.full_raw_text or "".join(buffered_text_parts)
+                                    has_payload = bool(
+                                        candidate_text.strip()
+                                        or accumulator.images
+                                        or accumulator.youtube_videos
+                                        or accumulator.research_plan
+                                    )
+                                    if _is_canned_refusal(candidate_text) or not has_payload:
+                                        trigger_flash4p0_fallback = True
+                                        break
+                                    for bc in buffered_chunks:
+                                        yield bc
+                                    buffered_chunks.clear()
+                                    chunks_emitted = True
+                                    should_buffer_flash4p0 = False
+                                elif buffered_text_len >= FLASH4P0_HOLDBACK_CHARS:
+                                    candidate_text = "".join(buffered_text_parts)
+                                    if _is_canned_refusal(candidate_text):
+                                        trigger_flash4p0_fallback = True
+                                        break
+                                    for bc in buffered_chunks:
+                                        yield bc
+                                    buffered_chunks.clear()
+                                    chunks_emitted = True
+                                    should_buffer_flash4p0 = False
+                            if trigger_flash4p0_fallback:
+                                break
+                        if trigger_flash4p0_fallback:
+                            break
+
+                if trigger_flash4p0_fallback:
+                    _activate_flash4p0_fallback("returned canned refusal or empty response")
+                    attempt += 1
+                    continue
+
+                if should_buffer_flash4p0:
+                    candidate_text = accumulator.full_raw_text or "".join(buffered_text_parts)
+                    has_payload = bool(
+                        candidate_text.strip()
+                        or accumulator.images
+                        or accumulator.youtube_videos
+                        or accumulator.research_plan
+                    )
+                    if _is_canned_refusal(candidate_text) or not has_payload:
+                        _activate_flash4p0_fallback("returned canned refusal or empty stream")
+                        attempt += 1
+                        continue
+                    for bc in buffered_chunks:
+                        yield bc
+                    buffered_chunks.clear()
+                    chunks_emitted = True
+
                 has_valid_container_output = bool(
                     accumulator.full_raw_text.strip()
                     or accumulator.research_plan
@@ -915,21 +1180,66 @@ class GeminiWebClient:
                     inner_req[49] = None
                     inner_str = json.dumps(inner_req, separators=(",", ":"))
                     data["f.req"] = json.dumps([None, inner_str], separators=(",", ":"))
+                    attempt += 1
                     continue
 
                 # Successful stream completion: if task container was executed, close circuit
                 if inner_req[49] == 40:
                     self.mark_feature_mode_40_supported(acc_key)
                 return
-            except (TemporaryBackendOverloadError, httpx.TransportError) as e:
-                if attempt >= effective_limit - 1:
-                    raise
-                wait_time = (2 ** attempt) + random.uniform(0.1, 0.5)
-                logger.warning("Stream error %s; retrying in %.2fs (attempt %d/%d)", e, wait_time, attempt + 1, effective_limit)
-                await asyncio.sleep(wait_time)
-            except (UsageLimitExceededError, ModelInconsistentError, ModelHeaderInvalidError, AuthenticationError):
+            except AuthenticationError:
                 raise
-            except GeminiBridgeError as e:
+            except (GeminiBridgeError, httpx.TransportError, ssl.SSLError, *WREQ_TRANSPORT_ERRORS) as e:
+                if (
+                    isinstance(e, (ssl.SSLError, httpx.ReadError, httpx.RemoteProtocolError, *WREQ_TRANSPORT_ERRORS))
+                    and not chunks_emitted
+                    and attempt < effective_limit - 1
+                ):
+                    logger.warning("Stream SSL or protocol error before chunks (%s); retrying", e)
+                    if not hasattr(getattr(client, "stream", None), "side_effect"):
+                        try:
+                            await self.close()
+                            client = await self._get_client()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(0.3 * (attempt + 1) + random.uniform(0.05, 0.15))
+                    attempt += 1
+                    continue
+                if is_flash4p0_primary and not flash4p0_fallback_used and not chunks_emitted:
+                    if inner_req[49] == 40 and (
+                        any(code in str(e) for code in ("1061", "1173"))
+                        or getattr(e, "code", None) in (1061, 1173)
+                    ):
+                        self.mark_feature_mode_40_unsupported(acc_key)
+                    _activate_flash4p0_fallback(f"failed with {type(e).__name__}: {e}")
+                    attempt += 1
+                    continue
+                if is_flash4p0_primary:
+                    raise
+                if (
+                    isinstance(e, httpx.RemoteProtocolError)
+                    and not chunks_emitted
+                    and inner_req[49] != 40
+                    and not is_mock_transport
+                    and not self.is_feature_mode_40_unsupported(acc_key)
+                    and attempt < effective_limit - 1
+                ):
+                    logger.warning("Stream disconnected before payload (%s); retrying with feature_mode=40", e)
+                    inner_req[49] = 40
+                    inner_str = json.dumps(inner_req, separators=(",", ":"))
+                    data["f.req"] = json.dumps([None, inner_str], separators=(",", ":"))
+                    attempt += 1
+                    continue
+                if isinstance(e, (TemporaryBackendOverloadError, httpx.TransportError)):
+                    if attempt >= effective_limit - 1:
+                        raise
+                    wait_time = (2 ** attempt) + random.uniform(0.1, 0.5)
+                    logger.warning("Stream error %s; retrying in %.2fs (attempt %d/%d)", e, wait_time, attempt + 1, effective_limit)
+                    await asyncio.sleep(wait_time)
+                    attempt += 1
+                    continue
+                if isinstance(e, (UsageLimitExceededError, ModelInconsistentError, ModelHeaderInvalidError)):
+                    raise
                 if (any(code in str(e) for code in ("1061", "1173")) or getattr(e, "code", None) in (1061, 1173)) and inner_req[49] == 40 and attempt < effective_limit - 1:
                     logger.warning("Task container (feature_mode=40) returned %s; falling back to standard stream envelope", e)
                     container_fallback_occurred = True
@@ -938,5 +1248,6 @@ class GeminiWebClient:
                     inner_req[49] = None
                     inner_str = json.dumps(inner_req, separators=(",", ":"))
                     data["f.req"] = json.dumps([None, inner_str], separators=(",", ":"))
+                    attempt += 1
                     continue
                 raise

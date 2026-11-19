@@ -13,9 +13,11 @@ import { NotebookLMDrawer } from './components/NotebookLMDrawer';
 import { ClaudePluginsPanel } from './components/ClaudePluginsPanel';
 import { FlowStudioDrawer } from './components/FlowStudioDrawer';
 import { MissionControlDrawer } from './components/MissionControlDrawer';
+import { WorkspaceHubModal } from './components/WorkspaceHubModal';
 import { useChatStore } from './store/chatStore';
 import { useSessionStore } from './store/sessionStore';
 import { useCanvasStore } from './store/canvasStore';
+import { useWorkspaceStore } from './store/workspaceStore';
 
 export const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -37,6 +39,7 @@ export const App: React.FC = () => {
     fetchSessionStatus();
     fetchModels();
     loadConversations();
+    useWorkspaceStore.getState().fetchWorkspaceConfig();
   }, [fetchSessionStatus, fetchModels, loadConversations]);
 
   const handleEditMessage = useCallback(
@@ -112,6 +115,7 @@ export const App: React.FC = () => {
         isOpen={missionControlOpen}
         onClose={() => setMissionControlOpen(false)}
       />
+      <WorkspaceHubModal />
     </div>
   );
 

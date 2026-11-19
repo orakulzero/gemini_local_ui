@@ -104,17 +104,22 @@ export const AccountSwitcher: React.FC = () => {
   };
 
   return (
-    <div className="relative inline-block text-left" ref={dropdownRef}>
+    <div className="relative inline-block text-left shrink-0" ref={dropdownRef}>
       <button
         type="button"
         data-testid="account-switcher-btn"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-2.5 py-1 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs text-zinc-200 transition-colors shadow-sm"
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen((prev) => !prev);
+        }}
+        className="flex items-center gap-1.5 px-2 py-1 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs text-zinc-200 transition-colors shadow-sm whitespace-nowrap"
         title="Switch active Google Gemini account"
       >
         <span className="flex items-center gap-1.5 font-medium">
           {getHealthIndicator(activeAccount)}
-          <span className="truncate max-w-[110px]">
+          <span className="truncate max-w-[96px]">
             {activeAccount ? activeAccount.name : 'No Account'}
           </span>
         </span>
@@ -125,7 +130,7 @@ export const AccountSwitcher: React.FC = () => {
       {isOpen && (
         <div
           data-testid="account-switcher-dropdown"
-          className="absolute left-0 mt-1.5 w-72 rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl py-1.5 z-50 backdrop-blur-md"
+          className="absolute left-0 top-full mt-1.5 w-72 rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl py-1.5 z-50"
         >
           <div className="px-3 py-1.5 border-b border-zinc-800/80 flex items-center justify-between">
             <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">

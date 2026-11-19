@@ -1091,7 +1091,7 @@ class FlowClient:
 
         client = GeminiWebClient(session_context=ctx, timeout=max(120.0, timeout_sec))
         try:
-            model_info = resolve_model("3.8 Flash")
+            model_info = resolve_model("4 Hydrogen")
             request_uuid = str(uuid.uuid4()).upper()
             session_uuid = getattr(ctx, "session_uuid", str(uuid.uuid4()).upper())
             headers = {

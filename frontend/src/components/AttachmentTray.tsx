@@ -25,7 +25,13 @@ export const AttachmentTray: React.FC<AttachmentTrayProps> = ({ attachments, onR
           <div
             key={`${att.filename}-${idx}`}
             data-testid="attachment-card"
-            className="relative group flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-800/90 border border-zinc-700/60 max-w-[200px] shrink-0"
+            className={`relative group flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-800/90 border max-w-[220px] shrink-0 ${
+              att.error
+                ? 'border-red-500/70'
+                : att.uploading
+                ? 'border-blue-500/50'
+                : 'border-zinc-700/60'
+            }`}
           >
             {isImage ? (
               <img
@@ -43,7 +49,26 @@ export const AttachmentTray: React.FC<AttachmentTrayProps> = ({ attachments, onR
 
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-zinc-200 truncate">{att.filename}</p>
-              <p className="text-[10px] text-zinc-400">{sizeFormatted}</p>
+              <p
+                className={`text-[10px] truncate ${
+                  att.error
+                    ? 'text-red-400'
+                    : att.uploading
+                    ? 'text-blue-400'
+                    : att.uri
+                    ? 'text-emerald-400'
+                    : 'text-zinc-400'
+                }`}
+                title={att.error || att.uri || ''}
+              >
+                {att.uploading
+                  ? 'Uploading...'
+                  : att.error
+                  ? 'Upload error'
+                  : att.uri
+                  ? `${sizeFormatted} • Ready`
+                  : sizeFormatted}
+              </p>
             </div>
 
             <button

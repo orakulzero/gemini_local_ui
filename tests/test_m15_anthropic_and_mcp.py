@@ -219,7 +219,8 @@ def test_anthropic_model_resolution() -> None:
 
     # Gemini native models
     assert AnthropicAdapter.resolve_model("gemini-4-argon")[0] == "95a4c0abcba24364"
-    assert AnthropicAdapter.resolve_model("gemini-3.8-flash")[0] == "56fdd199312815e2"
+    assert AnthropicAdapter.resolve_model("gemini-3.8-flash")[0] == "gemini-4-hydrogen"
+    assert AnthropicAdapter.resolve_model("gemini-4-hydrogen")[0] == "gemini-4-hydrogen"
 
     # Modifiers
     model_mod, _ = AnthropicAdapter.resolve_model("claude-3-7-sonnet@mode=task")

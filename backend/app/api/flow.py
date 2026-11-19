@@ -270,6 +270,8 @@ class IntensiveQuestionResponse(BaseModel):
 
 
 def _get_flow_client(request: Request) -> FlowClient:
+    if FlowClient is None:
+        raise HTTPException(status_code=503, detail="flow_studio module not installed")
     session_mgr = getattr(request.app.state, "session_manager", None)
     cookies: dict[str, str] = {}
     if session_mgr and getattr(session_mgr, "context", None):
@@ -347,9 +349,27 @@ async def _execute_full_lesson_render(
 @router.get("/status")
 async def get_flow_status(request: Request) -> dict[str, Any]:
     """Return Google Flow (Veo 3.1) session status and supported studio capabilities."""
+    if FlowClient is None:
+        return {
+            "ok": True,
+            "available": False,
+            "authenticated": False,
+            "status": "unavailable",
+            "detail": "flow_studio module not installed",
+            "engine": "google-flow-veo",
+            "flow_url": "https://labs.google/fx/tools/flow",
+            "native_veo_audio_supported": False,
+            "voice_gender": "female",
+            "supported_aspect_ratios": SUPPORTED_ASPECT_RATIOS,
+            "supported_models": SUPPORTED_MODELS,
+            "supported_voice_personas": SUPPORTED_VOICE_PERSONAS,
+            "project_count": 0,
+        }
     client = _get_flow_client(request)
     return {
         "ok": True,
+        "available": True,
+        "status": "available",
         "engine": "google-flow-veo",
         "flow_url": "https://labs.google/fx/tools/flow",
         "authenticated": client.has_flow_session(),

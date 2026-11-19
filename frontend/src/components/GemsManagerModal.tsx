@@ -10,11 +10,19 @@ export const GemsManagerModal: React.FC = () => {
   const toggleGemsManager = useSessionStore((s) => s.toggleGemsManager);
   const selectedGemId = useSessionStore((s) => s.selectedGemId);
   const setSelectedGemId = useSessionStore((s) => s.setSelectedGemId);
+  const fetchModels = useSessionStore((s) => s.fetchModels);
 
   const [activeTab, setActiveTab] = useState<'all' | 'custom' | 'system' | 'pinned'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [allGems, setAllGems] = useState<GemOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingGemId, setEditingGemId] = useState<string | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formDesc, setFormDesc] = useState('');
+  const [formPrompt, setFormPrompt] = useState('');
+  const [savingGem, setSavingGem] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [pinnedGemIds, setPinnedGemIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem(PINNED_GEMS_KEY);
@@ -24,21 +32,84 @@ export const GemsManagerModal: React.FC = () => {
     }
   });
 
+  const reloadGems = async () => {
+    setLoading(true);
+    try {
+      const res = await api.fetchDetailedGems('all');
+      setAllGems(res.gems || []);
+      await fetchModels();
+    } catch (err) {
+      console.warn('Failed loading detailed gems', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isGemsManagerOpen) return;
-    setLoading(true);
-    api
-      .fetchDetailedGems('all')
-      .then((res) => {
-        setAllGems(res.gems || []);
-      })
-      .catch((err) => {
-        console.warn('Failed loading detailed gems', err);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    reloadGems();
   }, [isGemsManagerOpen]);
+
+  const openCreateForm = () => {
+    setEditingGemId(null);
+    setFormName('');
+    setFormDesc('');
+    setFormPrompt('');
+    setFormError(null);
+    setFormOpen(true);
+  };
+
+  const openEditForm = (gem: GemOption, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingGemId(gem.id);
+    setFormName(gem.name || gem.title || '');
+    setFormDesc(gem.description || '');
+    setFormPrompt(gem.prompt || gem.system_prompt || '');
+    setFormError(null);
+    setFormOpen(true);
+  };
+
+  const handleSaveGem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim() || !formPrompt.trim()) {
+      setFormError('Name and Instructions are required');
+      return;
+    }
+    setSavingGem(true);
+    setFormError(null);
+    try {
+      if (editingGemId) {
+        await api.updateGem(editingGemId, {
+          name: formName.trim(),
+          description: formDesc.trim(),
+          prompt: formPrompt.trim(),
+        });
+      } else {
+        await api.createGem({
+          name: formName.trim(),
+          description: formDesc.trim(),
+          prompt: formPrompt.trim(),
+        });
+      }
+      setFormOpen(false);
+      await reloadGems();
+    } catch (err: any) {
+      setFormError(err?.message || 'Failed to save Gem');
+    } finally {
+      setSavingGem(false);
+    }
+  };
+
+  const handleDeleteGem = async (gemId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await api.deleteGem(gemId);
+      if (selectedGemId === gemId) setSelectedGemId(null);
+      await reloadGems();
+    } catch (err) {
+      console.warn('Failed deleting gem', err);
+    }
+  };
 
   const togglePinGem = (gemId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -63,9 +134,9 @@ export const GemsManagerModal: React.FC = () => {
       // Search filter
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
-      const name = (gem.name || '').toLowerCase();
+      const name = (gem.name || gem.title || '').toLowerCase();
       const desc = (gem.description || '').toLowerCase();
-      const prompt = (gem.prompt || '').toLowerCase();
+      const prompt = (gem.prompt || gem.system_prompt || '').toLowerCase();
       return name.includes(q) || desc.includes(q) || prompt.includes(q);
     });
   }, [allGems, activeTab, searchQuery, pinnedGemIds]);
@@ -90,14 +161,82 @@ export const GemsManagerModal: React.FC = () => {
               <p className="text-xs text-zinc-400">Specialized experts and system instructions</p>
             </div>
           </div>
-          <button
-            onClick={() => toggleGemsManager(false)}
-            className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-zinc-800 transition"
-            aria-label="Close"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="create-gem-btn"
+              onClick={openCreateForm}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition"
+            >
+              + New Gem
+            </button>
+            <button
+              onClick={() => toggleGemsManager(false)}
+              className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-zinc-800 transition"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
         </div>
+
+        {formOpen && (
+          <form
+            data-testid="gem-editor-form"
+            onSubmit={handleSaveGem}
+            className="p-4 border-b border-zinc-800 bg-zinc-950/90 space-y-2.5 text-xs"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-zinc-200">
+                {editingGemId ? 'Edit Custom Gem' : 'Create Custom Gem'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setFormOpen(false)}
+                className="text-zinc-400 hover:text-zinc-200"
+              >
+                Cancel
+              </button>
+            </div>
+            {formError && <div className="text-red-400">{formError}</div>}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input
+                type="text"
+                data-testid="gem-name-input"
+                placeholder="Gem name (e.g. Rust Auditor)"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-100 focus:outline-none focus:border-blue-500"
+              />
+              <input
+                type="text"
+                data-testid="gem-desc-input"
+                placeholder="Short description (optional)"
+                value={formDesc}
+                onChange={(e) => setFormDesc(e.target.value)}
+                className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-100 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <textarea
+              data-testid="gem-prompt-input"
+              placeholder="System instructions for this Gem..."
+              rows={3}
+              value={formPrompt}
+              onChange={(e) => setFormPrompt(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-100 focus:outline-none focus:border-blue-500"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="submit"
+                data-testid="save-gem-btn"
+                disabled={savingGem}
+                className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium"
+              >
+                {savingGem ? 'Saving...' : editingGemId ? 'Update Gem' : 'Create Gem'}
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Filter bar & Search */}
         <div className="p-4 border-b border-zinc-800 space-y-3 bg-zinc-950/60">
@@ -192,7 +331,7 @@ export const GemsManagerModal: React.FC = () => {
                           <span className="text-xl">{gem.icon || '💎'}</span>
                           <div>
                             <h3 className="text-sm font-medium text-zinc-100 group-hover:text-blue-400 transition">
-                              {gem.name}
+                              {gem.name || gem.title}
                             </h3>
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700/50">
                               {gem.is_builtin ? 'System' : 'Custom'}
@@ -221,25 +360,47 @@ export const GemsManagerModal: React.FC = () => {
                       )}
 
                       {/* Prompt / Instructions Preview */}
-                      {gem.prompt && (
+                      {(gem.prompt || gem.system_prompt) && (
                         <div className="mt-2 p-2 rounded bg-black/30 border border-zinc-800 text-[11px] text-zinc-400 font-mono line-clamp-2">
-                          {gem.prompt}
+                          {gem.prompt || gem.system_prompt}
                         </div>
                       )}
                     </div>
 
                     {/* Footer / Apply */}
-                    <div className="mt-3 pt-2 border-t border-zinc-800 flex items-center justify-between">
+                    <div className="mt-3 pt-2 border-t border-zinc-800 flex items-center justify-between gap-2">
                       <span className="text-[10px] text-zinc-500">ID: {gem.id.slice(0, 10)}...</span>
-                      <button
-                        className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
-                          isSelected
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                        }`}
-                      >
-                        {isSelected ? '✓ Active' : 'Select'}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        {!gem.is_builtin && (
+                          <>
+                            <button
+                              type="button"
+                              data-testid="edit-gem-btn"
+                              onClick={(e) => openEditForm(gem, e)}
+                              className="text-[11px] px-2 py-1 rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="delete-gem-btn"
+                              onClick={(e) => handleDeleteGem(gem.id, e)}
+                              className="text-[11px] px-2 py-1 rounded-md bg-red-950/50 text-red-300 hover:bg-red-900/60"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
+                            isSelected
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                          }`}
+                        >
+                          {isSelected ? '✓ Active' : 'Select'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

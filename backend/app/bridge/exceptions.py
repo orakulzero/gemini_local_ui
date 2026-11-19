@@ -6,11 +6,23 @@ Shared exception hierarchy and Google RPC error status code mapper.
 from __future__ import annotations
 
 
+def _clean_error_message(message: str | None, fallback: str) -> str:
+    """Normalizes Google RPC error messages so None / empty / literal 'None' never leak."""
+    if message is None:
+        return fallback
+    cleaned = str(message).strip()
+    if not cleaned or cleaned.lower() == "none":
+        return fallback
+    return cleaned
+
+
 class GeminiBridgeError(Exception):
     """Base exception for all Gemini web bridge failures."""
 
-    def __init__(self, message: str, code: int | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, message: str | None, code: int | None = None) -> None:
+        fallback = f"Google internal error code: {code}" if code is not None else "Gemini bridge error"
+        clean_msg = _clean_error_message(message, fallback)
+        super().__init__(clean_msg)
         self.code = code
 
 
@@ -60,16 +72,33 @@ class IPBlockedError(GeminiBridgeError):
 def map_google_error_code(code: int, message: str | None = None) -> None:
     """Maps Google internal RPC status code to a concrete exception."""
     if code in (1013, 13, 14):
-        raise TemporaryBackendOverloadError(message or "Google backend temporary overload", code=code)
-    if code == 1037:
-        raise UsageLimitExceededError(message or "Account generation quota exceeded")
+        raise TemporaryBackendOverloadError(
+            _clean_error_message(message, "Google backend temporary overload"),
+            code=code,
+        )
+    if code in (1037, 429, 8):
+        raise UsageLimitExceededError(
+            _clean_error_message(message, "Account generation quota exceeded")
+        )
     if code == 1050:
-        raise ModelInconsistentError(message or "Model changed within an active multi-turn thread")
+        raise ModelInconsistentError(
+            _clean_error_message(message, "Model changed within an active multi-turn thread")
+        )
     if code == 1052:
-        raise ModelHeaderInvalidError(message or "Invalid model identifier or capacity flag")
+        raise ModelHeaderInvalidError(
+            _clean_error_message(message, "Invalid model identifier or capacity flag")
+        )
     if code == 1060:
-        raise IPBlockedError(message or "Source IP temporarily blocked by Google bot mitigation")
-    if code == 7:
-        raise AuthenticationError(message or "Permission denied: Session cookies revoked or expired", code=7)
-    
-    raise GeminiBridgeError(message or f"Google internal error code: {code}", code=code)
+        raise IPBlockedError(
+            _clean_error_message(message, "Source IP temporarily blocked by Google bot mitigation")
+        )
+    if code in (7, 16, 401, 403):
+        raise AuthenticationError(
+            _clean_error_message(message, "Permission denied: Session cookies revoked or expired"),
+            code=code,
+        )
+
+    clean_msg = _clean_error_message(message, f"Google internal error code: {code}")
+    if str(code) not in clean_msg:
+        clean_msg = f"{clean_msg} (code {code})"
+    raise GeminiBridgeError(clean_msg, code=code)

@@ -37,7 +37,7 @@ def _get_live_client_if_available() -> Optional[Any]:
 
         sm = getattr(_main, "session_manager", None)
         if sm and sm.get_health().is_authenticated:
-            return GeminiWebClient(session_context=sm.context, base_url=sm.base_url, timeout=30.0)
+            return GeminiWebClient(session_context=sm.context, base_url=sm.base_url, timeout=60.0)
     except Exception:
         pass
     return None
@@ -660,10 +660,11 @@ class ResponseQualityEngine:
                 prompt = f"Double-check the factual claims in the following text and provide grounded citations:\n\n{text}"
                 async for chunk in client.generate_stream(
                     prompt=prompt,
-                    model="gemini-4-argon",
+                    model="gemini-4-hydrogen",
                     cid=cid,
                     rid=rid,
                     rcid=rcid,
+                    incognito=not bool(cid),
                 ):
                     if chunk.type == "done" and isinstance(chunk.metadata, dict):
                         meta = chunk.metadata
@@ -729,7 +730,7 @@ class ResponseQualityEngine:
     ) -> Dict[str, Any]:
         """REQ-CAP-07: Rewrites a response with the requested tone or length modifier."""
         norm_mod = modifier.strip().lower()
-        if norm_mod not in ("shorter", "longer", "simpler", "professional", "concise"):
+        if norm_mod not in ("shorter", "longer", "simpler", "casual", "professional", "concise"):
             norm_mod = "concise"
 
         owned_client = False
@@ -748,10 +749,11 @@ class ResponseQualityEngine:
                 parts: List[str] = []
                 async for chunk in client.generate_stream(
                     prompt=prompt,
-                    model="gemini-4-argon",
+                    model="gemini-4-hydrogen",
                     cid=cid,
                     rid=rid,
                     rcid=rcid,
+                    incognito=not bool(cid),
                 ):
                     if chunk.type == "text":
                         parts.append(chunk.delta)
