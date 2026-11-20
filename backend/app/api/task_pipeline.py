@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from backend.app.bridge.task_pipeline import get_task_pipeline_orchestrator
@@ -145,12 +145,68 @@ async def execute_pipeline_run_endpoint(req: PipelineExecuteRequest) -> dict[str
     )
 
 
+def _summarize_pipeline_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact run summary; full candidate_files/diffs stay on GET /runs/{run_id}."""
+    summary = {
+        k: v
+        for k, v in run.items()
+        if k not in ("candidate_files", "unified_diff", "gates", "original_files")
+    }
+    prompt_val = summary.get("prompt")
+    if isinstance(prompt_val, str) and len(prompt_val) > 300:
+        summary["prompt"] = prompt_val[:300] + "..."
+    cfiles = run.get("candidate_files")
+    if isinstance(cfiles, dict):
+        summary["candidate_file_count"] = len(cfiles)
+        summary["candidate_file_paths"] = sorted(str(p) for p in cfiles.keys())[:50]
+    else:
+        summary["candidate_file_count"] = 0
+        summary["candidate_file_paths"] = []
+    udiff = run.get("unified_diff")
+    summary["unified_diff_bytes"] = len(udiff.encode("utf-8")) if isinstance(udiff, str) else 0
+    gates = run.get("gates")
+    if isinstance(gates, dict):
+        compact_gates: dict[str, Any] = {}
+        for g_name, g_val in gates.items():
+            if g_name in ("pytest_output", "diagnostics", "output", "stdout", "stderr", "raw_output"):
+                continue
+            if isinstance(g_val, dict):
+                compact_gates[g_name] = {
+                    gk: gv
+                    for gk, gv in g_val.items()
+                    if gk not in ("pytest_output", "diagnostics", "output", "stdout", "stderr", "raw_output")
+                }
+            else:
+                compact_gates[g_name] = g_val
+        summary["gates"] = compact_gates
+    return summary
+
+
 @router.get("/runs")
-async def list_pipeline_runs() -> dict[str, Any]:
-    """REQ-PIPE-05, REQ-PIPE-06: Lists all staged/approved/rejected Task-Mode pipeline runs."""
+async def list_pipeline_runs(
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    status: str | None = Query(default=None),
+    include_details: bool = Query(default=False),
+) -> dict[str, Any]:
+    """REQ-PIPE-05, REQ-PIPE-06: Lists Task-Mode pipeline runs newest-first with pagination & compact summary."""
     orch = get_task_pipeline_orchestrator()
-    runs = orch.list_runs()
-    return {"ok": True, "count": len(runs), "runs": runs}
+    all_runs = list(reversed(orch.list_runs()))
+    if status:
+        status_norm = status.strip().upper()
+        all_runs = [r for r in all_runs if str(r.get("status", "")).upper() == status_norm]
+    total = len(all_runs)
+    page_raw = all_runs[offset : offset + limit]
+    page = page_raw if include_details else [_summarize_pipeline_run(r) for r in page_raw]
+    return {
+        "ok": True,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + len(page)) < total,
+        "runs": page,
+    }
 
 
 @router.get("/runs/{run_id}")

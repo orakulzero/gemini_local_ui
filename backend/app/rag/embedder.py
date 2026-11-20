@@ -29,9 +29,19 @@ logger = logging.getLogger("gemini_rag.embedder")
 EMBEDDING_DIM = 512
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 QWEN3_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
+QWEN3_ONNX_REPO_ID = "onnx-community/Qwen3-Embedding-0.6B-ONNX"
 QWEN3_QUERY_PREFIX = (
     "Instruct: Given a technical search query, retrieve relevant passages that answer the query\nQuery: "
 )
+
+
+def get_default_onnx_model_dir() -> Path:
+    """Return canonical per-user local weights directory for Qwen3-Embedding-0.6B ONNX."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return base / "gemini_local_ui" / "models" / "qwen3-embedding-0.6b-onnx"
 
 _CAMEL_RE_1 = re.compile(r"([a-z0-9])([A-Z])")
 _CAMEL_RE_2 = re.compile(r"([A-Z]+)([A-Z][a-z])")
@@ -134,7 +144,14 @@ def compute_subword_ngram_embeddings(texts: Sequence[str], dim: int = EMBEDDING_
 def _find_primary_onnx_file(model_dir: Path) -> Path | None:
     if not model_dir.is_dir():
         return None
-    for rel in (Path("model.onnx"), Path("onnx") / "model.onnx"):
+    for rel in (
+        Path("onnx") / "model_int8.onnx",
+        Path("onnx") / "model_quantized.onnx",
+        Path("model_int8.onnx"),
+        Path("model_quantized.onnx"),
+        Path("model.onnx"),
+        Path("onnx") / "model.onnx",
+    ):
         cand = model_dir / rel
         if cand.is_file():
             return cand
@@ -173,6 +190,7 @@ def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | No
     env_dir = os.environ.get("GEMINI_RAG_MODEL_DIR", "").strip()
     if env_dir:
         candidates.append(Path(env_dir))
+    candidates.append(get_default_onnx_model_dir())
     for cand in candidates:
         if cand.is_dir() and (cand / "tokenizer.json").exists() and _find_primary_onnx_file(cand) is not None:
             if not verify_onnx_weights_sha256(cand):
@@ -183,14 +201,18 @@ def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | No
     auto_dl = os.environ.get("GEMINI_RAG_AUTO_DOWNLOAD", "").strip() == "1"
     try:
         from huggingface_hub import snapshot_download
-        snap = Path(
-            snapshot_download(repo_id=QWEN3_MODEL_ID, local_files_only=not auto_dl)
-        )
-        if (snap / "tokenizer.json").exists() and _find_primary_onnx_file(snap) is not None:
-            if not verify_onnx_weights_sha256(snap):
-                logger.error("ONNX SHA-256 mismatch for cached snapshot %s; failing closed.", snap)
-                return None
-            return snap
+        for repo_id in (QWEN3_ONNX_REPO_ID, QWEN3_MODEL_ID):
+            try:
+                snap = Path(
+                    snapshot_download(repo_id=repo_id, local_files_only=not auto_dl)
+                )
+            except Exception:
+                continue
+            if (snap / "tokenizer.json").exists() and _find_primary_onnx_file(snap) is not None:
+                if not verify_onnx_weights_sha256(snap):
+                    logger.error("ONNX SHA-256 mismatch for cached snapshot %s; failing closed.", snap)
+                    return None
+                return snap
     except Exception:
         pass
     return None
@@ -210,7 +232,7 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
                 if onnx_path is None:
                     raise FileNotFoundError(f"No .onnx file in {model_root}")
                 sess_opts = ort.SessionOptions()
-                sess_opts.intra_op_num_threads = max(1, min(4, os.cpu_count() or 2))
+                sess_opts.intra_op_num_threads = max(1, min(8, os.cpu_count() or 4))
                 providers = ["CPUExecutionProvider"]
                 if os.environ.get("GEMINI_RAG_PREFER_DML", "").strip() == "1":
                     try:
@@ -222,27 +244,46 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
                     str(onnx_path), sess_options=sess_opts, providers=providers
                 )
                 _WORKER_TOKENIZER = Tokenizer.from_file(str(model_root / "tokenizer.json"))
-                _WORKER_TOKENIZER.enable_padding(pad_id=0, pad_token="<|endoftext|>")
-                _WORKER_TOKENIZER.enable_truncation(max_length=512)
+                pad_id = _WORKER_TOKENIZER.token_to_id("<|endoftext|>")
+                if pad_id is None:
+                    pad_id = 151643
+                max_len = max(32, min(1024, int(os.environ.get("GEMINI_RAG_MAX_TOKENS", "256"))))
+                _WORKER_TOKENIZER.enable_padding(pad_id=int(pad_id), pad_token="<|endoftext|>")
+                _WORKER_TOKENIZER.enable_truncation(max_length=max_len)
 
-            encodings = _WORKER_TOKENIZER.encode_batch(texts)
-            input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
-            attn_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
-            feeds: dict[str, Any] = {"input_ids": input_ids, "attention_mask": attn_mask}
-            in_names = {i.name for i in _WORKER_ONNX_SESSION.get_inputs()}
-            if "position_ids" in in_names:
-                feeds["position_ids"] = np.cumsum(attn_mask, axis=1) - 1
-            outputs = _WORKER_ONNX_SESSION.run(None, feeds)
-            hidden = np.asarray(outputs[0], dtype=np.float32)
-            if hidden.ndim == 3:
-                seq_lens = np.maximum(attn_mask.sum(axis=1) - 1, 0)
-                pooled = hidden[np.arange(hidden.shape[0]), seq_lens]
-            else:
-                pooled = hidden
-            sliced = pooled[:, :dim].astype(np.float32, copy=False)
-            norms = np.linalg.norm(sliced, axis=1, keepdims=True)
-            norms = np.where(norms > 1e-12, norms, 1.0)
-            return (sliced / norms).astype(np.float32)
+            in_meta = list(_WORKER_ONNX_SESSION.get_inputs())
+            in_names = {i.name for i in in_meta}
+            kv_specs = [(i.name, i.shape) for i in in_meta if i.name.startswith("past_key_values.")]
+            out_name = _WORKER_ONNX_SESSION.get_outputs()[0].name
+            batch_size = max(1, min(64, int(os.environ.get("GEMINI_RAG_BATCH_SIZE", "16"))))
+
+            chunks_out: list[np.ndarray] = []
+            for start in range(0, len(texts), batch_size):
+                sub = texts[start : start + batch_size]
+                encodings = _WORKER_TOKENIZER.encode_batch(sub)
+                input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
+                attn_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
+                feeds: dict[str, Any] = {"input_ids": input_ids, "attention_mask": attn_mask}
+                if "position_ids" in in_names:
+                    feeds["position_ids"] = np.maximum(np.cumsum(attn_mask, axis=1) - 1, 0).astype(np.int64)
+                bsz = input_ids.shape[0]
+                for kv_name, kv_shape in kv_specs:
+                    n_heads = int(kv_shape[1]) if len(kv_shape) > 1 and isinstance(kv_shape[1], int) else 8
+                    head_dim = int(kv_shape[3]) if len(kv_shape) > 3 and isinstance(kv_shape[3], int) else 128
+                    feeds[kv_name] = np.zeros((bsz, n_heads, 0, head_dim), dtype=np.float32)
+
+                outputs = _WORKER_ONNX_SESSION.run([out_name], feeds)
+                hidden = np.asarray(outputs[0], dtype=np.float32)
+                if hidden.ndim == 3:
+                    seq_lens = np.maximum(attn_mask.sum(axis=1) - 1, 0)
+                    pooled = hidden[np.arange(hidden.shape[0]), seq_lens]
+                else:
+                    pooled = hidden
+                sliced = pooled[:, :dim].astype(np.float32, copy=False)
+                norms = np.linalg.norm(sliced, axis=1, keepdims=True)
+                norms = np.where(norms > 1e-12, norms, 1.0)
+                chunks_out.append((sliced / norms).astype(np.float32))
+            return np.vstack(chunks_out) if chunks_out else np.zeros((0, dim), dtype=np.float32)
         except Exception as err:
             logger.warning("ONNX worker inference failed, falling back to subword_ngram_512: %s", err)
     return compute_subword_ngram_embeddings(texts, dim=dim)
@@ -259,7 +300,12 @@ class LocalEmbedder:
         dim: int = EMBEDDING_DIM,
     ) -> None:
         self.dim = int(dim)
-        self.mode = mode.lower().strip()
+        raw_mode = mode.lower().strip()
+        if raw_mode == "auto" and model_dir is None:
+            env_mode = os.environ.get("GEMINI_RAG_EMBEDDER_MODE", "").lower().strip()
+            if env_mode in ("subword", "disabled", "auto"):
+                raw_mode = env_mode
+        self.mode = raw_mode
         self.worker_pid: int | None = None
         self.win32_job_bound: bool = False
         self._executor: ProcessPoolExecutor | None = None

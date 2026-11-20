@@ -10594,8 +10594,59 @@
     },
     "/api/task-pipeline/runs": {
       "get": {
-        "description": "REQ-PIPE-05, REQ-PIPE-06: Lists all staged/approved/rejected Task-Mode pipeline runs.",
+        "description": "REQ-PIPE-05, REQ-PIPE-06: Lists Task-Mode pipeline runs newest-first with pagination & compact summary.",
         "operationId": "list_pipeline_runs_api_task_pipeline_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_details",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Details",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10608,6 +10659,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Pipeline Runs",

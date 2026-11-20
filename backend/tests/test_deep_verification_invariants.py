@@ -242,3 +242,76 @@ def test_noop_span_supports_end() -> None:
     span.set_attribute("k", "v")
     span.end()
     assert isinstance(span, _NoopSpan)
+
+
+def test_task_pipeline_runs_pagination_and_compact_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.api import task_pipeline as tp_api
+
+    fake_runs = [
+        {
+            "run_id": f"run_{i:03d}",
+            "status": "APPROVED_APPLIED" if i % 2 == 0 else "STAGED_AWAITING_APPROVAL",
+            "prompt": f"Prompt #{i} " + ("x" * 400),
+            "candidate_files": {"src/app.py": "A" * 50000},
+            "unified_diff": "+diff\n" * 5000,
+            "gates": {"gate1_pytest": {"passed": True, "output": "huge log " * 2000}},
+        }
+        for i in range(35)
+    ]
+    fake_orch = MagicMock()
+    fake_orch.list_runs.return_value = fake_runs
+    monkeypatch.setattr(tp_api, "get_task_pipeline_orchestrator", lambda: fake_orch)
+
+    app = FastAPI()
+    app.include_router(tp_api.router)
+    tc = TestClient(app)
+
+    r1 = tc.get("/api/task-pipeline/runs?limit=10&offset=0")
+    assert r1.status_code == 200
+    d1 = r1.json()
+    assert d1["count"] == 10
+    assert d1["total"] == 35
+    assert d1["has_more"] is True
+    assert d1["runs"][0]["run_id"] == "run_034"
+    assert "candidate_files" not in d1["runs"][0]
+    assert "unified_diff" not in d1["runs"][0]
+    assert d1["runs"][0]["candidate_file_count"] == 1
+    assert d1["runs"][0]["unified_diff_bytes"] > 0
+    assert "output" not in d1["runs"][0]["gates"]["gate1_pytest"]
+    assert len(r1.content) < 12_000
+
+    r_det = tc.get("/api/task-pipeline/runs?limit=2&offset=0&include_details=true")
+    assert r_det.status_code == 200
+    assert "candidate_files" in r_det.json()["runs"][0]
+
+    r_filt = tc.get("/api/task-pipeline/runs?limit=50&status=APPROVED_APPLIED")
+    assert r_filt.status_code == 200
+    assert r_filt.json()["total"] == 18
+    assert all(r["status"] == "APPROVED_APPLIED" for r in r_filt.json()["runs"])
+
+
+@pytest.mark.asyncio
+async def test_real_onnx_qwen3_embedding_512d_semantic_ranking() -> None:
+    """When local Qwen3-Embedding-0.6B ONNX weights are installed, verify real 512d inference."""
+    import numpy as np
+    from backend.app.rag.embedder import LocalEmbedder, get_default_onnx_model_dir
+
+    model_dir = get_default_onnx_model_dir()
+    if not (model_dir / "tokenizer.json").exists():
+        pytest.skip("Local Qwen3-Embedding-0.6B ONNX weights not installed on this machine")
+
+    emb = LocalEmbedder(mode="auto", model_dir=model_dir)
+    try:
+        assert emb.weights_available is True
+        assert emb.backend_name == "onnx_qwen3_512"
+        q_vec = await emb.embed_query("Win32 Job Object zombie sidecar process")
+        docs = await emb.embed_documents([
+            "Win32 Job Object kills child sidecar processes automatically on close.",
+            "Fresh strawberry cheesecake baking recipe with butter crust.",
+        ])
+        assert q_vec.shape == (512,)
+        assert docs.shape == (2, 512)
+        assert abs(float(np.linalg.norm(q_vec)) - 1.0) < 1e-4
+        assert float(q_vec @ docs[0]) > float(q_vec @ docs[1]) + 0.15
+    finally:
+        emb.shutdown()

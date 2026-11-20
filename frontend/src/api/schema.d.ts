@@ -2056,7 +2056,7 @@ export interface paths {
         };
         /**
          * List Pipeline Runs
-         * @description REQ-PIPE-05, REQ-PIPE-06: Lists all staged/approved/rejected Task-Mode pipeline runs.
+         * @description REQ-PIPE-05, REQ-PIPE-06: Lists Task-Mode pipeline runs newest-first with pagination & compact summary.
          */
         get: operations["list_pipeline_runs_api_task_pipeline_runs_get"];
         put?: never;
@@ -9324,7 +9324,12 @@ export interface operations {
     };
     list_pipeline_runs_api_task_pipeline_runs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                offset?: number;
+                status?: string | null;
+                include_details?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9340,6 +9345,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
