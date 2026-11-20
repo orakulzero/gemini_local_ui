@@ -13,6 +13,7 @@ logger = logging.getLogger("gemini_mcp.approval_gate")
 
 DecisionType = Literal["allow_once", "allow_session", "deny"]
 EvaluationResult = Literal["allow", "ask", "deny"]
+MAX_PENDING_APPROVALS = 64
 
 
 class PendingApproval:
@@ -71,18 +72,22 @@ class ToolApprovalGate:
         namespaced_name: str,
         arguments: Dict[str, Any],
     ) -> PendingApproval:
+        if len(self._pending) >= MAX_PENDING_APPROVALS:
+            oldest_key = next(iter(self._pending))
+            oldest = self._pending.pop(oldest_key)
+            if oldest.event and not oldest.event.is_set():
+                oldest.decision = "deny"
+                oldest.event.set()
+
         loop: Optional[asyncio.AbstractEventLoop] = None
         event: Optional[asyncio.Event] = None
         try:
             loop = asyncio.get_running_loop()
             event = asyncio.Event()
         except RuntimeError:
-            try:
-                loop = asyncio.get_event_loop_policy().get_event_loop()
-                event = asyncio.Event()
-            except Exception:
-                loop = None
-                event = None
+            loop = None
+            event = None
+
         pending = PendingApproval(
             approval_id=approval_id,
             connector_id=connector_id,
@@ -109,19 +114,44 @@ class ToolApprovalGate:
                 pending.event.set()
         return True
 
-    async def wait_for_decision(self, approval_id: str, timeout: float = 120.0) -> DecisionType:
+    async def wait_for_decision(
+        self,
+        approval_id: str,
+        timeout: float = 120.0,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> DecisionType:
         pending = self._pending.get(approval_id)
         if not pending:
             return "deny"
         if pending.decision is not None:
+            self._pending.pop(approval_id, None)
             return pending.decision
         if pending.event is None:
             pending.event = asyncio.Event()
             pending.loop = asyncio.get_running_loop()
+
+        decision_fut = asyncio.create_task(pending.event.wait())
+        tasks = {decision_fut}
+        cancel_task = None
+        if cancel_event is not None:
+            cancel_task = asyncio.create_task(cancel_event.wait())
+            tasks.add(cancel_task)
+
         try:
-            await asyncio.wait_for(pending.event.wait(), timeout=timeout)
-            return pending.decision or "deny"
-        except asyncio.TimeoutError:
+            done, pending_tasks = await asyncio.wait(
+                tasks,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending_tasks:
+                t.cancel()
+
+            if cancel_task and cancel_task in done:
+                return "deny"
+
+            if decision_fut in done:
+                return pending.decision or "deny"
+
             return "deny"
         finally:
             self._pending.pop(approval_id, None)

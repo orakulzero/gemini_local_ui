@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "MOiAD Gemini Learning Harvester & Cookie Sync",
+  "name": "Gemini Cookie Sync",
   "version": "2.0",
-  "description": "Real-time Gemini Guided Learning ⇄ Antigravity (Variant 8 Verifier) ⇄ Obsidian Live Vault bridge + Cookie Sync.",
+  "description": "Gemini Cookie Sync",
   "permissions": [
     "cookies",
     "downloads",
@@ -23,19 +23,8 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://gemini.google.com/*"
-      ],
-      "js": [
-        "content_script.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
-    "default_title": "MOiAD Gemini Learning Harvester",
+    "default_title": "Gemini Cookie Sync",
     "default_popup": "popup.html"
   }
 }

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from typing import Any, AsyncIterator, Dict, Optional
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ from backend.app.api.ecosystem_scout import router as ecosystem_scout_router
 from backend.routes.stations import legacy_router as stations_legacy_router, router as stations_router
 from backend.app.bridge.browser_extractor import BrowserCookieExtractor
 from backend.app.bridge.models import DEFAULT_MODELS
-from backend.app.bridge.session import SessionHealthReport, SessionHealthStatus, SessionManager
+from backend.app.bridge.session import SessionHealthStatus, SessionManager
 from backend.app.anthropic.routes import router as anthropic_router
 from backend.app.api.workspace import router as workspace_router
 from backend.app.mcp.routes import router as mcp_router
@@ -175,11 +175,16 @@ app.add_middleware(
 async def security_guard_middleware(request: Request, call_next: Any) -> Response:
     """Security middleware: Enforces local Host/Origin validation and GEMINI_LOCAL_API_TOKEN."""
     try:
-        from backend.app.security.origin_guard import validate_host_and_origin, validate_local_api_token
+        from backend.app.security.origin_guard import (
+            validate_fetch_metadata,
+            validate_host_and_origin,
+            validate_local_api_token,
+        )
         validate_host_and_origin(
             host=request.headers.get("host"),
             origin=request.headers.get("origin"),
         )
+        validate_fetch_metadata(request)
         validate_local_api_token(request)
     except HTTPException as exc:
         return Response(
@@ -304,7 +309,7 @@ async def set_credentials(req: CredentialsRequest) -> Dict[str, Any]:
 
     # Update active session
     target_account_id = session_manager.active_account_id or (vault.get_active_account_id() if vault else "default")
-    ctx = await session_manager.init_session(cookies_dict, account_id=target_account_id)
+    await session_manager.init_session(cookies_dict, account_id=target_account_id)
     health = session_manager.get_health()
 
     if health.is_authenticated:

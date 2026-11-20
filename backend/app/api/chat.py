@@ -819,7 +819,30 @@ async def generate_chat_turn(
                                                 "destructive_hint": destructive_hint,
                                             },
                                         })
-                                        decision = await gate.wait_for_decision(approval_id, timeout=120.0)
+                                        cancel_event = asyncio.Event()
+                                        wait_task = asyncio.create_task(
+                                            gate.wait_for_decision(approval_id, timeout=120.0, cancel_event=cancel_event)
+                                        )
+                                        last_keepalive = time.monotonic()
+                                        try:
+                                            while not wait_task.done():
+                                                if await request.is_disconnected():
+                                                    cancel_event.set()
+                                                    break
+                                                done, _ = await asyncio.wait([wait_task], timeout=0.5)
+                                                if done:
+                                                    break
+                                                now_m = time.monotonic()
+                                                if now_m - last_keepalive >= 15.0:
+                                                    last_keepalive = now_m
+                                                    yield ": keepalive\n\n"
+                                            decision = await wait_task
+                                        finally:
+                                            cancel_event.set()
+                                            if not wait_task.done():
+                                                wait_task.cancel()
+                                                with contextlib.suppress(asyncio.CancelledError, Exception):
+                                                    await wait_task
 
                                     if decision == "deny":
                                         rec = {

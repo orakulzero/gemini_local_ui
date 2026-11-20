@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 
@@ -188,6 +189,56 @@ class GeminiUploader:
             if not self.upload_url.endswith(("/upload", "/upload/"))
             else self.upload_url
         )
+
+        use_wreq = (
+            self.upload_url.startswith("https://")
+            and os.environ.get("GEMINI_TRANSPORT", "").lower() != "httpx"
+        )
+        if use_wreq:
+            try:
+                from backend.app.bridge.wreq_transport import WreqTransportClient
+                w_cli = WreqTransportClient(timeout=self.timeout)
+                w_start_headers = dict(start_headers)
+                w_start_headers.pop("User-Agent", None)
+                resp1 = await w_cli.post(start_url, headers=w_start_headers, content=b"")
+                if resp1.status_code in (401, 403):
+                    raise AuthenticationError(f"Scotty upload initiation rejected: HTTP {resp1.status_code}")
+                if resp1.status_code == 413:
+                    raise GeminiBridgeError("File size exceeds Google Gemini upload limit", code=413)
+                if resp1.status_code != 200:
+                    raise GeminiBridgeError(f"Scotty upload start failed with HTTP {resp1.status_code}: {resp1.text[:200]}")
+
+                upload_session_url = (
+                    resp1.headers.get("X-Goog-Upload-URL")
+                    or resp1.headers.get("x-goog-upload-url")
+                )
+                if not upload_session_url:
+                    direct_ref = resp1.text.strip()
+                    if direct_ref.startswith("/"):
+                        return direct_ref
+                    raise GeminiBridgeError("Missing X-Goog-Upload-URL header in Scotty resumable start response")
+
+                w_fin_headers = {
+                    "X-Goog-Upload-Command": "upload, finalize",
+                    "X-Goog-Upload-Offset": "0",
+                    "Content-Type": "application/octet-stream",
+                }
+                resp2 = await w_cli.post(upload_session_url, headers=w_fin_headers, content=data)
+                if resp2.status_code in (401, 403):
+                    raise AuthenticationError(f"Scotty upload finalize rejected: HTTP {resp2.status_code}")
+                if resp2.status_code == 413:
+                    raise GeminiBridgeError("File size exceeds Google Gemini upload limit", code=413)
+                if resp2.status_code != 200:
+                    raise GeminiBridgeError(f"Scotty upload finalize failed with HTTP {resp2.status_code}: {resp2.text[:200]}")
+
+                file_ref = resp2.text.strip()
+                if not file_ref or not file_ref.startswith("/"):
+                    raise GeminiBridgeError(f"Invalid Scotty file reference returned: {file_ref[:100]}")
+                return file_ref
+            except (AuthenticationError, GeminiBridgeError):
+                raise
+            except Exception as wreq_err:
+                logger.warning("Wreq Scotty upload failed (%s); falling back to httpx", wreq_err)
 
         async with httpx.AsyncClient(
             http2=False,

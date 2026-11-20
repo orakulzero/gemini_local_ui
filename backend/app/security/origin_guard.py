@@ -18,7 +18,7 @@ ALLOWED_HOST_PATTERN = re.compile(
 )
 
 ALLOWED_ORIGIN_PATTERN = re.compile(
-    r"^(http://(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?|https://tauri\.localhost(:\d+)?|chrome-extension://[a-p0-9]{32}|moz-extension://[a-f0-9-]+)$",
+    r"^(http://(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?|https://tauri\.localhost(:\d+)?|tauri://localhost|chrome-extension://[a-p0-9]{32}|moz-extension://[a-f0-9-]+)$",
     re.IGNORECASE,
 )
 
@@ -30,10 +30,19 @@ def validate_host_and_origin(host: Optional[str], origin: Optional[str]) -> None
         if not ALLOWED_HOST_PATTERN.match(clean_host):
             raise HTTPException(status_code=400, detail="Invalid Host header: untrusted domain")
 
-    if origin:
+    if origin is not None:
         clean_origin = origin.strip().rstrip("/")
-        if not ALLOWED_ORIGIN_PATTERN.match(clean_origin):
+        if clean_origin.lower() == "null" or not ALLOWED_ORIGIN_PATTERN.match(clean_origin):
             raise HTTPException(status_code=403, detail="Forbidden Origin")
+
+
+def validate_fetch_metadata(request: Request) -> None:
+    """Validates Sec-Fetch-Site header when present from modern browsers."""
+    sec_site = request.headers.get("sec-fetch-site")
+    if sec_site:
+        clean_site = sec_site.strip().lower()
+        if clean_site not in {"same-origin", "same-site", "none"}:
+            raise HTTPException(status_code=403, detail="Forbidden Fetch Site")
 
 
 def validate_local_api_token(request: Request, token_env_var: str = "GEMINI_LOCAL_API_TOKEN") -> None:
@@ -67,6 +76,7 @@ class OriginAndTokenGuardMiddleware(BaseHTTPMiddleware):
                 host=request.headers.get("host"),
                 origin=request.headers.get("origin"),
             )
+            validate_fetch_metadata(request)
             validate_local_api_token(request)
         except HTTPException as exc:
             return Response(

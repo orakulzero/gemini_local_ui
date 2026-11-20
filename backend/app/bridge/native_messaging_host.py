@@ -77,41 +77,50 @@ def handle_native_message(
         if not ("SAPISID" in cookies or "__Secure-1PSID" in cookies):
             return {"ok": False, "error": "Missing required authentication cookies (SAPISID or __Secure-1PSID)"}
 
-        try:
-            vault = CredentialVault(vault_path=vault_path)
-            vdata = vault.load_vault_data()
-            target_acc_id = vdata.active_account_id if vdata.active_account_id in vdata.accounts else (
-                next(iter(vdata.accounts.keys())) if vdata.accounts else "acc_21aac20f"
-            )
-            if target_acc_id in vdata.accounts:
-                vdata.accounts[target_acc_id].cookies.update(cookies)
-                vdata.accounts[target_acc_id].last_rotated_at = time.time()
-                vdata.accounts[target_acc_id].health_status = "healthy"
-            else:
-                vdata.accounts[target_acc_id] = AccountProfile(
-                    id=target_acc_id,
-                    name="Primary Account",
-                    tier="ultra",
-                    cookies=cookies,
-                    health_status="healthy",
-                )
-                vdata.active_account_id = target_acc_id
-            vault.store_vault_data(vdata)
-            saved = True
-        except Exception as e:
-            sys.stderr.write(f"Vault save error: {type(e).__name__}\n")
-            sys.stderr.flush()
-            return {"ok": False, "saved_to_vault": False, "error": "Failed persisting to vault"}
-
         notified = False
+        saved = False
+
         if notify_gateway:
             try:
                 import httpx
+                headers: Dict[str, str] = {}
+                token = os.environ.get("GEMINI_LOCAL_API_TOKEN", "").strip()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
                 with httpx.Client(timeout=2.0) as http_client:
-                    r = http_client.post("http://127.0.0.1:8000/admin/session", json={"cookie": raw_cookie})
-                    notified = (r.status_code == 200)
+                    r = http_client.post("http://127.0.0.1:8000/admin/session", json={"cookie": raw_cookie}, headers=headers)
+                    if r.status_code == 200:
+                        notified = True
+                        saved = True
             except Exception:
                 notified = False
+
+        if not saved:
+            try:
+                vault = CredentialVault(vault_path=vault_path)
+                vdata = vault.load_vault_data()
+                target_acc_id = vdata.active_account_id if vdata.active_account_id in vdata.accounts else (
+                    next(iter(vdata.accounts.keys())) if vdata.accounts else "acc_21aac20f"
+                )
+                if target_acc_id in vdata.accounts:
+                    vdata.accounts[target_acc_id].cookies.update(cookies)
+                    vdata.accounts[target_acc_id].last_rotated_at = time.time()
+                    vdata.accounts[target_acc_id].health_status = "healthy"
+                else:
+                    vdata.accounts[target_acc_id] = AccountProfile(
+                        id=target_acc_id,
+                        name="Primary Account",
+                        tier="ultra",
+                        cookies=cookies,
+                        health_status="healthy",
+                    )
+                    vdata.active_account_id = target_acc_id
+                vault.store_vault_data(vdata)
+                saved = True
+            except Exception as e:
+                sys.stderr.write(f"Vault save error: {type(e).__name__}\n")
+                sys.stderr.flush()
+                return {"ok": False, "saved_to_vault": False, "error": "Failed persisting to vault"}
 
         return {
             "ok": True,

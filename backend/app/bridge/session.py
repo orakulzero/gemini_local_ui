@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -24,6 +25,25 @@ import httpx
 
 from backend.app.bridge.exceptions import AuthenticationError
 import contextlib
+
+try:
+    import wreq
+    _wreq_candidates = [
+        getattr(wreq, "TlsError", None),
+        getattr(wreq, "ConnectionError", None),
+        getattr(wreq, "ConnectionResetError", None),
+        getattr(wreq, "TimeoutError", None),
+        getattr(wreq, "RequestError", None),
+        getattr(wreq, "DecodingError", None),
+        getattr(wreq, "BodyError", None),
+        getattr(wreq, "ProxyConnectionError", None),
+        getattr(wreq, "StatusError", None),
+    ]
+    WREQ_TRANSPORT_ERRORS: tuple[type[Exception], ...] = tuple(
+        e for e in _wreq_candidates if e is not None and issubclass(e, Exception)
+    )
+except Exception:
+    WREQ_TRANSPORT_ERRORS = ()
 
 logger = logging.getLogger("gemini_bridge.session")
 
@@ -156,6 +176,28 @@ class SessionManager:
                 event_hooks={"response": [self.on_response_harvest_cookies]},
             )
         self._owns_client = http_client is None
+        self._wreq_clients: dict[str, Any] = {}
+
+    def _get_http_client(self, account_id: str | None = None) -> Any:
+        if (
+            self._owns_client
+            and self.base_url.startswith("https://")
+            and os.environ.get("GEMINI_TRANSPORT", "").lower() != "httpx"
+        ):
+            try:
+                from backend.app.bridge.wreq_transport import WreqTransportClient
+                acc_key = account_id or self.active_account_id or "default"
+                cli = self._wreq_clients.get(acc_key)
+                if cli is None or cli.is_closed:
+                    cli = WreqTransportClient(
+                        timeout=30.0,
+                        on_response=self.on_response_harvest_cookies,
+                    )
+                    self._wreq_clients[acc_key] = cli
+                return cli
+            except Exception as e:
+                logger.debug("Failed initializing WreqTransportClient for session: %s", e)
+        return self._client
 
     @property
     def context(self) -> SessionContext:
@@ -471,9 +513,13 @@ class SessionManager:
         if cookie_header:
             headers["Cookie"] = cookie_header
 
+        client = self._get_http_client(account_id)
+        if getattr(client, "get_transport_name", lambda: "")() == "wreq":
+            headers.pop("User-Agent", None)
+
         prev_status = ctx.status
         try:
-            resp = await self._client.get(
+            resp = await client.get(
                 url,
                 headers=headers,
                 extensions={"account_id": account_id or self.active_account_id},
@@ -510,6 +556,7 @@ class SessionManager:
                 return False
 
             body = resp.text
+            prior_at = ctx.access_token or (sess.profile.snlm0e if sess and sess.profile else None)
 
             m_at = _RE_SNLM0E.search(body)
             ctx.access_token = m_at.group(1) if m_at else None
@@ -529,6 +576,14 @@ class SessionManager:
             m_lang = _RE_TUX5CC.search(body)
             if m_lang:
                 ctx.language = m_lang.group(1)
+
+            if not ctx.access_token and prior_at and ctx.cookies.get("__Secure-1PSID") and (m_sid or m_bl):
+                ctx.access_token = prior_at
+                ctx.passive_rotation = True
+                logger.info(
+                    "Retained persisted SNlM0e token for '%s' (HTTP 200 /app refreshed WIZ metadata without inline SNlM0e)",
+                    account_id or self.active_account_id,
+                )
 
             if ctx.access_token:
                 ctx.status = SessionHealthStatus.HEALTHY
@@ -557,7 +612,7 @@ class SessionManager:
                 ctx.last_error = "No cookies provided; unauthenticated guest mode"
             return False
 
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError) as net_err:
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError, *WREQ_TRANSPORT_ERRORS) as net_err:
             logger.warning("Transient network error scraping Gemini tokens for %s: %s", account_id, net_err)
             # RETAIN HEALTHY status on transient network errors if session was authenticated
             if prev_status == SessionHealthStatus.HEALTHY or (ctx.cookies.get("__Secure-1PSID") and (ctx.access_token or getattr(ctx, "passive_rotation", False))):
@@ -616,8 +671,11 @@ class SessionManager:
             body = json.dumps([658, "-0000000000000000000"])
 
         # Execute HTTP POST outside lock to eliminate re-entrant deadlock with response hooks
+        client = self._get_http_client(account_id)
+        if getattr(client, "get_transport_name", lambda: "")() == "wreq":
+            headers.pop("User-Agent", None)
         try:
-            resp = await self._client.post(
+            resp = await client.post(
                 self.rotate_url,
                 headers=headers,
                 content=body,
@@ -626,7 +684,7 @@ class SessionManager:
                     "is_rotate_request": True,
                 },
             )
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError) as net_err:
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError, *WREQ_TRANSPORT_ERRORS) as net_err:
             logger.warning("Transient network failure during RotateCookies for %s: %s", account_id, net_err)
             async with sess_lock:
                 if prev_status == SessionHealthStatus.HEALTHY or (ctx.cookies.get("__Secure-1PSID") and (ctx.access_token or getattr(ctx, "passive_rotation", False))):
@@ -717,7 +775,7 @@ class SessionManager:
 
             except AuthenticationError:
                 raise
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError) as net_err:
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError, ConnectionError, TimeoutError, OSError, *WREQ_TRANSPORT_ERRORS) as net_err:
                 logger.warning("Transient network error in RotateCookies processing for %s: %s", account_id, net_err)
                 if prev_status == SessionHealthStatus.HEALTHY or (ctx.cookies.get("__Secure-1PSID") and (ctx.access_token or getattr(ctx, "passive_rotation", False))):
                     ctx.status = SessionHealthStatus.HEALTHY
@@ -1111,7 +1169,7 @@ class SessionManager:
         if failover_cfg and not failover_cfg.enabled:
             return None
 
-        candidates: List[AccountSession] = []
+        candidates: list[AccountSession] = []
         now = time.time()
 
         for acc_id, sess in self.sessions.items():
@@ -1161,3 +1219,7 @@ class SessionManager:
 
         if self._owns_client and not self._client.is_closed:
             await self._client.aclose()
+        for cli in self._wreq_clients.values():
+            if not cli.is_closed:
+                await cli.aclose()
+        self._wreq_clients.clear()

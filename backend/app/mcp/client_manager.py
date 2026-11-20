@@ -9,7 +9,6 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
-from pathlib import Path
 import sys
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -80,13 +79,21 @@ class MCPConnectorManager:
         tools = []
         for t in tools_res.tools:
             ann = getattr(t, "annotations", None)
+            ann_dict = {
+                "read_only_hint": getattr(ann, "read_only_hint", None) if ann else None,
+                "destructive_hint": getattr(ann, "destructive_hint", None) if ann else None,
+                "idempotent_hint": getattr(ann, "idempotent_hint", None) if ann else None,
+                "open_world_hint": getattr(ann, "open_world_hint", None) if ann else None,
+            }
             tools.append({
                 "name": t.name,
                 "namespaced_name": f"{conn.id}__{t.name}",
                 "description": t.description or "",
                 "input_schema": getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {},
+                "output_schema": getattr(t, "output_schema", None) or getattr(t, "outputSchema", None) or {},
                 "read_only_hint": getattr(ann, "read_only_hint", None) if ann else None,
                 "destructive_hint": getattr(ann, "destructive_hint", None) if ann else None,
+                "annotations": ann_dict,
             })
         from backend.app.security.mcp_pinning import get_schema_pin_store
         pin_status, pin_sha, changed_tools = get_schema_pin_store().verify_or_pin(conn.id, tools)
@@ -148,14 +155,21 @@ class MCPConnectorManager:
             else:
                 async with self._connect(conn) as session:
                     cur_tools_res = await asyncio.wait_for(session.list_tools(), timeout=conn.timeout_seconds)
-            raw_tools = [
-                {
+            raw_tools = []
+            for t in cur_tools_res.tools:
+                ann = getattr(t, "annotations", None)
+                raw_tools.append({
                     "name": t.name,
                     "description": t.description or "",
                     "input_schema": getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {},
-                }
-                for t in cur_tools_res.tools
-            ]
+                    "output_schema": getattr(t, "output_schema", None) or getattr(t, "outputSchema", None) or {},
+                    "annotations": {
+                        "read_only_hint": getattr(ann, "read_only_hint", None) if ann else None,
+                        "destructive_hint": getattr(ann, "destructive_hint", None) if ann else None,
+                        "idempotent_hint": getattr(ann, "idempotent_hint", None) if ann else None,
+                        "open_world_hint": getattr(ann, "open_world_hint", None) if ann else None,
+                    },
+                })
             pin_store.assert_unmodified(connector_id, raw_tools)
         t0 = time.perf_counter()
         reuse_count = 0

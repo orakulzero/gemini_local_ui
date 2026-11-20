@@ -10,10 +10,9 @@ import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import shutil
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -41,6 +40,7 @@ class StdioActor:
         self.job_guard = job_guard
         self.queue: asyncio.Queue[Tuple[str, Tuple[Any, ...], asyncio.Future[Any]]] = asyncio.Queue()
         self.reuse_count: int = 0
+        self._dirty: bool = False
         self.task = asyncio.create_task(self._run_actor())
 
     async def _run_actor(self) -> None:
@@ -57,15 +57,30 @@ class StdioActor:
             env=env,
             cwd=self.project_root,
         )
+
+        async def _on_msg(message: Any) -> None:
+            m_type = type(message).__name__
+            m_str = str(message)
+            if (
+                m_type == "ToolListChangedNotification"
+                or getattr(message, "method", "") == "notifications/tools/list_changed"
+                or "tools/list_changed" in m_str
+            ):
+                logger.info("ToolListChangedNotification received for connector '%s'; marking dirty", self.conn.id)
+                self._dirty = True
+
         try:
             async with stdio_client(params) as (r, w):
-                async with ClientSession(r, w) as session:
+                async with ClientSession(r, w, message_handler=_on_msg) as session:
                     await asyncio.wait_for(session.initialize(), timeout=self.conn.timeout_seconds)
                     while True:
                         action, args, fut = await self.queue.get()
-                        if action == "close":
+                        if action == "close" or self._dirty:
                             if not fut.done():
-                                fut.set_result(None)
+                                if self._dirty and action != "close":
+                                    fut.set_exception(RuntimeError("Actor marked dirty due to tool schema change"))
+                                else:
+                                    fut.set_result(None)
                             self.queue.task_done()
                             break
                         elif action == "list_tools":
@@ -112,24 +127,54 @@ class MCPSessionPool:
         key = (conn.id, chash, id(loop))
         async with self._lock:
             actor = self._actors.get(key)
+            if actor is not None and (actor.task.done() or actor._dirty):
+                if not actor.task.done():
+                    actor.task.cancel()
+                self._actors.pop(key, None)
+                actor = None
             if actor is None or actor.task.done():
                 actor = StdioActor(conn, self.project_root, self.job_guard)
                 self._actors[key] = actor
             return actor
+
+    async def invalidate_connector(self, connector_id: str) -> None:
+        async with self._lock:
+            for key, actor in list(self._actors.items()):
+                if key[0] == connector_id:
+                    actor._dirty = True
+                    if not actor.task.done():
+                        actor.task.cancel()
+                    self._actors.pop(key, None)
 
     async def list_tools(self, conn: ConnectorItem) -> Any:
         actor = await self.get_or_create_actor(conn)
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         await actor.queue.put(("list_tools", (), fut))
-        return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+        try:
+            return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+        except Exception:
+            if actor._dirty:
+                actor = await self.get_or_create_actor(conn)
+                fut = loop.create_future()
+                await actor.queue.put(("list_tools", (), fut))
+                return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+            raise
 
     async def call_tool(self, conn: ConnectorItem, tool_name: str, arguments: dict) -> Tuple[Any, int]:
         actor = await self.get_or_create_actor(conn)
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         await actor.queue.put(("call_tool", (tool_name, arguments), fut))
-        return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+        try:
+            return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+        except Exception:
+            if actor._dirty:
+                actor = await self.get_or_create_actor(conn)
+                fut = loop.create_future()
+                await actor.queue.put(("call_tool", (tool_name, arguments), fut))
+                return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
+            raise
 
     async def close_all(self) -> None:
         async with self._lock:

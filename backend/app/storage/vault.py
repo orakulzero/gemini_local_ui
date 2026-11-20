@@ -7,7 +7,8 @@ Uses Windows DPAPI on Windows and AES-256-GCM fallback on other operating system
 from __future__ import annotations
 
 import asyncio
-import base64
+import contextlib
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import logging
@@ -189,10 +190,6 @@ def fallback_unprotect_data(cipher_data: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, None)
 
 
-from dataclasses import asdict, dataclass, field
-import time
-
-
 @dataclass
 class AccountProfile:
     id: str
@@ -229,6 +226,31 @@ class VaultData:
     active_account_id: str = "default"
     failover_config: FailoverConfig = field(default_factory=FailoverConfig)
     accounts: dict[str, AccountProfile] = field(default_factory=dict)
+
+
+@contextlib.contextmanager
+def _vault_named_mutex(vault_path: Path):
+    if not IS_WINDOWS:
+        yield
+        return
+    h_path = hashlib.sha256(str(vault_path.resolve()).lower().encode("utf-8")).hexdigest()[:16]
+    mutex_name = f"Local\\GeminiLocalUI_Vault_{h_path}"
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        yield
+        return
+    WAIT_OBJECT_0 = 0x0
+    WAIT_ABANDONED = 0x80
+    acquired = False
+    try:
+        res = kernel32.WaitForSingleObject(handle, 5000)
+        if res in (WAIT_OBJECT_0, WAIT_ABANDONED):
+            acquired = True
+        yield
+    finally:
+        if acquired:
+            kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
 
 
 class CredentialVault:
@@ -283,6 +305,10 @@ class CredentialVault:
 
     def load_vault_data(self) -> VaultData:
         """Loads and decrypts the entire V2 vault envelope, migrating legacy V1 formats automatically."""
+        with _vault_named_mutex(self.vault_path):
+            return self._load_vault_data_unlocked()
+
+    def _load_vault_data_unlocked(self) -> VaultData:
         if not self.vault_path.exists():
             if self.backup_path.exists():
                 logger.warning("Primary vault %s missing; attempting recovery from backup %s", self.vault_path, self.backup_path)
@@ -403,13 +429,11 @@ class CredentialVault:
                         pass
 
                 # Windows retry loop to defend against transient [WinError 32] file sharing collisions
-                last_err = None
                 for attempt in range(5):
                     try:
                         os.replace(tmp_path, dest_path)
                         break
-                    except PermissionError as e:
-                        last_err = e
+                    except PermissionError:
                         if attempt < 4:
                             time.sleep(0.015 * (attempt + 1))
                         else:
@@ -446,6 +470,10 @@ class CredentialVault:
 
     def store_vault_data(self, data: VaultData) -> None:
         """Encrypts and atomically writes V2 VaultData to disk and maintains shadow backup if healthy."""
+        with _vault_named_mutex(self.vault_path):
+            self._store_vault_data_unlocked(data)
+
+    def _store_vault_data_unlocked(self, data: VaultData) -> None:
         payload = {
             "version": 2,
             "active_account_id": data.active_account_id,
