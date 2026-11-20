@@ -17,9 +17,12 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Sequence
+from urllib.parse import urlparse
 import zlib
 
+import httpx
 import numpy as np
 
 from backend.app.mcp.win32_job import Win32JobGuard
@@ -30,9 +33,42 @@ EMBEDDING_DIM = 512
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 QWEN3_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 QWEN3_ONNX_REPO_ID = "onnx-community/Qwen3-Embedding-0.6B-ONNX"
+QWEN3_REMOTE_BACKEND_ID = "remote_qwen3_512"
 QWEN3_QUERY_PREFIX = (
     "Instruct: Given a technical search query, retrieve relevant passages that answer the query\nQuery: "
 )
+
+
+class RemoteEmbedderUnavailableError(RuntimeError):
+    """Raised when the configured remote embedding endpoint cannot be reached."""
+
+
+def _normalize_remote_embed_url(raw_url: str) -> str:
+    """Validate and normalize an OpenAI-compatible `/v1/embeddings` HTTP endpoint URL."""
+    cleaned = raw_url.strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"Invalid GEMINI_RAG_REMOTE_EMBED_URL: {raw_url!r}")
+    path = parsed.path.rstrip("/")
+    if not path:
+        return f"{parsed.scheme}://{parsed.netloc}/v1/embeddings"
+    if path == "/v1":
+        return f"{parsed.scheme}://{parsed.netloc}/v1/embeddings"
+    return cleaned
+
+
+def _normalize_l2_rows(raw_matrix: np.ndarray, dim: int) -> np.ndarray:
+    """Apply Matryoshka truncation/padding to `dim` and L2-normalize each float32 row."""
+    arr = np.asarray(raw_matrix, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.shape[1] > dim:
+        arr = arr[:, :dim]
+    elif arr.shape[1] < dim:
+        arr = np.pad(arr, ((0, 0), (0, dim - arr.shape[1])))
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.where(norms > 1e-12, norms, 1.0)
+    return (arr / norms).astype(np.float32, copy=False)
 
 
 def get_default_onnx_model_dir() -> Path:
@@ -298,7 +334,7 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
 
 
 class LocalEmbedder:
-    """512d Embedder managing a lazy Win32 Job-guarded `max_workers=1` spawn worker pool."""
+    """512d Embedder supporting remote smart-server HTTP, local ONNX Qwen3, and subword fallback."""
 
     def __init__(
         self,
@@ -306,12 +342,15 @@ class LocalEmbedder:
         mode: str = "auto",
         model_dir: str | Path | None = None,
         dim: int = EMBEDDING_DIM,
+        remote_url: str | None = None,
+        remote_model: str | None = None,
+        thermal_telemetry_url: str | None = None,
     ) -> None:
         self.dim = int(dim)
         raw_mode = mode.lower().strip()
-        if raw_mode == "auto" and model_dir is None:
+        if raw_mode == "auto" and model_dir is None and remote_url is None:
             env_mode = os.environ.get("GEMINI_RAG_EMBEDDER_MODE", "").lower().strip()
-            if env_mode in ("subword", "disabled", "auto"):
+            if env_mode in ("subword", "disabled", "auto", "remote", "onnx"):
                 raw_mode = env_mode
         self.mode = raw_mode
         self.worker_pid: int | None = None
@@ -319,22 +358,171 @@ class LocalEmbedder:
         self._executor: ProcessPoolExecutor | None = None
         self._job_guard: Win32JobGuard | None = None
         self._pool_lock = asyncio.Lock()
+        self._http_client: httpx.AsyncClient | None = None
+        self._last_thermal_poll: float = 0.0
+
+        self.remote_url: str | None = None
+        self.remote_model: str = (
+            remote_model or os.environ.get("GEMINI_RAG_REMOTE_EMBED_MODEL", "qwen3-embedding-0.6b")
+        ).strip() or "qwen3-embedding-0.6b"
+        self.remote_timeout: float = max(2.0, min(180.0, float(os.environ.get("GEMINI_RAG_REMOTE_EMBED_TIMEOUT", "60.0"))))
+        self.remote_batch_size: int = max(1, min(32, int(os.environ.get("GEMINI_RAG_REMOTE_BATCH_SIZE", "4"))))
+        self.remote_max_chars: int = max(256, min(16000, int(os.environ.get("GEMINI_RAG_REMOTE_MAX_CHARS", "900"))))
+        raw_therm = (
+            thermal_telemetry_url
+            if thermal_telemetry_url is not None
+            else os.environ.get("GEMINI_RAG_THERMAL_TELEMETRY_URL", "")
+        )
+        self.thermal_telemetry_url: str | None = raw_therm.strip() or None
+        self.thermal_warn_pause_sec: float = max(0.0, float(os.environ.get("GEMINI_RAG_THERMAL_WARN_PAUSE_SEC", "1.5")))
+        self.thermal_throttle_pause_sec: float = max(0.0, float(os.environ.get("GEMINI_RAG_THERMAL_THROTTLE_PAUSE_SEC", "5.0")))
+        self.remote_reachable: bool | None = None
+        self.last_remote_error: str | None = None
+        self.last_thermal_state: dict[str, Any] | None = None
+
+        raw_remote = (
+            remote_url.strip()
+            if remote_url is not None
+            else (
+                os.environ.get("GEMINI_RAG_REMOTE_EMBED_URL", "").strip()
+                if model_dir is None and self.mode in ("auto", "remote")
+                else ""
+            )
+        )
 
         if self.mode == "disabled":
             self.onnx_dir: Path | None = None
             self.weights_available: bool = False
             self.is_available: bool = False
             self.backend_name: str = "disabled"
+        elif raw_remote and self.mode in ("auto", "remote"):
+            self.remote_url = _normalize_remote_embed_url(raw_remote)
+            self.onnx_dir = None
+            self.weights_available = True
+            self.is_available = True
+            self.backend_name = (
+                os.environ.get("GEMINI_RAG_REMOTE_EMBED_ID", "").strip() or QWEN3_REMOTE_BACKEND_ID
+            )
+        elif self.mode == "remote":
+            self.onnx_dir = None
+            self.weights_available = False
+            self.is_available = False
+            self.backend_name = "remote_unconfigured"
         else:
             self.onnx_dir = None if self.mode == "subword" else _resolve_local_onnx_dir(model_dir)
             self.weights_available = self.onnx_dir is not None
             self.is_available = True
             self.backend_name = "onnx_qwen3_512" if self.onnx_dir is not None else "subword_ngram_512"
 
+    def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=self.remote_timeout, trust_env=False)
+        return self._http_client
+
+    async def _apply_thermal_guard(self) -> None:
+        """Respect Realme GT Neo 3 thermal guard (41C warn / 44C throttle) during bulk indexing."""
+        if not self.thermal_telemetry_url:
+            return
+        now = time.monotonic()
+        if (now - self._last_thermal_poll) < 5.0:
+            return
+        self._last_thermal_poll = now
+        try:
+            client = self._get_http_client()
+            resp = await client.get(self.thermal_telemetry_url, timeout=1.5)
+            if resp.status_code != 200:
+                return
+            snap = resp.json()
+            tg = snap.get("thermal_guard") or {}
+            bat = snap.get("battery") or {}
+            level = str(tg.get("level") or "unknown").lower()
+            temp_c = bat.get("temperature_c")
+            self.last_thermal_state = {
+                "level": level,
+                "temp_c": temp_c,
+                "warn_c": tg.get("warn_c"),
+                "throttle_c": tg.get("throttle_c"),
+            }
+            if level == "throttle" and self.thermal_throttle_pause_sec > 0:
+                logger.warning(
+                    "Smart-server thermal guard THROTTLE (%sC); pausing %.1fs before next batch.",
+                    temp_c,
+                    self.thermal_throttle_pause_sec,
+                )
+                await asyncio.sleep(self.thermal_throttle_pause_sec)
+            elif level == "warn" and self.thermal_warn_pause_sec > 0:
+                logger.info(
+                    "Smart-server thermal guard WARN (%sC); pacing %.1fs.",
+                    temp_c,
+                    self.thermal_warn_pause_sec,
+                )
+                await asyncio.sleep(self.thermal_warn_pause_sec)
+        except Exception:
+            return
+
+    async def _embed_remote_texts(self, texts: list[str], *, check_thermal: bool = True) -> np.ndarray:
+        assert self.remote_url is not None
+        client = self._get_http_client()
+        result = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for start in range(0, len(texts), self.remote_batch_size):
+            if check_thermal:
+                await self._apply_thermal_guard()
+            raw_sub = texts[start : start + self.remote_batch_size]
+            sub = [(t[: self.remote_max_chars] if t and t.strip() else " ") for t in raw_sub]
+            try:
+                resp = None
+                for attempt in range(2):
+                    try:
+                        resp = await client.post(
+                            self.remote_url,
+                            json={"model": self.remote_model, "input": sub},
+                            timeout=self.remote_timeout,
+                        )
+                        break
+                    except httpx.RemoteProtocolError:
+                        if attempt == 0:
+                            continue
+                        raise
+                assert resp is not None
+                if resp.status_code != 200:
+                    detail = resp.text[:240].strip()
+                    raise RemoteEmbedderUnavailableError(
+                        f"Remote embedder HTTP {resp.status_code}: {detail}"
+                    )
+                payload = resp.json()
+                rows = payload.get("data")
+                if not isinstance(rows, list) or len(rows) != len(sub):
+                    raise RemoteEmbedderUnavailableError(
+                        f"Remote embedder malformed response (expected {len(sub)} vectors)"
+                    )
+                ordered = sorted(rows, key=lambda item: int(item.get("index", 0)))
+                mat = np.array([item["embedding"] for item in ordered], dtype=np.float32)
+                normed = _normalize_l2_rows(mat, self.dim)
+                result[start : start + len(sub)] = normed
+                self.remote_reachable = True
+                self.last_remote_error = None
+            except RemoteEmbedderUnavailableError as exc:
+                self.remote_reachable = False
+                self.last_remote_error = str(exc)
+                raise
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                err_desc = f"{type(exc).__name__}: {exc}" if str(exc).strip() else type(exc).__name__
+                self.remote_reachable = False
+                self.last_remote_error = err_desc
+                raise RemoteEmbedderUnavailableError(f"Remote embedder unavailable: {err_desc}") from exc
+        return result
+
     async def warmup(self) -> dict[str, Any]:
-        """Ensure the `max_workers=1` spawn worker is alive and bound to a Win32 Job Object."""
+        """Ensure the `max_workers=1` spawn worker is alive (skipped in remote HTTP mode)."""
         if not self.is_available:
             return {"worker_pid": None, "win32_job_bound": False, "backend": self.backend_name}
+        if self.remote_url is not None:
+            return {
+                "worker_pid": None,
+                "win32_job_bound": False,
+                "backend": self.backend_name,
+                "remote_url": self.remote_url,
+            }
         async with self._pool_lock:
             if self._executor is None:
                 ctx = multiprocessing.get_context("spawn")
@@ -356,6 +544,8 @@ class LocalEmbedder:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
         items = list(texts)
+        if self.remote_url is not None:
+            return await self._embed_remote_texts(items, check_thermal=True)
         if self.onnx_dir is not None or len(items) >= 64:
             await self.warmup()
             assert self._executor is not None
@@ -373,6 +563,10 @@ class LocalEmbedder:
         if not self.is_available:
             raise RuntimeError("Embedder is disabled")
         q = query.strip()
+        if self.remote_url is not None:
+            formatted = q if q.startswith("Instruct:") else f"{QWEN3_QUERY_PREFIX}{q}"
+            mat = await self._embed_remote_texts([formatted], check_thermal=False)
+            return mat[0]
         if self.onnx_dir is not None:
             formatted = q if q.startswith("Instruct:") else f"{QWEN3_QUERY_PREFIX}{q}"
             mat = await self.embed_documents([formatted])
@@ -381,7 +575,25 @@ class LocalEmbedder:
             q = q[len(QWEN3_QUERY_PREFIX) :].strip()
         return compute_subword_ngram_embeddings([q], dim=self.dim)[0]
 
+    async def aclose(self) -> None:
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+            self._http_client = None
+        self.shutdown()
+
     def shutdown(self) -> None:
+        if self._http_client is not None:
+            client = self._http_client
+            self._http_client = None
+            try:
+                loop = asyncio.get_running_loop()
+                if not loop.is_closed():
+                    loop.create_task(client.aclose())
+            except RuntimeError:
+                pass
         if self._executor is not None:
             try:
                 self._executor.shutdown(wait=False, cancel_futures=True)

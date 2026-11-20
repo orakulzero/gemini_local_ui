@@ -210,7 +210,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if owned_acp_client is not None:
         await owned_acp_client.shutdown()
     if owned_rag_service is not None:
-        owned_rag_service.embedder.shutdown()
+        await owned_rag_service.embedder.aclose()
     if session_manager:
         await session_manager.close()
     await db.close()

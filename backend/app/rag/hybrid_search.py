@@ -18,7 +18,7 @@ from typing import Any, Sequence
 
 from backend.app.observability.telemetry import get_tracer
 from backend.app.rag.chunker import chunk_document, collect_brain_digest_documents
-from backend.app.rag.embedder import LocalEmbedder
+from backend.app.rag.embedder import LocalEmbedder, RemoteEmbedderUnavailableError
 from backend.app.rag.reranker import Reranker
 from backend.app.rag.vector_store import SqliteVecStore, VectorStoreProtocol
 from backend.app.storage.database import Database
@@ -232,14 +232,40 @@ class HybridRAGService:
                     stype, sid, stitle, p.chunk_index, p.content, p.content_sha256, json.dumps(p.metadata)
                 ))
 
-        wave_size = 64 if self.embedder.weights_available else max(len(pending_items), 1)
+        if getattr(self.embedder, "remote_url", None):
+            wave_size = 32
+        elif self.embedder.weights_available:
+            wave_size = 64
+        else:
+            wave_size = max(len(pending_items), 1)
         now_ms = int(time.time() * 1000)
+        indexed_count = 0
         for wave_start in range(0, len(pending_items), wave_size):
             wave = pending_items[wave_start : wave_start + wave_size]
             vectors = None
             if self.embedder.is_available:
                 texts_to_embed = [f"{it[2]}\n{it[4]}" for it in wave]
-                vectors = await self.embedder.embed_documents(texts_to_embed)
+                try:
+                    vectors = await self.embedder.embed_documents(texts_to_embed)
+                except RemoteEmbedderUnavailableError as err:
+                    logger.warning(
+                        "Remote embedder unreachable at wave %d/%d (%d chunks already committed): %s",
+                        wave_start,
+                        len(pending_items),
+                        indexed_count,
+                        err,
+                    )
+                    self.invalidate_cache()
+                    return {
+                        "ok": False,
+                        "degraded": True,
+                        "error": str(err),
+                        "indexed_chunks": indexed_count,
+                        "remaining_chunks": len(pending_items) - indexed_count,
+                        "skipped_unchanged": skipped_unchanged,
+                        "embedding_model": target_model,
+                        "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                    }
 
             vec_pairs: list[tuple[int, Any]] = []
             async with self.db.write_transaction() as conn:
@@ -266,10 +292,11 @@ class HybridRAGService:
 
             if vec_pairs:
                 await self.vector_store.upsert_vectors(vec_pairs)
+            indexed_count += len(wave)
         self.invalidate_cache()
         return {
             "ok": True,
-            "indexed_chunks": len(pending_items),
+            "indexed_chunks": indexed_count,
             "skipped_unchanged": skipped_unchanged,
             "embedding_model": target_model,
             "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
@@ -303,10 +330,14 @@ class HybridRAGService:
             "embedder_backend": self.embedder.backend_name,
             "embedder_available": self.embedder.is_available,
             "weights_available": self.embedder.weights_available,
+            "remote_embed_url": getattr(self.embedder, "remote_url", None),
+            "remote_reachable": getattr(self.embedder, "remote_reachable", None),
+            "last_remote_error": getattr(self.embedder, "last_remote_error", None),
+            "thermal_guard": getattr(self.embedder, "last_thermal_state", None),
             "reranker_backend": self.reranker.backend_name,
             "worker_pid": self.embedder.worker_pid,
             "win32_job_bound": self.embedder.win32_job_bound,
-            "degraded": (not self.embedder.is_available) or mismatch,
+            "degraded": (not self.embedder.is_available) or mismatch or (getattr(self.embedder, "remote_reachable", None) is False),
             "vector_space": {
                 **meta,
                 "active_embedder_id": self.embedder.backend_name,
@@ -398,6 +429,7 @@ class HybridRAGService:
             vector_space_mismatch = self._check_vector_space_mismatch(meta)
 
             degraded = False
+            transient_remote_error = False
             effective_mode = req_mode
             pool_k = max(20, k * 3)
 
@@ -408,6 +440,16 @@ class HybridRAGService:
             ranked_scores: dict[int, float] = {}
             rrf_map: dict[int, float] = {}
 
+            q_vec: Any = None
+            if effective_mode in ("vector", "hybrid"):
+                try:
+                    q_vec = await self.embedder.embed_query(q)
+                except RemoteEmbedderUnavailableError as err:
+                    logger.warning("Remote embedder offline during search; degrading gracefully to FTS5: %s", err)
+                    degraded = True
+                    transient_remote_error = True
+                    effective_mode = "fts5_degraded"
+
             if effective_mode in ("fts5", "fts5_degraded"):
                 fts_rows = await self._fts5_search(q, limit=pool_k, source_types=source_types, use_or=False)
                 if not fts_rows and degraded:
@@ -415,12 +457,10 @@ class HybridRAGService:
                 ordered_ids = [cid for cid, _ in fts_rows]
                 ranked_scores = {cid: sc for cid, sc in fts_rows}
             elif effective_mode == "vector":
-                q_vec = await self.embedder.embed_query(q)
                 vec_rows = await self.vector_store.knn_search(q_vec, k=pool_k)
                 ordered_ids = [cid for cid, _ in vec_rows]
                 ranked_scores = {cid: sc for cid, sc in vec_rows}
             else:
-                q_vec = await self.embedder.embed_query(q)
                 fts_rows = await self._fts5_search(q, limit=pool_k, source_types=source_types, use_or=True)
                 vec_rows = await self.vector_store.knn_search(q_vec, k=pool_k)
                 fused = reciprocal_rank_fusion(
@@ -483,7 +523,8 @@ class HybridRAGService:
                 "formatted_xml_context": xml_ctx,
                 "results": results,
             }
-            self._cache[cache_key] = (time.monotonic(), out)
-            if len(self._cache) > self.cache_size:
-                self._cache.popitem(last=False)
+            if not transient_remote_error:
+                self._cache[cache_key] = (time.monotonic(), out)
+                if len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
             return out

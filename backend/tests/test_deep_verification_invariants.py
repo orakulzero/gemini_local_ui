@@ -315,3 +315,107 @@ async def test_real_onnx_qwen3_embedding_512d_semantic_ranking() -> None:
         assert float(q_vec @ docs[0]) > float(q_vec @ docs[1]) + 0.15
     finally:
         emb.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remote_smart_server_embedder_mrl_thermal_guard_and_fts5_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify remote_qwen3_512 HTTP client, 1024->512 MRL norm, thermal guard, and offline fallback."""
+    from backend.app.rag.embedder import LocalEmbedder, QWEN3_QUERY_PREFIX
+
+    seen_inputs: list[list[str]] = []
+    sleeps: list[float] = []
+    remote_online = {"ok": True}
+    transient_drop = {"once": True}
+    thermal_level = {"level": "throttle", "temp_c": 44.6}
+
+    async def fake_sleep(sec: float) -> None:
+        sleeps.append(sec)
+
+    monkeypatch.setattr("backend.app.rag.embedder.asyncio.sleep", fake_sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "http://127.0.0.1:18790/api/telemetry":
+            return httpx.Response(
+                200,
+                json={
+                    "battery": {"temperature_c": thermal_level["temp_c"]},
+                    "thermal_guard": {"level": thermal_level["level"], "warn_c": 41.0, "throttle_c": 44.0},
+                },
+            )
+        if not remote_online["ok"]:
+            raise httpx.ConnectError("phone disconnected", request=request)
+        if transient_drop["once"]:
+            transient_drop["once"] = False
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        import json as _json
+        body = _json.loads(request.content.decode("utf-8"))
+        inputs = body["input"]
+        seen_inputs.append(inputs)
+        # Return out-of-order 1024-dim vectors to verify index sorting + [:512] MRL slice + L2 norm
+        rows = []
+        for idx in reversed(range(len(inputs))):
+            vec = [0.0] * 1024
+            if "Job Object" in inputs[idx]:
+                vec[0] = 3.0
+                vec[1] = 4.0
+            else:
+                vec[2] = 5.0
+            vec[600] = 99.0  # Must be sliced off by Matryoshka [:512]
+            rows.append({"index": idx, "embedding": vec})
+        return httpx.Response(200, json={"data": rows})
+
+    emb = LocalEmbedder(
+        mode="remote",
+        remote_url="http://127.0.0.1:8091",
+        thermal_telemetry_url="http://127.0.0.1:18790/api/telemetry",
+    )
+    emb._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        assert emb.backend_name == "remote_qwen3_512"
+        assert emb.remote_url == "http://127.0.0.1:8091/v1/embeddings"
+        assert emb.worker_pid is None
+        warm = await emb.warmup()
+        assert warm["worker_pid"] is None
+
+        db = Database(db_path=tmp_path / "remote_rag.db")
+        await db.init_schema()
+        svc = HybridRAGService(db, embedder=emb)
+        idx_res = await svc.index_sources(
+            source_types=[],
+            documents=[
+                {"source_type": "workspace_file", "source_id": "a.md", "source_title": "A", "content": "Win32 Job Object cleans up zombie child processes."},
+                {"source_type": "workspace_file", "source_id": "b.md", "source_title": "B", "content": "Strawberry cheesecake recipe with cream cheese."},
+            ],
+        )
+        assert idx_res["ok"] is True
+        assert idx_res["indexed_chunks"] == 2
+        assert sleeps == [emb.thermal_throttle_pause_sec]
+        assert emb.last_thermal_state is not None and emb.last_thermal_state["level"] == "throttle"
+        assert not seen_inputs[0][0].startswith(QWEN3_QUERY_PREFIX)
+
+        hit = await svc.search("Win32 Job Object", mode="hybrid", top_k=2)
+        assert hit["degraded"] is False
+        assert hit["effective_mode"] == "hybrid"
+        assert hit["results"][0]["source_id"] == "a.md"
+        assert seen_inputs[-1][0].startswith(QWEN3_QUERY_PREFIX)
+
+        # Simulate phone Wi-Fi disconnect -> must degrade cleanly to FTS5 and NOT cache offline degradation
+        remote_online["ok"] = False
+        offline_hit = await svc.search("cheesecake", mode="hybrid", top_k=2)
+        assert offline_hit["degraded"] is True
+        assert offline_hit["effective_mode"] == "fts5_degraded"
+        assert offline_hit["results"][0]["source_id"] == "b.md"
+        status_offline = await svc.get_status()
+        assert status_offline["remote_reachable"] is False
+        assert status_offline["worker_pid"] is None
+
+        # Phone reconnects -> same query immediately recovers to full hybrid mode
+        remote_online["ok"] = True
+        recovered = await svc.search("cheesecake", mode="hybrid", top_k=2)
+        assert recovered["degraded"] is False
+        assert recovered["effective_mode"] == "hybrid"
+        await db.close()
+    finally:
+        await emb.aclose()
