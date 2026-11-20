@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import hmac
 import logging
 import multiprocessing
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any, Sequence
 import zlib
 
@@ -24,6 +27,7 @@ from backend.app.mcp.win32_job import Win32JobGuard
 logger = logging.getLogger("gemini_rag.embedder")
 
 EMBEDDING_DIM = 512
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 QWEN3_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 QWEN3_QUERY_PREFIX = (
     "Instruct: Given a technical search query, retrieve relevant passages that answer the query\nQuery: "
@@ -46,7 +50,19 @@ _WORKER_ONNX_SESSION: Any = None
 _WORKER_TOKENIZER: Any = None
 
 
+def _apply_worker_below_normal_priority() -> None:
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+        except Exception:
+            pass
+
+
 def _worker_get_pid() -> int:
+    _apply_worker_below_normal_priority()
     return os.getpid()
 
 
@@ -115,6 +131,40 @@ def compute_subword_ngram_embeddings(texts: Sequence[str], dim: int = EMBEDDING_
     return out
 
 
+def _find_primary_onnx_file(model_dir: Path) -> Path | None:
+    if not model_dir.is_dir():
+        return None
+    for rel in (Path("model.onnx"), Path("onnx") / "model.onnx"):
+        cand = model_dir / rel
+        if cand.is_file():
+            return cand
+    found = sorted(p for p in model_dir.rglob("*.onnx") if p.is_file())
+    return found[0] if found else None
+
+
+def verify_onnx_weights_sha256(model_dir: Path, expected_sha256: str | None = None) -> bool:
+    """Verify SHA-256 of primary `.onnx` file against expected hash or GEMINI_RAG_ONNX_SHA256."""
+    root = Path(model_dir)
+    onnx_file = _find_primary_onnx_file(root)
+    if onnx_file is None:
+        return False
+    expected = (
+        expected_sha256
+        if expected_sha256 is not None
+        else os.environ.get("GEMINI_RAG_ONNX_SHA256", "")
+    ).strip().lower()
+    if not expected:
+        return True
+    digest = hashlib.sha256()
+    try:
+        with open(onnx_file, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return False
+    return hmac.compare_digest(digest.hexdigest().lower(), expected)
+
+
 def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | None:
     """Locate local Qwen3-Embedding-0.6B ONNX directory without unannounced downloads."""
     candidates: list[Path] = []
@@ -124,9 +174,11 @@ def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | No
     if env_dir:
         candidates.append(Path(env_dir))
     for cand in candidates:
-        if cand.is_dir() and (cand / "tokenizer.json").exists():
-            if any(cand.rglob("*.onnx")):
-                return cand
+        if cand.is_dir() and (cand / "tokenizer.json").exists() and _find_primary_onnx_file(cand) is not None:
+            if not verify_onnx_weights_sha256(cand):
+                logger.error("ONNX SHA-256 mismatch for %s; failing closed.", cand)
+                return None
+            return cand
 
     auto_dl = os.environ.get("GEMINI_RAG_AUTO_DOWNLOAD", "").strip() == "1"
     try:
@@ -134,7 +186,10 @@ def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | No
         snap = Path(
             snapshot_download(repo_id=QWEN3_MODEL_ID, local_files_only=not auto_dl)
         )
-        if (snap / "tokenizer.json").exists() and any(snap.rglob("*.onnx")):
+        if (snap / "tokenizer.json").exists() and _find_primary_onnx_file(snap) is not None:
+            if not verify_onnx_weights_sha256(snap):
+                logger.error("ONNX SHA-256 mismatch for cached snapshot %s; failing closed.", snap)
+                return None
             return snap
     except Exception:
         pass
@@ -143,6 +198,7 @@ def _resolve_local_onnx_dir(explicit_dir: str | Path | None = None) -> Path | No
 
 def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.ndarray:
     global _WORKER_ONNX_SESSION, _WORKER_TOKENIZER
+    _apply_worker_below_normal_priority()
     if onnx_dir:
         try:
             import onnxruntime as ort
@@ -150,11 +206,20 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
 
             model_root = Path(onnx_dir)
             if _WORKER_ONNX_SESSION is None:
-                onnx_path = next(model_root.rglob("*.onnx"))
+                onnx_path = _find_primary_onnx_file(model_root)
+                if onnx_path is None:
+                    raise FileNotFoundError(f"No .onnx file in {model_root}")
                 sess_opts = ort.SessionOptions()
                 sess_opts.intra_op_num_threads = max(1, min(4, os.cpu_count() or 2))
+                providers = ["CPUExecutionProvider"]
+                if os.environ.get("GEMINI_RAG_PREFER_DML", "").strip() == "1":
+                    try:
+                        if "DmlExecutionProvider" in ort.get_available_providers():
+                            providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+                    except Exception:
+                        pass
                 _WORKER_ONNX_SESSION = ort.InferenceSession(
-                    str(onnx_path), sess_options=sess_opts, providers=["CPUExecutionProvider"]
+                    str(onnx_path), sess_options=sess_opts, providers=providers
                 )
                 _WORKER_TOKENIZER = Tokenizer.from_file(str(model_root / "tokenizer.json"))
                 _WORKER_TOKENIZER.enable_padding(pad_id=0, pad_token="<|endoftext|>")

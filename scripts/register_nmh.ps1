@@ -47,7 +47,9 @@ Write-Host "Wrote NMH manifest: $manifestPath"
 
 $registryTargets = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.orakulzero.gemini_local_ui",
-    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.orakulzero.gemini_local_ui"
+    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.orakulzero.gemini_local_ui",
+    "HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.orakulzero.gemini_local_ui",
+    "HKCU:\Software\Vivaldi\NativeMessagingHosts\com.orakulzero.gemini_local_ui"
 )
 
 foreach ($regPath in $registryTargets) {

@@ -173,7 +173,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     scheduler_task = _aio.create_task(_task_pipeline_scheduler_loop())
 
+    disc_env = os.environ.get("GEMINI_RUNTIME_DISCOVERY_PATH", "").strip()
+    if disc_env:
+        try:
+            from pathlib import Path as _Path
+            from backend.app.security.runtime_discovery import write_runtime_discovery
+
+            write_runtime_discovery(
+                _Path(disc_env),
+                base_url=os.environ.get("GEMINI_SIDECAR_URL", "http://127.0.0.1:8000"),
+                acp_ws_url=os.environ.get("GEMINI_ACP_WS_URL") or None,
+                api_token=os.environ.get("GEMINI_LOCAL_API_TOKEN") or None,
+            )
+        except Exception as disc_err:
+            logger.debug("Runtime discovery write skipped: %s", disc_err)
+
     yield
+
+    if disc_env:
+        try:
+            from pathlib import Path as _Path
+            from backend.app.security.runtime_discovery import clear_runtime_discovery
+
+            clear_runtime_discovery(_Path(disc_env))
+        except Exception:
+            pass
 
     scheduler_task.cancel()
     if bootstrap_task is not None and not bootstrap_task.done():
@@ -310,6 +334,8 @@ async def get_session_status() -> Dict[str, Any]:
         "active_account": session_manager.active_account_id,
         "accounts": accounts_info,
         "transport": transport_name,
+        "vault_generation": vault.get_vault_generation() if vault else 0,
+        "credential_generation": session_manager.get_credential_generation(),
         "health": {
             "status": health.status.value if isinstance(health.status, SessionHealthStatus) else health.status,
             "is_authenticated": health.is_authenticated,
@@ -493,6 +519,7 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
             target_account_id = "default"
 
     vault.store_credentials(cookies_dict)
+    session_manager.bump_credential_generation("admin_session_sync", account_id=target_account_id)
     await session_manager.init_session(
         cookies_dict,
         account_id=target_account_id,

@@ -129,13 +129,37 @@ class WreqStreamContext:
 
 
 class WreqTransportClient:
-    def __init__(self, timeout: Union[float, int, datetime.timedelta, Any] = 60.0, on_response: Optional[Callable[[WreqResponseAdapter], Any]] = None) -> None:
+    def __init__(
+        self,
+        timeout: Union[float, int, datetime.timedelta, Any] = 60.0,
+        on_response: Optional[Callable[[WreqResponseAdapter], Any]] = None,
+        generation_provider: Optional[Callable[[], int]] = None,
+    ) -> None:
         self._timeout_sec: float = self._parse_timeout(timeout)
         self.on_response = on_response
+        self._generation_provider: Optional[Callable[[], int]] = generation_provider
+        self._bound_generation: int = self._read_generation(0)
+        self._pool_reset_count: int = 0
         self._client: Optional[wreq.Client] = None
         self._is_closed = False
         self._last_used_monotonic: float = 0.0
         self._transport: Any = "wreq_transport"
+
+    def _read_generation(self, fallback: int = 0) -> int:
+        if self._generation_provider is None:
+            return fallback
+        try:
+            return int(self._generation_provider())
+        except Exception:
+            return fallback
+
+    def reset_pool(self, reason: str = "") -> None:
+        self._client = None
+        self._pool_reset_count += 1
+        if self._generation_provider is not None:
+            self._bound_generation = self._read_generation(self._bound_generation)
+        if reason:
+            logger.debug("WreqTransportClient H2 pool reset (%s), count=%d", reason, self._pool_reset_count)
 
     def _parse_timeout(self, t: Any) -> float:
         if isinstance(t, (int, float)):
@@ -162,6 +186,13 @@ class WreqTransportClient:
 
     def _get_raw_client(self) -> wreq.Client:
         now = time.monotonic()
+        if self._generation_provider is not None:
+            cur_gen = self._read_generation(self._bound_generation)
+            if cur_gen != self._bound_generation:
+                self._client = None
+                self._bound_generation = cur_gen
+                self._pool_reset_count += 1
+                logger.debug("WreqTransportClient resetting H2 pool on generation bump -> %d", cur_gen)
         if self._client is None or self._is_closed or (self._last_used_monotonic > 0 and (now - self._last_used_monotonic > 35.0)):
             self._client = wreq.Client(
                 emulation=wreq.Emulation.Chrome145,

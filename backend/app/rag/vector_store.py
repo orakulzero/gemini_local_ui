@@ -42,6 +42,8 @@ class VectorStoreProtocol(Protocol):
     @property
     def sqlite_vec_loaded(self) -> bool: ...
     async def ensure_schema(self) -> None: ...
+    async def get_vector_space_meta(self) -> dict[str, Any]: ...
+    async def ensure_vector_space(self, *, embedder_id: str, dim: int, normalized: bool = True) -> bool: ...
     async def upsert_vectors(self, items: Sequence[tuple[int, np.ndarray]]) -> None: ...
     async def delete_vectors(self, chunk_ids: Sequence[int]) -> None: ...
     async def clear_all(self) -> None: ...
@@ -80,6 +82,9 @@ class SqliteVecStore:
                 logger.warning("Falling back to NumPy vector table (sqlite-vec load failed): %s", exc)
                 self._sqlite_vec_ok = False
 
+        await self.db.execute(
+            "CREATE TABLE IF NOT EXISTS rag_index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
         if self._sqlite_vec_ok:
             await self.db.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
@@ -91,6 +96,78 @@ class SqliteVecStore:
                 "chunk_id INTEGER PRIMARY KEY, embedding BLOB NOT NULL)"
             )
         self._schema_ready = True
+
+    async def get_vector_space_meta(self) -> dict[str, Any]:
+        await self.ensure_schema()
+        rows = await self.db.fetch_all(
+            "SELECT key, value FROM rag_index_meta WHERE key IN ('embedder_id', 'dim', 'normalized')"
+        )
+        kv = {str(r["key"]): str(r["value"]) for r in rows}
+        raw_emb = kv.get("embedder_id")
+        raw_dim = kv.get("dim")
+        raw_norm = kv.get("normalized")
+        dim_val: int | None = None
+        if raw_dim is not None and raw_dim != "":
+            try:
+                dim_val = int(raw_dim)
+            except ValueError:
+                dim_val = None
+        norm_val = True if raw_norm is None else (raw_norm.lower() in ("1", "true", "yes"))
+        return {
+            "embedder_id": raw_emb if raw_emb else None,
+            "dim": dim_val,
+            "normalized": norm_val,
+        }
+
+    async def ensure_vector_space(
+        self,
+        *,
+        embedder_id: str,
+        dim: int,
+        normalized: bool = True,
+    ) -> bool:
+        await self.ensure_schema()
+        meta = await self.get_vector_space_meta()
+        persisted_id = meta.get("embedder_id")
+        persisted_dim = meta.get("dim")
+        persisted_norm = bool(meta.get("normalized", True))
+        req_id = str(embedder_id)
+        req_dim = int(dim)
+        req_norm = bool(normalized)
+        norm_str = "1" if req_norm else "0"
+
+        if persisted_id is None:
+            async with self.db.write_transaction() as conn:
+                for k, v in (("embedder_id", req_id), ("dim", str(req_dim)), ("normalized", norm_str)):
+                    await conn.execute(
+                        "INSERT OR REPLACE INTO rag_index_meta (key, value) VALUES (?, ?)", (k, v)
+                    )
+            return False
+
+        if persisted_id == req_id and persisted_dim == req_dim and persisted_norm == req_norm:
+            return False
+
+        tbl = "vec_chunks" if self._sqlite_vec_ok else "vec_chunks_fallback"
+        logger.warning(
+            "Vector space mismatch detected (persisted=%s/%s/%s vs active=%s/%d/%s); clearing incompatible vectors.",
+            persisted_id,
+            persisted_dim,
+            persisted_norm,
+            req_id,
+            req_dim,
+            req_norm,
+        )
+        async with self.db.write_transaction() as conn:
+            await conn.execute(f"DELETE FROM {tbl}")
+            try:
+                await conn.execute("UPDATE rag_chunks SET embedding_model = ''")
+            except sqlite3.OperationalError:
+                pass
+            for k, v in (("embedder_id", req_id), ("dim", str(req_dim)), ("normalized", norm_str)):
+                await conn.execute(
+                    "INSERT OR REPLACE INTO rag_index_meta (key, value) VALUES (?, ?)", (k, v)
+                )
+        return True
 
     def _to_f32_bytes(self, vec: np.ndarray) -> bytes:
         arr = np.asarray(vec, dtype=np.float32).reshape(-1)

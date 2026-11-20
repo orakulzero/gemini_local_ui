@@ -177,3 +177,34 @@ async fn wait_health_ok(base_url: &str, token: &str, deadline: tokio::time::Inst
     }
     Err(anyhow!("sidecar /health did not become 200 OK at {health_url}"))
 }
+
+/// Poll non-destructively until `path` has zero open OS handles (or does not exist).
+pub fn wait_for_file_unlock(path: &std::path::Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !path.exists() {
+            return true;
+        }
+        let unlocked = {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                opts.share_mode(0);
+            }
+            match opts.open(path) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => false,
+            }
+        };
+        if unlocked {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

@@ -226,10 +226,15 @@ class VaultData:
     active_account_id: str = "default"
     failover_config: FailoverConfig = field(default_factory=FailoverConfig)
     accounts: dict[str, AccountProfile] = field(default_factory=dict)
+    generation: int = 0
+
+
+VAULT_MUTEX_ABANDONED_RECOVERIES: int = 0
 
 
 @contextlib.contextmanager
 def _vault_named_mutex(vault_path: Path):
+    global VAULT_MUTEX_ABANDONED_RECOVERIES
     if not IS_WINDOWS:
         yield
         return
@@ -244,7 +249,15 @@ def _vault_named_mutex(vault_path: Path):
     acquired = False
     try:
         res = kernel32.WaitForSingleObject(handle, 5000)
-        if res in (WAIT_OBJECT_0, WAIT_ABANDONED):
+        if res == WAIT_ABANDONED:
+            VAULT_MUTEX_ABANDONED_RECOVERIES += 1
+            acquired = True
+            logger.warning(
+                "Recovered abandoned Win32 vault mutex %s (recoveries=%d)",
+                mutex_name,
+                VAULT_MUTEX_ABANDONED_RECOVERIES,
+            )
+        elif res == WAIT_OBJECT_0:
             acquired = True
         yield
     finally:
@@ -359,11 +372,13 @@ class CredentialVault:
                 active_id = str(parsed.get("active_account_id", "default"))
                 if active_id not in accounts and accounts:
                     active_id = next(iter(accounts.keys()))
+                gen_val = int(parsed.get("generation", 0) or 0)
                 return VaultData(
                     version=2,
                     active_account_id=active_id,
                     failover_config=failover_cfg,
                     accounts=accounts,
+                    generation=gen_val,
                 )
 
             # Legacy V1 Migration: flat dictionary of cookies or version=1
@@ -468,14 +483,38 @@ class CredentialVault:
             return False
         return any(self.is_healthy_profile(acc) for acc in data.accounts.values())
 
+    def _read_disk_generation_unlocked(self) -> int:
+        if not self.vault_path.exists():
+            return 0
+        try:
+            with self._thread_lock:
+                cipher = self.vault_path.read_bytes()
+            if not cipher:
+                return 0
+            parsed = json.loads(self.decrypt_bytes(cipher).decode("utf-8"))
+            if isinstance(parsed, dict):
+                return int(parsed.get("generation", 0) or 0)
+        except Exception:
+            pass
+        return 0
+
+    def get_vault_generation(self) -> int:
+        """Returns monotonic persisted vault generation counter (0 when uninitialized)."""
+        with _vault_named_mutex(self.vault_path):
+            return self._read_disk_generation_unlocked()
+
     def store_vault_data(self, data: VaultData) -> None:
         """Encrypts and atomically writes V2 VaultData to disk and maintains shadow backup if healthy."""
         with _vault_named_mutex(self.vault_path):
             self._store_vault_data_unlocked(data)
 
     def _store_vault_data_unlocked(self, data: VaultData) -> None:
+        current_disk_gen = self._read_disk_generation_unlocked()
+        next_gen = max(current_disk_gen, int(getattr(data, "generation", 0) or 0)) + 1
+        data.generation = next_gen
         payload = {
             "version": 2,
+            "generation": next_gen,
             "active_account_id": data.active_account_id,
             "failover_config": asdict(data.failover_config),
             "accounts": {acc_id: asdict(acc) for acc_id, acc in data.accounts.items()},
@@ -483,7 +522,13 @@ class CredentialVault:
         payload_bytes = json.dumps(payload, indent=2).encode("utf-8")
         cipher = self.encrypt_bytes(payload_bytes)
         self._write_vault_file_atomic(cipher, self.vault_path)
-        logger.info("V2 Vault saved to %s (accounts=%d, active=%s)", self.vault_path, len(data.accounts), data.active_account_id)
+        logger.info(
+            "V2 Vault saved to %s (generation=%d, accounts=%d, active=%s)",
+            self.vault_path,
+            next_gen,
+            len(data.accounts),
+            data.active_account_id,
+        )
 
         # Automated shadow backup on every successful update of healthy credentials
         if self.is_vault_healthy(data):
@@ -533,6 +578,14 @@ class CredentialVault:
         """Asynchronously updates credentials for active account."""
         async with self.lock:
             await asyncio.to_thread(self.store_credentials, creds)
+
+    async def save_credentials_async(self, creds: dict[str, Any]) -> None:
+        """Alias for store_credentials_async."""
+        await self.store_credentials_async(creds)
+
+    def save_credentials(self, creds: dict[str, Any]) -> None:
+        """Alias for store_credentials."""
+        self.store_credentials(creds)
 
 
     def store_credentials(self, creds: dict[str, Any]) -> None:

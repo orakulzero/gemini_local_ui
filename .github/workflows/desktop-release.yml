@@ -76,7 +76,14 @@ jobs:
           AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
         shell: pwsh
         run: |
-          $SetupExe = Get-ChildItem -Path "src-tauri\target\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
-          if ($SetupExe) {
-            signtool verify /pa $SetupExe.FullName
+          $SidecarExe = "src-tauri\binaries\gemini-backend-x86_64-pc-windows-msvc.exe"
+          if (-not (Test-Path $SidecarExe)) {
+            throw "Missing sidecar executable: $SidecarExe"
           }
+          signtool verify /pa $SidecarExe
+
+          $SetupExe = Get-ChildItem -Path "src-tauri\target\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
+          if (-not $SetupExe) {
+            throw "Missing NSIS setup installer under src-tauri\target\release\bundle\nsis"
+          }
+          signtool verify /pa $SetupExe.FullName

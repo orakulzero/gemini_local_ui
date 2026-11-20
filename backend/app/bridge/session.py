@@ -177,6 +177,41 @@ class SessionManager:
             )
         self._owns_client = http_client is None
         self._wreq_clients: dict[str, Any] = {}
+        self._last_vault_generation: int = self._read_vault_generation()
+        self._credential_generation: int = max(0, self._last_vault_generation)
+
+    def _read_vault_generation(self) -> int:
+        if self.vault and hasattr(self.vault, "get_vault_generation"):
+            try:
+                return int(self.vault.get_vault_generation())
+            except Exception:
+                return 0
+        return 0
+
+    def get_credential_generation(self) -> int:
+        vault_gen = self._read_vault_generation()
+        if vault_gen > self._last_vault_generation:
+            delta = vault_gen - self._last_vault_generation
+            self._last_vault_generation = vault_gen
+            self._credential_generation = max(self._credential_generation + delta, vault_gen)
+        return self._credential_generation
+
+    def bump_credential_generation(
+        self, reason: str = "cookie_rotation", account_id: str | None = None
+    ) -> int:
+        vault_gen = self._read_vault_generation()
+        if vault_gen > self._last_vault_generation:
+            self._last_vault_generation = vault_gen
+        self._credential_generation = max(self._credential_generation, vault_gen) + 1
+        if account_id:
+            cli = self._wreq_clients.get(account_id)
+            if cli is not None and hasattr(cli, "reset_pool"):
+                cli.reset_pool(reason)
+        else:
+            for cli in self._wreq_clients.values():
+                if hasattr(cli, "reset_pool"):
+                    cli.reset_pool(reason)
+        return self._credential_generation
 
     def _get_http_client(self, account_id: str | None = None) -> Any:
         if (
@@ -192,6 +227,7 @@ class SessionManager:
                     cli = WreqTransportClient(
                         timeout=30.0,
                         on_response=self.on_response_harvest_cookies,
+                        generation_provider=self.get_credential_generation,
                     )
                     self._wreq_clients[acc_key] = cli
                 return cli
@@ -313,6 +349,7 @@ class SessionManager:
             self.sessions[account_id] = sess
 
         self.active_account_id = account_id
+        self.bump_credential_generation("init_session", account_id=account_id)
 
         clean_xsrf = xsrf_token.strip() if isinstance(xsrf_token, str) and xsrf_token.strip() else None
         clean_bl = gemini_bl.strip() if isinstance(gemini_bl, str) and gemini_bl.strip() else None
@@ -746,6 +783,10 @@ class SessionManager:
                 ctx.last_refresh = time.time()
                 ctx.status = SessionHealthStatus.HEALTHY
                 ctx.last_error = None
+                self.bump_credential_generation(
+                    "cookie_rotation",
+                    account_id=account_id or self.active_account_id,
+                )
 
                 # Persist updated cookies
                 if self.on_credentials_updated:
@@ -860,6 +901,8 @@ class SessionManager:
             if ctx.status != SessionHealthStatus.HEALTHY and ctx.cookies.get("__Secure-1PSID"):
                 ctx.status = SessionHealthStatus.HEALTHY
                 ctx.last_error = None
+
+        self.bump_credential_generation("cookie_rotation", account_id=target_acc_id)
 
         if self.vault:
             try:
@@ -1049,9 +1092,11 @@ class SessionManager:
         if sess:
             async with sess.lock:
                 sess.context.cookies = dict(new_cookies)
+            self.bump_credential_generation("cookie_rotation", account_id=sess.account_id)
             await self.scrape_tokens(sess.account_id)
             return sess.context
         self.context.cookies = dict(new_cookies)
+        self.bump_credential_generation("cookie_rotation", account_id=account_id)
         await self.scrape_tokens()
         return self.context
 

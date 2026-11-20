@@ -9,9 +9,11 @@ use std::process::Command;
 pub const NMH_HOST_NAME: &str = "com.orakulzero.gemini_local_ui";
 pub const DEFAULT_EXTENSION_ID: &str = "jdihgieaoimpndginklkcjaccejbnmhe";
 
-const BROWSER_NMH_VENDORS: [&str; 2] = [
+pub const BROWSER_NMH_VENDORS: [&str; 4] = [
     r"Google\Chrome\NativeMessagingHosts",
     r"Microsoft\Edge\NativeMessagingHosts",
+    r"BraveSoftware\Brave-Browser\NativeMessagingHosts",
+    r"Vivaldi\NativeMessagingHosts",
 ];
 
 /// Serialize the Chrome/Edge Native Messaging Host JSON manifest strictly as UTF-8 without BOM.
@@ -106,7 +108,7 @@ pub fn install_or_update_nmh_manifest(
     Ok(manifest_path)
 }
 
-/// Remove Chrome + Edge HKCU Native Messaging Host keys cleanly.
+/// Remove Chrome, Edge, Brave & Vivaldi HKCU Native Messaging Host keys cleanly.
 pub fn unregister_nmh_manifest(registry_root_subkey: Option<&str>) -> Result<()> {
     #[cfg(windows)]
     {
@@ -120,6 +122,13 @@ pub fn unregister_nmh_manifest(registry_root_subkey: Option<&str>) -> Result<()>
             cmd.args(["delete", &key_path, "/f"]);
             apply_no_window(&mut cmd);
             let _ = cmd.output();
+        }
+        if !subkey.is_empty() && !subkey.eq_ignore_ascii_case("Software") {
+            let root_path = format!(r"HKCU\{subkey}");
+            let mut clean_cmd = Command::new("reg");
+            clean_cmd.args(["delete", &root_path, "/f"]);
+            apply_no_window(&mut clean_cmd);
+            let _ = clean_cmd.output();
         }
     }
     #[cfg(not(windows))]

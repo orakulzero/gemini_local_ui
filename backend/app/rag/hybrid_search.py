@@ -182,6 +182,12 @@ class HybridRAGService:
         """Incrementally chunk, SHA-256 deduplicate, embed, and persist RAG sources."""
         t0 = time.perf_counter()
         await self.vector_store.ensure_schema()
+        if self.embedder.is_available:
+            await self.vector_store.ensure_vector_space(
+                embedder_id=self.embedder.backend_name,
+                dim=self.embedder.dim,
+                normalized=True,
+            )
         types = list(source_types) if source_types is not None else ["conversation", "brain_digest"]
         raw_docs: list[dict[str, Any]] = list(documents or [])
         if "conversation" in types:
@@ -266,8 +272,20 @@ class HybridRAGService:
             "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
 
+    def _check_vector_space_mismatch(self, meta: dict[str, Any]) -> bool:
+        persisted_id = meta.get("embedder_id")
+        if not persisted_id or not self.embedder.is_available:
+            return False
+        persisted_dim = meta.get("dim")
+        return bool(
+            persisted_id != self.embedder.backend_name
+            or (persisted_dim is not None and int(persisted_dim) != int(self.embedder.dim))
+        )
+
     async def get_status(self) -> dict[str, Any]:
         await self.vector_store.ensure_schema()
+        meta = await self.vector_store.get_vector_space_meta()
+        mismatch = self._check_vector_space_mismatch(meta)
         rows = await self.db.fetch_all(
             "SELECT source_type, COUNT(*) AS cnt FROM rag_chunks GROUP BY source_type"
         )
@@ -285,8 +303,17 @@ class HybridRAGService:
             "reranker_backend": self.reranker.backend_name,
             "worker_pid": self.embedder.worker_pid,
             "win32_job_bound": self.embedder.win32_job_bound,
-            "degraded": not self.embedder.is_available,
+            "degraded": (not self.embedder.is_available) or mismatch,
+            "vector_space": {
+                **meta,
+                "active_embedder_id": self.embedder.backend_name,
+                "active_dim": self.embedder.dim,
+                "mismatch": mismatch,
+            },
         }
+
+    async def status(self) -> dict[str, Any]:
+        return await self.get_status()
 
     async def clear_index(self, *, source_type: str | None = None) -> dict[str, Any]:
         await self.vector_store.ensure_schema()
@@ -364,12 +391,14 @@ class HybridRAGService:
             span.set_attribute("rag.mode", req_mode)
             span.set_attribute("rag.top_k", k)
             await self.vector_store.ensure_schema()
+            meta = await self.vector_store.get_vector_space_meta()
+            vector_space_mismatch = self._check_vector_space_mismatch(meta)
 
             degraded = False
             effective_mode = req_mode
             pool_k = max(20, k * 3)
 
-            if req_mode in ("hybrid", "vector") and not self.embedder.is_available:
+            if req_mode in ("hybrid", "vector") and (not self.embedder.is_available or vector_space_mismatch):
                 degraded = True
                 effective_mode = "fts5_degraded"
 
@@ -446,6 +475,7 @@ class HybridRAGService:
                 "mode": req_mode,
                 "effective_mode": effective_mode,
                 "degraded": degraded,
+                "vector_space_mismatch": vector_space_mismatch,
                 "duration_ms": dur_ms,
                 "formatted_xml_context": xml_ctx,
                 "results": results,
