@@ -8,16 +8,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import re
 import time
 from typing import Any, AsyncIterator
+from unittest.mock import NonCallableMock
 import uuid
 
 from backend.app.observability.telemetry import get_tracer
 from backend.app.services.stream_events import (
     ChatStreamEvent,
+    ElicitationRequiredEvent,
     KeepaliveEvent,
     ToolApprovalRequiredEvent,
     ToolCallEvent,
@@ -70,6 +73,7 @@ async def execute_tool_with_hitl(
     workspace_store: Any = None,
     mcp_manager: Any = None,
     approval_gate: Any = None,
+    elicitation_gate: Any = None,
     approval_timeout: float = 120.0,
     keepalive_interval: float = 15.0,
 ) -> AsyncIterator[ChatStreamEvent]:
@@ -193,12 +197,149 @@ async def execute_tool_with_hitl(
         return
 
     tracer = get_tracer("gemini_local_ui.tools")
-    with tracer.start_as_current_span("mcp.tool.execute") as span:
-        span.set_attribute("tool.name", tool_name)
-        span.set_attribute("tool.connector_id", conn_id)
-        tool_res = await mgr.call_tool(tool_name, tool_args)
-        is_err = bool(tool_res.get("is_error", False))
-        span.set_attribute("tool.is_error", is_err)
+    elicit_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def _on_elicit_event(meta: dict[str, Any]) -> None:
+        await elicit_queue.put(meta)
+
+    async def _run_single_call(args_to_send: dict[str, Any]) -> dict[str, Any]:
+        with tracer.start_as_current_span("mcp.tool.execute") as span:
+            span.set_attribute("tool.name", tool_name)
+            span.set_attribute("tool.connector_id", conn_id)
+            fn = mgr.call_tool
+            supports_elicit = False
+            if not isinstance(fn, NonCallableMock):
+                with contextlib.suppress(Exception):
+                    supports_elicit = "on_elicitation" in inspect.signature(fn).parameters
+            if supports_elicit:
+                res = await fn(
+                    tool_name,
+                    args_to_send,
+                    on_elicitation=_on_elicit_event,
+                    cancel_event=cancel_event,
+                )
+            else:
+                res = await fn(tool_name, args_to_send)
+            span.set_attribute("tool.is_error", bool(res.get("is_error", False)))
+            return res
+
+    async def _poll_call_with_elicitations(args_to_send: dict[str, Any]) -> AsyncIterator[ChatStreamEvent | dict[str, Any]]:
+        call_task = asyncio.create_task(_run_single_call(args_to_send))
+        last_ka = time.monotonic()
+        try:
+            while not call_task.done():
+                while not elicit_queue.empty():
+                    yield ElicitationRequiredEvent(metadata=elicit_queue.get_nowait())
+                if cancel_event.is_set():
+                    break
+                await asyncio.wait({call_task}, timeout=0.25)
+                while not elicit_queue.empty():
+                    yield ElicitationRequiredEvent(metadata=elicit_queue.get_nowait())
+                now_m = time.monotonic()
+                if not call_task.done() and now_m - last_ka >= keepalive_interval:
+                    last_ka = now_m
+                    yield KeepaliveEvent()
+            if cancel_event.is_set() and not call_task.done():
+                outcome.cancelled = True
+                outcome.denied = True
+                return
+            yield await call_task
+        finally:
+            if not call_task.done():
+                call_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await call_task
+
+    tool_res: dict[str, Any] = {}
+    async for item in _poll_call_with_elicitations(tool_args):
+        if isinstance(item, dict):
+            tool_res = item
+        else:
+            yield item
+    if outcome.cancelled or cancel_event.is_set():
+        outcome.cancelled = True
+        outcome.denied = True
+        return
+
+    is_err = bool(tool_res.get("is_error", False))
+    mrtr_data = tool_res.get("structured_content")
+    if not isinstance(mrtr_data, dict):
+        raw_res_str = tool_res.get("result")
+        if isinstance(raw_res_str, str) and raw_res_str.strip().startswith("{"):
+            with contextlib.suppress(Exception):
+                parsed = json.loads(raw_res_str.strip())
+                if isinstance(parsed, dict):
+                    mrtr_data = parsed
+
+    final_args = dict(tool_args)
+    status_override: str | None = None
+    if not is_err and isinstance(mrtr_data, dict) and mrtr_data.get("resultType") == "input_required":
+        from backend.app.mcp.elicitation_gate import get_elicitation_gate
+        egate = elicitation_gate or get_elicitation_gate()
+        elicit_id = str(mrtr_data.get("elicitationId") or mrtr_data.get("elicitation_id") or f"elicit_{uuid.uuid4().hex[:10]}")
+        e_mode = "url" if mrtr_data.get("mode") == "url" else "form"
+        e_msg = str(mrtr_data.get("message") or "")
+        e_schema = mrtr_data.get("requestedSchema") or mrtr_data.get("requested_schema")
+        e_url = mrtr_data.get("url")
+        try:
+            pending_el = egate.create_pending(
+                elicit_id,
+                connector_id=conn_id,
+                mode=e_mode,  # type: ignore[arg-type]
+                message=e_msg,
+                requested_schema=e_schema if isinstance(e_schema, dict) else None,
+                url=str(e_url) if e_url is not None else None,
+                tool_name=bare_name,
+            )
+            yield ElicitationRequiredEvent(metadata=pending_el.to_metadata())
+            ewait = asyncio.create_task(
+                egate.wait_for_response(elicit_id, timeout=approval_timeout, cancel_event=cancel_event)
+            )
+            last_ka = time.monotonic()
+            try:
+                while not ewait.done():
+                    if cancel_event.is_set():
+                        break
+                    done_set, _ = await asyncio.wait({ewait}, timeout=0.25)
+                    if done_set:
+                        break
+                    if time.monotonic() - last_ka >= keepalive_interval:
+                        last_ka = time.monotonic()
+                        yield KeepaliveEvent()
+                if cancel_event.is_set():
+                    outcome.cancelled = True
+                    outcome.denied = True
+                    return
+                e_action, e_content = await ewait
+            finally:
+                if not ewait.done():
+                    ewait.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await ewait
+                egate._pending.pop(elicit_id, None)
+        except ValueError:
+            e_action, e_content = "cancel", None
+
+        if e_action == "accept":
+            final_args = {**tool_args, **(e_content or {})}
+            async for item in _poll_call_with_elicitations(final_args):
+                if isinstance(item, dict):
+                    tool_res = item
+                else:
+                    yield item
+            if outcome.cancelled or cancel_event.is_set():
+                outcome.cancelled = True
+                outcome.denied = True
+                return
+            is_err = bool(tool_res.get("is_error", False))
+        else:
+            is_err = True
+            status_override = "declined" if e_action == "decline" else "cancelled"
+            tool_res = {
+                "result": f"Tool elicitation {status_override} by user.",
+                "is_error": True,
+                "duration_ms": tool_res.get("duration_ms", 0),
+            }
 
     rec = {
         "id": f"call_{uuid.uuid4().hex[:8]}",
@@ -206,11 +347,11 @@ async def execute_tool_with_hitl(
         "namespaced_name": tool_name,
         "connector_id": conn_id,
         "tool_name": bare_name,
-        "arguments": tool_args,
+        "arguments": final_args,
         "result": tool_res.get("result", ""),
         "is_error": is_err,
         "ok": not is_err,
-        "status": "error" if is_err else "ok",
+        "status": status_override or ("error" if is_err else "ok"),
         "duration_ms": tool_res.get("duration_ms", 0),
     }
     outcome.record = rec

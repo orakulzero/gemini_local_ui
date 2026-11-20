@@ -12,15 +12,65 @@ import logging
 import os
 import shutil
 import sys
-from typing import Any, Dict, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+import uuid
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+import mcp.types as mcp_types
 
+from backend.app.mcp.elicitation_gate import get_elicitation_gate
 from backend.app.mcp.win32_job import Win32JobGuard
 from backend.app.storage.workspace_models import ConnectorItem
 
 logger = logging.getLogger("gemini_mcp.session_pool")
+
+
+async def handle_mcp_elicitation_request(
+    *,
+    connector_id: str,
+    params: Any,
+    timeout_seconds: float = 120.0,
+    tool_name: Optional[str] = None,
+    on_elicitation: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    cancel_event: Optional[asyncio.Event] = None,
+) -> mcp_types.ElicitResult:
+    """Bridge server-initiated MCP `elicitation/create` onto ElicitationGate + live stream callback."""
+    raw_url = getattr(params, "url", None)
+    raw_mode = getattr(params, "mode", None) or ("url" if raw_url else "form")
+    mode = "url" if raw_mode == "url" else "form"
+    message = str(getattr(params, "message", "") or "")
+    raw_schema = getattr(params, "requested_schema", None) or getattr(params, "requestedSchema", None)
+    if hasattr(raw_schema, "model_dump"):
+        req_schema = raw_schema.model_dump(by_alias=True, exclude_none=True)
+    elif isinstance(raw_schema, dict):
+        req_schema = raw_schema
+    else:
+        req_schema = None
+    elicitation_id = str(getattr(params, "elicitation_id", None) or f"elicit_{uuid.uuid4().hex[:10]}")
+
+    gate = get_elicitation_gate()
+    try:
+        pending = gate.create_pending(
+            elicitation_id,
+            connector_id=connector_id,
+            mode=mode,  # type: ignore[arg-type]
+            message=message,
+            requested_schema=req_schema,
+            url=str(raw_url) if raw_url is not None else None,
+            tool_name=tool_name,
+        )
+    except ValueError as err:
+        logger.warning("Blocked unsafe MCP elicitation URL from %s: %s", connector_id, err)
+        return mcp_types.ElicitResult(action="cancel", content=None)
+
+    if on_elicitation is not None:
+        await on_elicitation(pending.to_metadata())
+
+    action, content = await gate.wait_for_response(
+        elicitation_id, timeout=float(timeout_seconds or 120.0), cancel_event=cancel_event
+    )
+    return mcp_types.ElicitResult(action=action, content=content if action == "accept" else None)
 
 
 def _compute_config_hash(conn: ConnectorItem) -> str:
@@ -41,6 +91,9 @@ class StdioActor:
         self.queue: asyncio.Queue[Tuple[str, Tuple[Any, ...], asyncio.Future[Any]]] = asyncio.Queue()
         self.reuse_count: int = 0
         self._dirty: bool = False
+        self._active_tool_name: Optional[str] = None
+        self._active_on_elicitation: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
+        self._active_cancel_event: Optional[asyncio.Event] = None
         self.task = asyncio.create_task(self._run_actor())
 
     async def _run_actor(self) -> None:
@@ -69,9 +122,19 @@ class StdioActor:
                 logger.info("ToolListChangedNotification received for connector '%s'; marking dirty", self.conn.id)
                 self._dirty = True
 
+        async def _on_elicit(_ctx: Any, params: Any) -> mcp_types.ElicitResult:
+            return await handle_mcp_elicitation_request(
+                connector_id=self.conn.id,
+                params=params,
+                timeout_seconds=float(self.conn.timeout_seconds or 120.0),
+                tool_name=self._active_tool_name,
+                on_elicitation=self._active_on_elicitation,
+                cancel_event=self._active_cancel_event,
+            )
+
         try:
             async with stdio_client(params) as (r, w):
-                async with ClientSession(r, w, message_handler=_on_msg) as session:
+                async with ClientSession(r, w, message_handler=_on_msg, elicitation_callback=_on_elicit) as session:
                     await asyncio.wait_for(session.initialize(), timeout=self.conn.timeout_seconds)
                     while True:
                         action, args, fut = await self.queue.get()
@@ -92,7 +155,10 @@ class StdioActor:
                                 if not fut.done():
                                     fut.set_exception(ex)
                         elif action == "call_tool":
-                            tool_name, arguments = args
+                            tool_name, arguments, on_elicit_cb, cancel_ev = args
+                            self._active_tool_name = tool_name
+                            self._active_on_elicitation = on_elicit_cb
+                            self._active_cancel_event = cancel_ev
                             try:
                                 call_res = await asyncio.wait_for(
                                     session.call_tool(tool_name, arguments), timeout=self.conn.timeout_seconds
@@ -103,6 +169,10 @@ class StdioActor:
                             except Exception as ex:
                                 if not fut.done():
                                     fut.set_exception(ex)
+                            finally:
+                                self._active_tool_name = None
+                                self._active_on_elicitation = None
+                                self._active_cancel_event = None
                         self.queue.task_done()
         except asyncio.CancelledError:
             pass
@@ -161,18 +231,27 @@ class MCPSessionPool:
                 return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
             raise
 
-    async def call_tool(self, conn: ConnectorItem, tool_name: str, arguments: dict) -> Tuple[Any, int]:
+    async def call_tool(
+        self,
+        conn: ConnectorItem,
+        tool_name: str,
+        arguments: dict,
+        *,
+        on_elicitation: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Tuple[Any, int]:
         actor = await self.get_or_create_actor(conn)
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
-        await actor.queue.put(("call_tool", (tool_name, arguments), fut))
+        payload = (tool_name, arguments, on_elicitation, cancel_event)
+        await actor.queue.put(("call_tool", payload, fut))
         try:
             return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
         except Exception:
             if actor._dirty:
                 actor = await self.get_or_create_actor(conn)
                 fut = loop.create_future()
-                await actor.queue.put(("call_tool", (tool_name, arguments), fut))
+                await actor.queue.put(("call_tool", payload, fut))
                 return await asyncio.wait_for(fut, timeout=conn.timeout_seconds)
             raise
 

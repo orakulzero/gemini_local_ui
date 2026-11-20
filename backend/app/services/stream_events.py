@@ -115,6 +115,17 @@ class ToolApprovalRequiredEvent:
 
 
 @dataclass
+class ElicitationRequiredEvent:
+    metadata: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "elicitation_required", "metadata": dict(self.metadata)}
+
+    def to_sse_frame(self) -> str:
+        return format_ui_sse(self.to_dict())
+
+
+@dataclass
 class ToolCallEvent:
     metadata: dict[str, Any]
 
@@ -179,6 +190,7 @@ ChatStreamEvent = Union[
     GroundingEvent,
     MediaEvent,
     ToolApprovalRequiredEvent,
+    ElicitationRequiredEvent,
     ToolCallEvent,
     DoneEvent,
     SavedEvent,

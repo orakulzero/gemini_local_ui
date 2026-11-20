@@ -1,4 +1,4 @@
-import { StreamEvent, ToolApprovalRequest } from '../types';
+import { ElicitationRequest, StreamEvent, ToolApprovalRequest } from '../types';
 
 export interface ChatGeneratePayload {
   conversation_id?: string;
@@ -31,9 +31,50 @@ export interface StreamCallbacks {
   onMedia?: (metadata: any) => void;
   onToolCall?: (metadata: { tool_calls: any[] }) => void;
   onToolApprovalRequired?: (metadata: ToolApprovalRequest) => void;
+  onElicitationRequired?: (metadata: ElicitationRequest) => void;
   onSaved?: (assistantMessageId?: number) => void;
   onDone?: (metadata?: any) => void;
   onError?: (error: string) => void;
+}
+
+export function dispatchStreamEvent(event: StreamEvent, callbacks: StreamCallbacks) {
+  switch (event.type) {
+    case 'start':
+      callbacks.onStart?.(event.conversation_id, event.user_message_id);
+      break;
+    case 'thought':
+      callbacks.onThought?.(event.delta);
+      break;
+    case 'text':
+      callbacks.onText?.(event.delta);
+      break;
+    case 'citation':
+    case 'grounding':
+      callbacks.onCitation?.(event.metadata);
+      break;
+    case 'media':
+      callbacks.onMedia?.(event.metadata);
+      callbacks.onCitation?.(event.metadata);
+      break;
+    case 'tool_call':
+      callbacks.onToolCall?.(event.metadata);
+      break;
+    case 'tool_approval_required':
+      callbacks.onToolApprovalRequired?.(event.metadata);
+      break;
+    case 'elicitation_required':
+      callbacks.onElicitationRequired?.(event.metadata);
+      break;
+    case 'saved':
+      callbacks.onSaved?.(event.assistant_message_id);
+      break;
+    case 'done':
+      callbacks.onDone?.(event.metadata);
+      break;
+    case 'error':
+      callbacks.onError?.(event.error);
+      break;
+  }
 }
 
 function dispatchSseLine(rawLine: string, callbacks: StreamCallbacks) {
@@ -45,41 +86,7 @@ function dispatchSseLine(rawLine: string, callbacks: StreamCallbacks) {
 
   try {
     const event: StreamEvent = JSON.parse(jsonStr);
-
-    switch (event.type) {
-      case 'start':
-        callbacks.onStart?.(event.conversation_id, event.user_message_id);
-        break;
-      case 'thought':
-        callbacks.onThought?.(event.delta);
-        break;
-      case 'text':
-        callbacks.onText?.(event.delta);
-        break;
-      case 'citation':
-      case 'grounding':
-        callbacks.onCitation?.(event.metadata);
-        break;
-      case 'media':
-        callbacks.onMedia?.(event.metadata);
-        callbacks.onCitation?.(event.metadata);
-        break;
-      case 'tool_call':
-        callbacks.onToolCall?.(event.metadata);
-        break;
-      case 'tool_approval_required':
-        callbacks.onToolApprovalRequired?.(event.metadata);
-        break;
-      case 'saved':
-        callbacks.onSaved?.(event.assistant_message_id);
-        break;
-      case 'done':
-        callbacks.onDone?.(event.metadata);
-        break;
-      case 'error':
-        callbacks.onError?.(event.error);
-        break;
-    }
+    dispatchStreamEvent(event, callbacks);
   } catch (parseErr) {
     console.warn('Failed parsing SSE JSON line:', jsonStr, parseErr);
   }

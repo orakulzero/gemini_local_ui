@@ -105,6 +105,7 @@ export type StreamEvent =
   | { type: 'media'; metadata: any }
   | { type: 'tool_call'; metadata: { tool_calls: ToolCallRecord[] } }
   | { type: 'tool_approval_required'; metadata: ToolApprovalRequest }
+  | { type: 'elicitation_required'; metadata: ElicitationRequest }
   | { type: 'saved'; assistant_message_id?: number }
   | { type: 'done'; metadata?: any }
   | { type: 'error'; error: string };
@@ -337,6 +338,18 @@ export interface ToolCallRecord {
   is_error?: boolean;
   ok?: boolean;
   duration_ms?: number;
+}
+
+export type ElicitationAction = 'accept' | 'decline' | 'cancel';
+
+export interface ElicitationRequest {
+  elicitation_id: string;
+  connector_id: string;
+  tool_name?: string;
+  mode: 'form' | 'url';
+  message: string;
+  requested_schema?: Record<string, any> | null;
+  url?: string | null;
 }
 
 

@@ -328,6 +328,11 @@ export const createDagSlice: StateCreator<ChatState, [], [], DagSlice> = (set, g
         if (entry.nodeId === oldId) nextApprovals[aid] = { ...entry, nodeId: newId };
       }
 
+      const nextElicitations = { ...s.pendingElicitations };
+      for (const [eid, entry] of Object.entries(nextElicitations)) {
+        if (entry.nodeId === oldId) nextElicitations[eid] = { ...entry, nodeId: newId };
+      }
+
       return {
         nodesById: nextNodes,
         allMessagesMap: nextMap,
@@ -338,6 +343,7 @@ export const createDagSlice: StateCreator<ChatState, [], [], DagSlice> = (set, g
         activeNodeId: s.activeNodeId === oldId ? newId : s.activeNodeId,
         streamingAssistantId: s.streamingAssistantId === oldId ? newId : s.streamingAssistantId,
         pendingApprovals: nextApprovals,
+        pendingElicitations: nextElicitations,
       };
     });
   },

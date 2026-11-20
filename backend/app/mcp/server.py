@@ -6,11 +6,10 @@ Provides tool registration, execution dispatch, and resource resolution.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import asdict
 import json
 import logging
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from backend.app.bridge.client import GeminiWebClient
 from backend.app.bridge.image_downloader import GeminiImageDownloader
@@ -20,7 +19,14 @@ from backend.app.openai.image_store import save_image
 
 logger = logging.getLogger("gemini_mcp.server")
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2026-07-28"
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
 SERVER_INFO = {
     "name": "gemini-local-mcp",
     "version": "1.0.0",
@@ -604,15 +610,39 @@ class MCPServer:
             return None
 
         if method == "initialize":
+            req_ver = params.get("protocolVersion") if isinstance(params, dict) else None
+            negotiated = req_ver if req_ver in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             res = {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiated,
                 "capabilities": {
                     "tools": {"listChanged": False},
                     "resources": {"subscribe": False, "listChanged": False},
+                    "elicitation": {"form": {}, "url": {}},
                 },
                 "serverInfo": SERVER_INFO,
             }
             return self._make_result(req_id, res)
+
+        if method == "server/discover":
+            discover_res = {
+                "protocolVersion": PROTOCOL_VERSION,
+                "supportedProtocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"subscribe": False, "listChanged": False},
+                    "elicitation": {"form": {}, "url": {}},
+                },
+                "serverInfo": SERVER_INFO,
+                "tools": [
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "inputSchema": t["inputSchema"],
+                    }
+                    for t in self._tools.values()
+                ],
+            }
+            return self._make_result(req_id, discover_res)
 
         if method == "ping":
             return self._make_result(req_id, {})
@@ -871,7 +901,7 @@ class MCPServer:
             notebooks = await notebooklm_client.list_notebooks()
             data = [asdict(n) for n in notebooks]
             return [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}], False
-        except Exception as e:
+        except Exception:
             from backend.app.api.notebooklm import _LOCAL_FALLBACK_NOTEBOOKS
             fallback_data = [
                 {k: v for k, v in nb.items() if k not in ("sources", "notes")}
@@ -978,7 +1008,7 @@ class MCPServer:
                 "source": src_dict,
             }
             return [{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False
-        except Exception as e:
+        except Exception:
             from backend.app.api.notebooklm import _LOCAL_FALLBACK_NOTEBOOKS
             fallback_src = {
                 "id": f"src_text_{len(title)}_{len(content)}",

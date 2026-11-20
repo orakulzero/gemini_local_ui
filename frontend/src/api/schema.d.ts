@@ -116,6 +116,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat/elicitations/{elicitation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Elicitation Decision */
+        post: operations["submit_elicitation_decision_api_chat_elicitations__elicitation_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat/generate": {
         parameters: {
             query?: never;
@@ -130,6 +147,23 @@ export interface paths {
          * @description Thin SSE adapter delegating chat turn preparation & streaming to chat_orchestrator.
          */
         post: operations["generate_chat_turn_api_chat_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/protocol-contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Protocol Contract */
+        get: operations["get_chat_protocol_contract_api_chat_protocol_contract_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3086,15 +3120,22 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Handle Mcp Get
+         * @description Stateless Streamable HTTP: no persistent SSE listener on GET.
+         */
+        get: operations["handle_mcp_get_mcp_mcp_get"];
         put?: never;
         /**
          * Handle Mcp Endpoint
-         * @description Model Context Protocol (MCP) JSON-RPC 2.0 endpoint.
-         *     Accepts single or batch requests, dispatches to MCPServer, and returns standard JSON-RPC responses.
+         * @description MCP `2026-07-28` Stateless Streamable HTTP JSON-RPC 2.0 endpoint.
          */
         post: operations["handle_mcp_endpoint_mcp_mcp_post"];
-        delete?: never;
+        /**
+         * Handle Mcp Delete
+         * @description Stateless Streamable HTTP: idempotent session termination no-op.
+         */
+        delete: operations["handle_mcp_delete_mcp_mcp_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3965,6 +4006,18 @@ export interface components {
             content: string;
             /** Model */
             model?: string | null;
+        };
+        /** ElicitationDecisionRequest */
+        ElicitationDecisionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accept" | "decline" | "cancel";
+            /** Content */
+            content?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** EskdInspectApiRequest */
         EskdInspectApiRequest: {
@@ -5620,6 +5673,43 @@ export interface operations {
             };
         };
     };
+    submit_elicitation_decision_api_chat_elicitations__elicitation_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                elicitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ElicitationDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     generate_chat_turn_api_chat_generate_post: {
         parameters: {
             query?: never;
@@ -5649,6 +5739,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_protocol_contract_api_chat_protocol_contract_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -11006,7 +11118,47 @@ export interface operations {
             };
         };
     };
+    handle_mcp_get_mcp_mcp_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     handle_mcp_endpoint_mcp_mcp_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    handle_mcp_delete_mcp_mcp_delete: {
         parameters: {
             query?: never;
             header?: never;

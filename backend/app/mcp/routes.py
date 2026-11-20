@@ -1,24 +1,25 @@
 """
 backend/app/mcp/routes.py
-FastAPI router providing the HTTP POST /mcp endpoint for JSON-RPC 2.0 communication.
+Stateless Streamable HTTP (`2026-07-28`) router for MCP JSON-RPC 2.0 communication.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Union
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from backend.app.bridge.client import GeminiWebClient
 from backend.app.bridge.notebooklm import NotebookLMClient
-from backend.app.mcp.server import MCPServer
+from backend.app.mcp.server import MCPServer, PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from backend.app.observability.telemetry import get_tracer
 
 logger = logging.getLogger("gemini_mcp.routes")
 
 router = APIRouter(tags=["MCP"])
 
-# Module-level server singleton
 _mcp_server: Optional[MCPServer] = None
 
 
@@ -72,6 +73,22 @@ async def get_notebooklm_client(request: Request) -> Optional[NotebookLMClient]:
         return None
 
 
+@router.get("/mcp", response_model=None)
+@router.get("", response_model=None, include_in_schema=False)
+@router.get("/", response_model=None, include_in_schema=False)
+async def handle_mcp_get() -> Response:
+    """Stateless Streamable HTTP: no persistent SSE listener on GET."""
+    return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST, DELETE"})
+
+
+@router.delete("/mcp", response_model=None)
+@router.delete("", response_model=None, include_in_schema=False)
+@router.delete("/", response_model=None, include_in_schema=False)
+async def handle_mcp_delete() -> Response:
+    """Stateless Streamable HTTP: idempotent session termination no-op."""
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/mcp", response_model=None)
 @router.post("", response_model=None, include_in_schema=False)
 @router.post("/", response_model=None, include_in_schema=False)
@@ -81,10 +98,18 @@ async def handle_mcp_endpoint(
     client: Optional[GeminiWebClient] = Depends(get_gemini_client),
     notebooklm_client: Optional[NotebookLMClient] = Depends(get_notebooklm_client),
 ) -> Any:
-    """
-    Model Context Protocol (MCP) JSON-RPC 2.0 endpoint.
-    Accepts single or batch requests, dispatches to MCPServer, and returns standard JSON-RPC responses.
-    """
+    """MCP `2026-07-28` Stateless Streamable HTTP JSON-RPC 2.0 endpoint."""
+    hdr_ver = request.headers.get("MCP-Protocol-Version", "").strip()
+    if hdr_ver and hdr_ver not in SUPPORTED_PROTOCOL_VERSIONS:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": f"Unsupported MCP-Protocol-Version: {hdr_ver}"},
+            },
+        )
+
     try:
         body = await request.json()
     except Exception:
@@ -97,9 +122,27 @@ async def handle_mcp_endpoint(
             },
         )
 
-    response = await server.handle_message(body, client=client, notebooklm_client=notebooklm_client)
-    if response is None:
-        # All requests were notifications
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    rpc_method = request.headers.get("Mcp-Method", "").strip()
+    rpc_tool = request.headers.get("Mcp-Name", "").strip()
+    if isinstance(body, dict):
+        rpc_method = rpc_method or str(body.get("method") or "")
+        params = body.get("params")
+        if not rpc_tool and isinstance(params, dict):
+            rpc_tool = str(params.get("name") or "")
 
-    return JSONResponse(status_code=status.HTTP_200_OK, content=response)
+    tracer = get_tracer("gemini_local_ui.mcp")
+    with tracer.start_as_current_span("mcp.http.rpc") as span:
+        if rpc_method:
+            span.set_attribute("mcp.method", rpc_method)
+        if rpc_tool:
+            span.set_attribute("mcp.tool_name", rpc_tool)
+        response = await server.handle_message(body, client=client, notebooklm_client=notebooklm_client)
+
+    negotiated_ver = hdr_ver or PROTOCOL_VERSION
+    if isinstance(response, dict) and isinstance(response.get("result"), dict):
+        negotiated_ver = str(response["result"].get("protocolVersion") or negotiated_ver)
+
+    resp_headers = {"MCP-Protocol-Version": negotiated_ver}
+    if response is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT, headers=resp_headers)
+    return JSONResponse(status_code=status.HTTP_200_OK, content=response, headers=resp_headers)

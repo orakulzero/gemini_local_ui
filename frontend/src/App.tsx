@@ -14,6 +14,7 @@ import { ClaudePluginsPanel } from './components/ClaudePluginsPanel';
 import { FlowStudioDrawer } from './components/FlowStudioDrawer';
 import { MissionControlDrawer } from './components/MissionControlDrawer';
 import { WorkspaceHubModal } from './components/WorkspaceHubModal';
+import { ElicitationModal } from './components/ElicitationModal';
 import { useChatStore } from './store/chatStore';
 import { useSessionStore } from './store/sessionStore';
 import { useCanvasStore } from './store/canvasStore';
@@ -116,6 +117,7 @@ export const App: React.FC = () => {
         onClose={() => setMissionControlOpen(false)}
       />
       <WorkspaceHubModal />
+      <ElicitationModal />
     </div>
   );
 

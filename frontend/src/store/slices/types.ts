@@ -1,4 +1,11 @@
-import type { ChatAttachment, ConversationSummary, Message, ToolApprovalRequest } from '../../types';
+import type {
+  ChatAttachment,
+  ConversationSummary,
+  ElicitationAction,
+  ElicitationRequest,
+  Message,
+  ToolApprovalRequest,
+} from '../../types';
 
 export interface DagSlice {
   conversations: ConversationSummary[];
@@ -39,15 +46,25 @@ export interface StreamSlice {
 }
 
 export type PendingApprovalEntry = ToolApprovalRequest & { nodeId: number };
+export type PendingElicitationEntry = ElicitationRequest & { nodeId: number };
 
 export interface HitlSlice {
   pendingApprovals: Record<string, PendingApprovalEntry>;
+  pendingElicitations: Record<string, PendingElicitationEntry>;
+  activeElicitationId: string | null;
 
   setPendingApprovalForNode: (nodeId: number, approval: ToolApprovalRequest) => void;
   clearPendingApproval: (messageId: number) => void;
   submitToolApprovalDecision: (
     approvalId: string,
     decision: 'allow_once' | 'allow_session' | 'deny'
+  ) => Promise<void>;
+  setPendingElicitationForNode: (nodeId: number, elicitation: ElicitationRequest) => void;
+  clearPendingElicitation: (idOrNodeId: string | number) => void;
+  submitElicitationResponse: (
+    elicitationId: string,
+    action: ElicitationAction,
+    content?: Record<string, any> | null
   ) => Promise<void>;
 }
 

@@ -13,19 +13,19 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Dict, Optional
+from typing import Optional
 
 # Ensure project root is on sys.path regardless of working directory
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import httpx
-from backend.app.bridge.client import GeminiWebClient
-from backend.app.bridge.notebooklm import NotebookLMClient
-from backend.app.bridge.session import SessionManager
-from backend.app.mcp.server import MCPServer
-from backend.app.storage.vault import CredentialVault
+import httpx  # noqa: E402
+from backend.app.bridge.client import GeminiWebClient  # noqa: E402
+from backend.app.bridge.notebooklm import NotebookLMClient  # noqa: E402
+from backend.app.bridge.session import SessionManager  # noqa: E402
+from backend.app.mcp.server import MCPServer  # noqa: E402
+from backend.app.storage.vault import CredentialVault  # noqa: E402
 
 # Configure root logger strictly to sys.stderr to avoid polluting sys.stdout
 logging.basicConfig(

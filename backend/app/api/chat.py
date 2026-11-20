@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 import contextlib
 import logging
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -70,6 +70,11 @@ class ChatTTSRequest(BaseModel):
 
 class ToolApprovalDecisionRequest(BaseModel):
     decision: str
+
+
+class ElicitationDecisionRequest(BaseModel):
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, Any] | None = None
 
 
 def get_gemini_client(request: Request) -> GeminiWebClient:
@@ -141,6 +146,20 @@ async def submit_tool_approval(approval_id: str, dec_req: ToolApprovalDecisionRe
     if not get_approval_gate().submit_decision(approval_id, dec_req.decision):  # type: ignore[arg-type]
         raise HTTPException(status_code=404, detail="Approval request not found or expired")
     return {"ok": True, "approval_id": approval_id, "decision": dec_req.decision}
+
+
+@router.post("/elicitations/{elicitation_id}")
+async def submit_elicitation_decision(elicitation_id: str, el_req: ElicitationDecisionRequest) -> dict[str, Any]:
+    from backend.app.mcp.elicitation_gate import get_elicitation_gate
+    if not get_elicitation_gate().submit_response(elicitation_id, el_req.action, el_req.content):
+        raise HTTPException(status_code=404, detail="Elicitation request not found or expired")
+    return {"ok": True, "elicitation_id": elicitation_id, "action": el_req.action}
+
+
+@router.get("/protocol-contract")
+async def get_chat_protocol_contract() -> dict[str, Any]:
+    from backend.app.contracts.agent_stream_v1 import get_protocol_contract_descriptor
+    return get_protocol_contract_descriptor()
 
 
 @router.post("/generate")

@@ -1990,6 +1990,36 @@
         "title": "EditMessageRequest",
         "type": "object"
       },
+      "ElicitationDecisionRequest": {
+        "properties": {
+          "action": {
+            "enum": [
+              "accept",
+              "decline",
+              "cancel"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ElicitationDecisionRequest",
+        "type": "object"
+      },
       "EskdInspectApiRequest": {
         "properties": {
           "annotations": {
@@ -5703,6 +5733,60 @@
         ]
       }
     },
+    "/api/chat/elicitations/{elicitation_id}": {
+      "post": {
+        "operationId": "submit_elicitation_decision_api_chat_elicitations__elicitation_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "elicitation_id",
+            "required": true,
+            "schema": {
+              "title": "Elicitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElicitationDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit Elicitation Decision Api Chat Elicitations  Elicitation Id  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Elicitation Decision",
+        "tags": [
+          "Web UI Chat"
+        ]
+      }
+    },
     "/api/chat/generate": {
       "post": {
         "description": "Thin SSE adapter delegating chat turn preparation & streaming to chat_orchestrator.",
@@ -5738,6 +5822,29 @@
           }
         },
         "summary": "Generate Chat Turn",
+        "tags": [
+          "Web UI Chat"
+        ]
+      }
+    },
+    "/api/chat/protocol-contract": {
+      "get": {
+        "operationId": "get_chat_protocol_contract_api_chat_protocol_contract_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Chat Protocol Contract Api Chat Protocol Contract Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chat Protocol Contract",
         "tags": [
           "Web UI Chat"
         ]
@@ -12837,8 +12944,46 @@
       }
     },
     "/mcp/mcp": {
+      "delete": {
+        "description": "Stateless Streamable HTTP: idempotent session termination no-op.",
+        "operationId": "handle_mcp_delete_mcp_mcp_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Handle Mcp Delete",
+        "tags": [
+          "mcp",
+          "MCP"
+        ]
+      },
+      "get": {
+        "description": "Stateless Streamable HTTP: no persistent SSE listener on GET.",
+        "operationId": "handle_mcp_get_mcp_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Handle Mcp Get",
+        "tags": [
+          "mcp",
+          "MCP"
+        ]
+      },
       "post": {
-        "description": "Model Context Protocol (MCP) JSON-RPC 2.0 endpoint.\nAccepts single or batch requests, dispatches to MCPServer, and returns standard JSON-RPC responses.",
+        "description": "MCP `2026-07-28` Stateless Streamable HTTP JSON-RPC 2.0 endpoint.",
         "operationId": "handle_mcp_endpoint_mcp_mcp_post",
         "responses": {
           "200": {

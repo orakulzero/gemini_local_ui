@@ -88,6 +88,7 @@ async function runAssistantTurnStream({
         if (!metaUpdate?.tool_calls?.length) return;
         const nodeId = targetId();
         get().clearPendingApproval(nodeId);
+        get().clearPendingElicitation(nodeId);
         set((s) =>
           applyNodePatch(s, nodeId, (m) => {
             const prev = Array.isArray(m.metadata?.tool_calls) ? m.metadata.tool_calls : [];
@@ -100,6 +101,9 @@ async function runAssistantTurnStream({
       },
       onToolApprovalRequired: (approvalMeta) => {
         if (approvalMeta) get().setPendingApprovalForNode(targetId(), approvalMeta);
+      },
+      onElicitationRequired: (elicitMeta) => {
+        if (elicitMeta) get().setPendingElicitationForNode(targetId(), elicitMeta);
       },
       onSaved: (serverAsstMsgId) => {
         flushDeltas();
@@ -123,6 +127,7 @@ async function runAssistantTurnStream({
         const nodeId = targetId();
         if (metadata) updateAsstMeta(metadata);
         get().clearPendingApproval(nodeId);
+        get().clearPendingElicitation(nodeId);
         set({ isGenerating: false, activeAbortController: null, activeNodeId: null });
         syncConversationDetailCache(convId, get());
         if (!get().isIncognito) get().loadConversations();

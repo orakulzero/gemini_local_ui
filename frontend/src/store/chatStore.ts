@@ -12,12 +12,21 @@ import type {
   DagSlice,
   HitlSlice,
   PendingApprovalEntry,
+  PendingElicitationEntry,
   StreamSlice,
   UiSlice,
 } from './slices/types';
 
 export { computeActiveBranch, mergeAssistantMetadata, selectMergedImages };
-export type { ChatState, DagSlice, HitlSlice, PendingApprovalEntry, StreamSlice, UiSlice };
+export type {
+  ChatState,
+  DagSlice,
+  HitlSlice,
+  PendingApprovalEntry,
+  PendingElicitationEntry,
+  StreamSlice,
+  UiSlice,
+};
 
 export const useChatStore = create<ChatState>()((...a) => ({
   ...createDagSlice(...a),

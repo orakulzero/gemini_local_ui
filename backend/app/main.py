@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from backend.app.api.accounts import router as accounts_router
 from backend.app.api.chat import router as chat_router
+from backend.app.api.ws_chat import router as ws_chat_router
 from backend.app.api.claude_plugins import router as claude_plugins_router
 from backend.app.api.conversations import router as conversations_router
 from backend.app.api.flow import router as flow_router
@@ -690,6 +691,7 @@ async def serve_local_generated_image(name: str, request: Request) -> Any:
 # Mount API, OpenAI, Anthropic, and MCP routers
 app.include_router(conversations_router)
 app.include_router(chat_router)
+app.include_router(ws_chat_router)
 app.include_router(accounts_router)
 app.include_router(limits_router)
 app.include_router(claude_plugins_router)

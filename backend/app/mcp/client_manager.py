@@ -11,14 +11,14 @@ import logging
 import os
 import sys
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
-from backend.app.mcp.session_pool import MCPSessionPool
+from backend.app.mcp.session_pool import MCPSessionPool, handle_mcp_elicitation_request
 from backend.app.storage.workspace_config import WorkspaceConfigStore
 from backend.app.storage.workspace_models import ConnectorItem
 
@@ -34,8 +34,26 @@ class MCPConnectorManager:
         await self.session_pool.close_all()
 
     @asynccontextmanager
-    async def _connect(self, conn: ConnectorItem) -> AsyncIterator[ClientSession]:
+    async def _connect(
+        self,
+        conn: ConnectorItem,
+        *,
+        tool_name: Optional[str] = None,
+        on_elicitation: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> AsyncIterator[ClientSession]:
         timeout = conn.timeout_seconds or 15
+
+        async def _on_elicit(_ctx: Any, params: Any) -> Any:
+            return await handle_mcp_elicitation_request(
+                connector_id=conn.id,
+                params=params,
+                timeout_seconds=float(timeout),
+                tool_name=tool_name,
+                on_elicitation=on_elicitation,
+                cancel_event=cancel_event,
+            )
+
         if conn.transport == "stdio":
             env = dict(os.environ)
             if conn.env:
@@ -49,17 +67,17 @@ class MCPConnectorManager:
                 cwd=proj_dir,
             )
             async with stdio_client(params) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
+                async with ClientSession(read_stream, write_stream, elicitation_callback=_on_elicit) as session:
                     await asyncio.wait_for(session.initialize(), timeout=timeout)
                     yield session
         elif conn.transport == "sse":
             async with sse_client(conn.url or "", headers=conn.headers or {}) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
+                async with ClientSession(read_stream, write_stream, elicitation_callback=_on_elicit) as session:
                     await asyncio.wait_for(session.initialize(), timeout=timeout)
                     yield session
         elif conn.transport in ("streamable-http", "streamable_http"):
             async with streamable_http_client(conn.url or "", headers=conn.headers or {}) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
+                async with ClientSession(read_stream, write_stream, elicitation_callback=_on_elicit) as session:
                     await asyncio.wait_for(session.initialize(), timeout=timeout)
                     yield session
         else:
@@ -113,7 +131,7 @@ class MCPConnectorManager:
         all_conns = self.config_store.list_connectors(mask=False)
         target_conns = [
             c for c in all_conns
-            if c.enabled and (connector_ids is None or c.id in connector_ids)
+            if ((c.id in connector_ids) if connector_ids is not None else c.enabled)
         ]
         tools: List[Dict[str, Any]] = []
         for conn in target_conns:
@@ -139,7 +157,14 @@ class MCPConnectorManager:
                 logger.warning("Failed listing tools for connector %s: %s", conn.id, e)
         return tools
 
-    async def call_tool(self, namespaced_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def call_tool(
+        self,
+        namespaced_name: str,
+        arguments: Dict[str, Any],
+        *,
+        on_elicitation: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Dict[str, Any]:
         if "__" not in namespaced_name:
             raise ValueError(f"Invalid namespaced tool name: {namespaced_name}")
         connector_id, tool_name = namespaced_name.split("__", 1)
@@ -174,9 +199,17 @@ class MCPConnectorManager:
         t0 = time.perf_counter()
         reuse_count = 0
         if conn.transport == "stdio":
-            res, reuse_count = await self.session_pool.call_tool(conn, tool_name, arguments)
+            res, reuse_count = await self.session_pool.call_tool(
+                conn,
+                tool_name,
+                arguments,
+                on_elicitation=on_elicitation,
+                cancel_event=cancel_event,
+            )
         else:
-            async with self._connect(conn) as session:
+            async with self._connect(
+                conn, tool_name=tool_name, on_elicitation=on_elicitation, cancel_event=cancel_event
+            ) as session:
                 res = await asyncio.wait_for(session.call_tool(tool_name, arguments), timeout=conn.timeout_seconds)
         duration_ms = int((time.perf_counter() - t0) * 1000)
         text_out = []
@@ -188,10 +221,12 @@ class MCPConnectorManager:
             else:
                 text_out.append(str(item))
         result_str = "\n".join(text_out)
-        is_err = bool(getattr(res, "isError", False))
+        is_err = bool(getattr(res, "isError", False) or getattr(res, "is_error", False))
+        structured = getattr(res, "structured_content", None) or getattr(res, "structuredContent", None)
         return {
             "ok": not is_err,
             "result": result_str,
+            "structured_content": structured,
             "is_error": is_err,
             "duration_ms": duration_ms,
             "reuse_count": reuse_count,
