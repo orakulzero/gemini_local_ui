@@ -23,12 +23,19 @@ const IMAGE_GEN_MD_WRAPPER_RE =
   /!?\[[^\]]*\]\(https?:\/\/[a-zA-Z0-9.-]*googleusercontent\.com\/image_generation_content\/[^)\s]+\)/g;
 const IMAGE_GEN_PLACEHOLDER_RE =
   /https?:\/\/[a-zA-Z0-9.-]*googleusercontent\.com\/image_generation_content\/\S+/g;
+const FOLLOW_UP_TAG_RE = /<FollowUp\b[^>]*\/?>(?:[\s\S]*?<\/FollowUp>)?/gi;
 
-function stripImageGenPlaceholders(text: string): string {
-  if (!text || !text.includes('image_generation_content')) return text;
-  return text
-    .replace(IMAGE_GEN_MD_WRAPPER_RE, '')
-    .replace(IMAGE_GEN_PLACEHOLDER_RE, '')
+function stripTransientProtocolMarkup(text: string): string {
+  if (!text) return text;
+  let out = text;
+  if (out.includes('image_generation_content')) {
+    out = out.replace(IMAGE_GEN_MD_WRAPPER_RE, '').replace(IMAGE_GEN_PLACEHOLDER_RE, '');
+  }
+  if (out.includes('FollowUp') || out.includes('followup')) {
+    out = out.replace(FOLLOW_UP_TAG_RE, '');
+  }
+  if (out === text) return text;
+  return out
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/^[ \t]+|[ \t]+$/g, '');
@@ -43,7 +50,7 @@ export function segmentStreamingMarkdown(rawBufferInput: string): {
   isInCodeBlock: boolean;
   codeLanguage: string;
 } {
-  const rawBuffer = stripImageGenPlaceholders(rawBufferInput);
+  const rawBuffer = stripTransientProtocolMarkup(rawBufferInput);
   if (!rawBuffer) {
     return { immutableBlocks: [], tailBlock: '', isInCodeBlock: false, codeLanguage: '' };
   }

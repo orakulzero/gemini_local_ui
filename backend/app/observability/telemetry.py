@@ -140,6 +140,9 @@ class _NoopSpan:
     def set_status(self, *args: Any, **kwargs: Any) -> None:
         pass
 
+    def end(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
 
 class _NoopTracer:
     def start_as_current_span(self, name: str, *args: Any, **kwargs: Any) -> _NoopSpan:

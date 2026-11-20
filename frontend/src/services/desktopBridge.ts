@@ -40,6 +40,14 @@ export function getDesktopAuthHeaders(): Record<string, string> {
   return { 'X-Gemini-Local-Token': token.trim() };
 }
 
+function appendWsToken(url: string): string {
+  if (typeof window === 'undefined') return url;
+  const token = window.__GEMINI_DESKTOP_CONFIG__?.apiToken;
+  if (typeof token !== 'string' || !token.trim()) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token.trim())}`;
+}
+
 export function resolveWsUrl(path = '/api/chat/ws'): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   if (typeof window !== 'undefined') {
@@ -57,6 +65,10 @@ export function resolveWsUrl(path = '/api/chat/ws'): string {
     }
   }
   return `ws://127.0.0.1:8000${normalizedPath}`;
+}
+
+export function resolveAuthenticatedWsUrl(path = '/api/chat/ws'): string {
+  return appendWsToken(resolveWsUrl(path));
 }
 
 export function desktopFetch(path: string, init?: RequestInit): Promise<Response> {

@@ -20,8 +20,8 @@ logger = logging.getLogger("gemini_backend.ecosystem_scout")
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]+")
 DEFAULT_SKILLS_ROOT = (
-    Path(r"e:\ANTIGRAVITY\.agents\skills")
-    if os.name == "nt"
+    Path(os.environ["ANTIGRAVITY_SKILLS_ROOT"])
+    if os.environ.get("ANTIGRAVITY_SKILLS_ROOT")
     else Path.home() / ".agents" / "skills"
 )
 
@@ -464,7 +464,8 @@ class EcosystemIntelligenceScout:
         if not Path(target_repo).exists() or not (Path(target_repo) / "tests").exists():
             repo_root = Path(__file__).resolve().parents[3]
             projects_root = repo_root.parent
-            alt_root = Path(r"E:\ANTIGRAVITY")
+            alt_root_env = os.environ.get("ANTIGRAVITY_ROOT")
+            alt_root = Path(alt_root_env) if alt_root_env else projects_root
             for cand in (
                 repo_root if target_repo == repo_root.name else None,
                 projects_root / Path(target_repo).name,

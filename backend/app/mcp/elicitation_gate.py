@@ -19,14 +19,32 @@ MAX_PENDING_ELICITATIONS = 64
 
 
 def validate_elicitation_url(url: str) -> str:
-    """Allow ONLY https:// (with hostname) or loopback http://127.0.0.1 / http://localhost."""
+    """Allow ONLY https:// (with safe host/port) or loopback http://127.0.0.1 / http://localhost."""
     if not isinstance(url, str) or not url.strip():
         raise ValueError("Elicitation URL must be a non-empty string")
     cleaned = url.strip()
-    parsed = urlsplit(cleaned)
+    if any(ord(c) < 32 or ord(c) == 127 or c.isspace() for c in cleaned):
+        raise ValueError("Elicitation URL contains forbidden control or whitespace characters")
+    if "://" not in cleaned:
+        raise ValueError(f"Unsafe elicitation URL scheme or host: {cleaned[:64]}")
+    raw_scheme, raw_rest = cleaned.split("://", 1)
+    raw_auth = raw_rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if not raw_auth or "@" in raw_auth or "\\" in raw_auth:
+        raise ValueError(f"Unsafe elicitation URL authority: {cleaned[:64]}")
+    try:
+        parsed = urlsplit(cleaned)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Invalid elicitation URL port: {cleaned[:64]}") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(f"Out-of-range elicitation URL port: {cleaned[:64]}")
     scheme = (parsed.scheme or "").lower()
     hostname = (parsed.hostname or "").lower()
-    if scheme == "https" and hostname:
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Userinfo not permitted in elicitation URL: {cleaned[:64]}")
+    if scheme != raw_scheme.lower() or not hostname:
+        raise ValueError(f"Unsafe elicitation URL scheme or host: {cleaned[:64]}")
+    if scheme == "https":
         return cleaned
     if scheme == "http" and hostname in ("127.0.0.1", "localhost"):
         return cleaned

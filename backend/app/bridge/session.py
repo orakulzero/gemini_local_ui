@@ -179,6 +179,7 @@ class SessionManager:
         self._wreq_clients: dict[str, Any] = {}
         self._last_vault_generation: int = self._read_vault_generation()
         self._credential_generation: int = max(0, self._last_vault_generation)
+        self._rollback_cooldown_until: dict[str, float] = {}
 
     def _read_vault_generation(self) -> int:
         if self.vault and hasattr(self.vault, "get_vault_generation"):
@@ -485,6 +486,15 @@ class SessionManager:
             return False
 
         target_acc_id = account_id or self.active_account_id
+        now_ts = time.time()
+        cooldown_until = self._rollback_cooldown_until.get(target_acc_id, 0.0)
+        if cooldown_until > now_ts:
+            logger.debug(
+                "Skipping vault backup rollback for '%s' (cooldown %.0fs remaining)",
+                target_acc_id,
+                cooldown_until - now_ts,
+            )
+            return False
         logger.warning("Attempting session rollback from vault backup for account '%s'", target_acc_id)
 
         try:
@@ -523,8 +533,10 @@ class SessionManager:
             # Verify restored credentials via scrape_tokens without nested rollback
             scraped = await self.scrape_tokens(target_acc_id, allow_rollback=False)
             if scraped and ctx.status == SessionHealthStatus.HEALTHY:
+                self._rollback_cooldown_until.pop(target_acc_id, None)
                 logger.info("Session for account '%s' successfully recovered from vault backup snapshot", target_acc_id)
                 return True
+            self._rollback_cooldown_until[target_acc_id] = time.time() + 300.0
             logger.warning("Scrape with restored backup credentials failed for account '%s'", target_acc_id)
             return False
         except Exception as e:
@@ -614,7 +626,7 @@ class SessionManager:
             if m_lang:
                 ctx.language = m_lang.group(1)
 
-            if not ctx.access_token and prior_at and ctx.cookies.get("__Secure-1PSID") and (m_sid or m_bl):
+            if not ctx.access_token and prior_at and ctx.cookies.get("__Secure-1PSID") and m_sid:
                 ctx.access_token = prior_at
                 ctx.passive_rotation = True
                 logger.info(
@@ -888,15 +900,22 @@ class SessionManager:
         ctx = sess.context if sess else self.context
 
         sess_lock = sess.lock if sess else getattr(self, "_lock", None)
+        changed: dict[str, str] = {}
         if sess_lock:
             async with sess_lock:
-                ctx.cookies.update(harvested)
+                changed = {k: v for k, v in harvested.items() if ctx.cookies.get(k) != v}
+                if not changed:
+                    return
+                ctx.cookies.update(changed)
                 ctx.last_refresh = time.time()
                 if ctx.status != SessionHealthStatus.HEALTHY and ctx.cookies.get("__Secure-1PSID"):
                     ctx.status = SessionHealthStatus.HEALTHY
                     ctx.last_error = None
         else:
-            ctx.cookies.update(harvested)
+            changed = {k: v for k, v in harvested.items() if ctx.cookies.get(k) != v}
+            if not changed:
+                return
+            ctx.cookies.update(changed)
             ctx.last_refresh = time.time()
             if ctx.status != SessionHealthStatus.HEALTHY and ctx.cookies.get("__Secure-1PSID"):
                 ctx.status = SessionHealthStatus.HEALTHY

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+import html
 import logging
 import re
 import time
@@ -133,6 +134,9 @@ class SearchEngine:
             return await future
 
         # 2. Database FTS5 Query Execution (Leader)
+        # Sentinel markers survive html.escape() so raw message HTML can never cause Stored XSS.
+        _HL_START = "\x02"
+        _HL_END = "\x03"
         sql = """
         SELECT 
             m.id AS message_id,
@@ -140,8 +144,8 @@ class SearchEngine:
             c.title AS conversation_title,
             m.role,
             m.created_at,
-            snippet(messages_fts, 0, '<mark class="search-highlight">', '</mark>', '...', 32) AS content_snippet,
-            snippet(messages_fts, 1, '<mark class="search-highlight">', '</mark>', '...', 32) AS thoughts_snippet,
+            snippet(messages_fts, 0, char(2), char(3), '...', 32) AS content_snippet,
+            snippet(messages_fts, 1, char(2), char(3), '...', 32) AS thoughts_snippet,
             bm25(messages_fts) AS rank
         FROM messages_fts f
         JOIN messages m ON m.id = f.rowid
@@ -159,21 +163,28 @@ class SearchEngine:
             "conversation_id": conversation_id,
         }
 
+        def _render_safe_snippet(raw_snip: str) -> str:
+            escaped = html.escape(raw_snip, quote=True)
+            return (
+                escaped.replace(_HL_START, '<mark class="search-highlight">')
+                .replace(_HL_END, "</mark>")
+            )
+
         try:
             rows = await self.db.fetch_all(sql, params)
             results: List[SearchResult] = []
             for r in rows:
-                content_snip = r.get("content_snippet") or ""
-                thoughts_snip = r.get("thoughts_snippet") or ""
+                raw_content_snip = r.get("content_snippet") or ""
+                raw_thoughts_snip = r.get("thoughts_snippet") or ""
 
-                if "<mark" in content_snip:
-                    chosen_snippet = content_snip
+                if _HL_START in raw_content_snip:
+                    chosen_snippet = _render_safe_snippet(raw_content_snip)
                     matched_field = "content"
-                elif "<mark" in thoughts_snip:
-                    chosen_snippet = thoughts_snip
+                elif _HL_START in raw_thoughts_snip:
+                    chosen_snippet = _render_safe_snippet(raw_thoughts_snip)
                     matched_field = "thoughts"
                 else:
-                    chosen_snippet = content_snip or thoughts_snip
+                    chosen_snippet = _render_safe_snippet(raw_content_snip or raw_thoughts_snip)
                     matched_field = "content"
 
                 results.append(
@@ -207,5 +218,6 @@ class SearchEngine:
             async with self._lock:
                 if cache_key in self._inflight:
                     del self._inflight[cache_key]
+            future.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
             future.set_exception(e)
             return []

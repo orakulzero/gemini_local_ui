@@ -298,11 +298,22 @@ async def stream_chat_turn(
 
     tracer = get_tracer("gemini_local_ui.orchestrator")
     parent_ctx = _build_parent_span_context(prepared.trace_id) if prepared.trace_id else None
-    span_cm = (
-        tracer.start_as_current_span("chat.orchestrator.turn", context=parent_ctx)
+    raw_span = (
+        tracer.start_span("chat.orchestrator.turn", context=parent_ctx)
         if parent_ctx is not None
-        else tracer.start_as_current_span("chat.orchestrator.turn")
+        else tracer.start_span("chat.orchestrator.turn")
     )
+
+    @contextlib.contextmanager
+    def _span_lifecycle(span_obj: Any):
+        try:
+            yield span_obj
+        finally:
+            if hasattr(span_obj, "end"):
+                with contextlib.suppress(Exception):
+                    span_obj.end()
+
+    span_cm = _span_lifecycle(raw_span)
 
     client_active: Any = None
     backup_cli: Any = None

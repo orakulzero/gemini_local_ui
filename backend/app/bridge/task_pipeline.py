@@ -592,7 +592,11 @@ def verify_five_quality_gates(
         if not raw_path.exists() or (".gemini" in str(raw_path) and not (root / "tests").exists()):
             repo_name = raw_path.name
             projects_root = Path(__file__).resolve().parents[3].parent
-            for cand in (projects_root / repo_name, Path(r"E:\ANTIGRAVITY") / repo_name):
+            alt_root_env = os.environ.get("ANTIGRAVITY_ROOT")
+            cands = [projects_root / repo_name]
+            if alt_root_env:
+                cands.append(Path(alt_root_env) / repo_name)
+            for cand in cands:
                 if cand.exists() and (cand / "tests").exists():
                     root = cand.resolve()
                     break
@@ -1186,7 +1190,11 @@ class TaskPipelineOrchestrator:
         if not raw_path.exists() or (".gemini" in str(raw_path) and not (root / "tests").exists()):
             repo_name = raw_path.name
             projects_root = Path(__file__).resolve().parents[3].parent
-            for cand in (projects_root / repo_name, Path(r"E:\ANTIGRAVITY") / repo_name):
+            alt_root_env = os.environ.get("ANTIGRAVITY_ROOT")
+            cands = [projects_root / repo_name]
+            if alt_root_env:
+                cands.append(Path(alt_root_env) / repo_name)
+            for cand in cands:
                 if cand.exists() and (cand / "tests").exists():
                     root = cand.resolve()
                     break

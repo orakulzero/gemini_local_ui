@@ -115,8 +115,10 @@ export interface SearchResultItem {
   conversation_title: string;
   message_id: number;
   role: string;
-  content_snippet: string;
-  score: number;
+  snippet?: string;
+  content_snippet?: string;
+  rank?: number;
+  score?: number;
   created_at: number;
 }
 

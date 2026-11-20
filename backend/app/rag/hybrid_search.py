@@ -26,8 +26,8 @@ from backend.app.storage.database import Database
 logger = logging.getLogger("gemini_rag.hybrid_search")
 
 _FTS_TOKEN_RE = re.compile(r"[a-zA-Z0-9_\u0400-\u04FF]+")
-_TOOL_FENCE_RE = re.compile(r"```\s*tool_call\b", re.IGNORECASE)
-_TAG_ESCAPE_RE = re.compile(r"</?\s*(?:untrusted_rag_context|rag_passage)\b[^>]*>", re.IGNORECASE)
+_TOOL_FENCE_RE = re.compile(r"(?:`{3,}|~{3,})\s*tool_call\b", re.IGNORECASE)
+_TAG_ESCAPE_RE = re.compile(r"</?\s*(?:untrusted_rag_context|rag_passage)\b(?:[^>]*>)?", re.IGNORECASE)
 
 _INDEXABLE_EXTS = {
     ".md", ".txt", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".json", ".toml", ".sql", ".yaml", ".yml",

@@ -116,13 +116,19 @@ async def create_skill(req: SkillCreateRequest):
     data["content"] = req.content or req.body or ""
     if req.slug and not req.id:
         data["id"] = req.slug
-    item = get_workspace_store().create_custom_skill(data)
+    try:
+        item = get_workspace_store().create_custom_skill(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return item.model_dump()
 
 
 @router.put("/skills/{skill_slug}")
 async def update_skill(skill_slug: str, data: Dict[str, Any]):
-    item = get_workspace_store().update_custom_skill(skill_slug, data)
+    try:
+        item = get_workspace_store().update_custom_skill(skill_slug, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Skill not found")
     return item.model_dump()
@@ -130,7 +136,11 @@ async def update_skill(skill_slug: str, data: Dict[str, Any]):
 
 @router.delete("/skills/{skill_slug}")
 async def delete_skill(skill_slug: str):
-    if not get_workspace_store().delete_custom_skill(skill_slug):
+    try:
+        deleted = get_workspace_store().delete_custom_skill(skill_slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="Skill not found")
     return {"status": "deleted"}
 

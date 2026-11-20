@@ -86,6 +86,7 @@ impl SidecarSupervisor {
             .current_dir(&config.work_dir)
             .env("GEMINI_LOCAL_API_TOKEN", &config.api_token)
             .env("PYTHONUNBUFFERED", "1")
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -139,7 +140,11 @@ impl SidecarSupervisor {
             while let Ok(Some(_)) = stdout_lines.next_line().await {}
         });
 
-        wait_health_ok(&base_url, &config.api_token, deadline).await?;
+        if let Err(err) = wait_health_ok(&base_url, &config.api_token, deadline).await {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(err);
+        }
         let info = RunningSidecarInfo {
             sidecar_pid,
             base_url,

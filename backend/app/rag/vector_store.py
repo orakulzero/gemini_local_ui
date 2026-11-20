@@ -6,6 +6,7 @@ SQLite-vec (`vec0`) 512-dim float32 cosine vector store with NumPy fallback.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from typing import Any, Protocol, Sequence, runtime_checkable
 
@@ -137,12 +138,40 @@ class SqliteVecStore:
         norm_str = "1" if req_norm else "0"
 
         if persisted_id is None:
+            tbl = "vec_chunks" if self._sqlite_vec_ok else "vec_chunks_fallback"
+            existing_vec_cnt = await self.count()
+            legacy_models: set[str] = set()
+            if existing_vec_cnt > 0:
+                try:
+                    mrows = await self.db.fetch_all(
+                        "SELECT DISTINCT embedding_model FROM rag_chunks WHERE embedding_model IS NOT NULL AND embedding_model != ''"
+                    )
+                    legacy_models = {str(r["embedding_model"]) for r in mrows if r.get("embedding_model")}
+                except sqlite3.OperationalError:
+                    legacy_models = set()
+
+            incompatible_legacy = existing_vec_cnt > 0 and (
+                len(legacy_models) != 1 or next(iter(legacy_models)) != req_id or req_dim != self.dim
+            )
             async with self.db.write_transaction() as conn:
+                if incompatible_legacy:
+                    logger.warning(
+                        "Legacy unversioned RAG vectors (%d rows, models=%s) incompatible with active %s/%d; clearing.",
+                        existing_vec_cnt,
+                        sorted(legacy_models),
+                        req_id,
+                        req_dim,
+                    )
+                    await conn.execute(f"DELETE FROM {tbl}")
+                    try:
+                        await conn.execute("UPDATE rag_chunks SET embedding_model = ''")
+                    except sqlite3.OperationalError:
+                        pass
                 for k, v in (("embedder_id", req_id), ("dim", str(req_dim)), ("normalized", norm_str)):
                     await conn.execute(
                         "INSERT OR REPLACE INTO rag_index_meta (key, value) VALUES (?, ?)", (k, v)
                     )
-            return False
+            return incompatible_legacy
 
         if persisted_id == req_id and persisted_dim == req_dim and persisted_norm == req_norm:
             return False
@@ -224,13 +253,26 @@ class SqliteVecStore:
         await self.ensure_schema()
         if k <= 0:
             return []
-        q_bytes = self._to_f32_bytes(query_vec)
+        q_arr_raw = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+        if q_arr_raw.size == 0 or not np.all(np.isfinite(q_arr_raw)) or float(np.linalg.norm(q_arr_raw)) <= 1e-12:
+            # Zero-norm query vectors yield undefined cosine distance (NULL in sqlite-vec)
+            return []
+        q_bytes = self._to_f32_bytes(q_arr_raw)
         if self._sqlite_vec_ok:
             rows = await self.db.fetch_all(
                 "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance",
                 (q_bytes, int(k)),
             )
-            return [(int(r["chunk_id"]), float(1.0 - float(r["distance"]))) for r in rows]
+            out: list[tuple[int, float]] = []
+            for r in rows:
+                raw_dist = r["distance"]
+                if raw_dist is None:
+                    continue
+                dist_f = float(raw_dist)
+                if not math.isfinite(dist_f):
+                    continue
+                out.append((int(r["chunk_id"]), float(1.0 - dist_f)))
+            return out
 
         rows = await self.db.fetch_all("SELECT chunk_id, embedding FROM vec_chunks_fallback")
         if not rows:

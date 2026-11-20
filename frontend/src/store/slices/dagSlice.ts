@@ -115,8 +115,11 @@ export const createDagSlice: StateCreator<ChatState, [], [], DagSlice> = (set, g
   deleteConversation: async (id, remote = false) => {
     await api.deleteConversation(id, remote);
     const { activeConversationId, conversations } = get();
+    const remaining = conversations.filter((c) => c.id !== id);
+    set({ conversations: remaining });
+    queryClient.setQueryData(queryKeys.conversations, remaining);
+    queryClient.removeQueries({ queryKey: ['conversation', id] });
     if (activeConversationId === id) {
-      const remaining = conversations.filter((c) => c.id !== id);
       if (remaining.length > 0) await get().selectConversation(remaining[0].id);
       else {
         set({

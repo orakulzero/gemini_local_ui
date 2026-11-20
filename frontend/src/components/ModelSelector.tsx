@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSessionStore } from '../store/sessionStore';
 
 const REASONING_LEVELS: Array<{ value: 1 | 4 | 2; label: string; sub: string }> = [
@@ -9,6 +9,18 @@ const REASONING_LEVELS: Array<{ value: 1 | 4 | 2; label: string; sub: string }> 
 
 export const ModelSelector: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen]);
   const models = useSessionStore((s) => s.models);
   const selectedModel = useSessionStore((s) => s.selectedModel);
   const setSelectedModel = useSessionStore((s) => s.setSelectedModel);

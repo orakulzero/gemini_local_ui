@@ -1,6 +1,6 @@
 import type { ElicitationAction, StreamEvent } from '../types';
 import { ChatGeneratePayload, dispatchStreamEvent, StreamCallbacks } from './streaming';
-import { resolveWsUrl } from './desktopBridge';
+import { resolveAuthenticatedWsUrl } from './desktopBridge';
 
 export const AGENT_PROTOCOL_VERSION = 'agy.stream.v1' as const;
 
@@ -84,13 +84,21 @@ export function streamChatOverWsV1(
   callbacks: StreamCallbacks,
   wsUrl?: string
 ): Promise<void> {
-  const targetUrl = wsUrl || resolveWsUrl('/api/chat/ws');
+  const targetUrl = wsUrl || resolveAuthenticatedWsUrl('/api/chat/ws');
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(targetUrl);
+    const reqId = `turn_${Date.now()}`;
     let settled = false;
+    let sawDone = false;
+    let sawTerminal = false;
+    let postDoneTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
+      if (postDoneTimer !== null) {
+        clearTimeout(postDoneTimer);
+        postDoneTimer = null;
+      }
       callbacks.signal?.removeEventListener('abort', onAbort);
     };
     const finishResolve = () => {
@@ -100,6 +108,7 @@ export function streamChatOverWsV1(
       resolve();
     };
     const onAbort = () => {
+      sawTerminal = true;
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(buildWsCancelRequest(`cancel_${Date.now()}`)));
       }
@@ -109,23 +118,42 @@ export function streamChatOverWsV1(
     };
 
     callbacks.signal?.addEventListener('abort', onAbort);
-    ws.onopen = () => ws.send(JSON.stringify(buildWsPromptRequest(`turn_${Date.now()}`, payload)));
+    ws.onopen = () => ws.send(JSON.stringify(buildWsPromptRequest(reqId, payload)));
     ws.onmessage = (evt) => {
       const frame = dispatchWsServerFrame(String(evt.data), callbacks);
       const evType = frame?.params?.event?.type;
-      if (evType === 'done' || evType === 'error') {
+      if (evType === 'done') {
+        sawDone = true;
+        // Wait briefly for the subsequent `saved` event / final JSON-RPC response before closing.
+        if (postDoneTimer === null) {
+          postDoneTimer = setTimeout(() => {
+            sawTerminal = true;
+            ws.close();
+            finishResolve();
+          }, 1500);
+        }
+        return;
+      }
+      if (evType === 'saved' || evType === 'error' || (frame?.id === reqId && (frame?.result || frame?.error))) {
+        sawTerminal = true;
         ws.close();
         finishResolve();
       }
     };
     ws.onerror = () => {
       if (settled) return;
+      sawTerminal = true;
       settled = true;
       cleanup();
       const msg = 'WebSocket transport error';
       callbacks.onError?.(msg);
       reject(new Error(msg));
     };
-    ws.onclose = () => finishResolve();
+    ws.onclose = () => {
+      if (!settled && !sawTerminal && !sawDone) {
+        callbacks.onError?.('WebSocket closed before stream completed');
+      }
+      finishResolve();
+    };
   });
 }

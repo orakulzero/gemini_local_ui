@@ -573,8 +573,11 @@ class GeminiWebClient:
             raw = status.get("raw")
             if raw and isinstance(raw, list) and len(raw) > 24 and isinstance(raw[24], list) and len(raw[24]) > 0:
                 policy_str = str(raw[24][0]).lower()
-                if "pro" in policy_str or "advanced" in policy_str or "ultra" in policy_str:
-                    self.ctx.account_tier = "pro"
+                if "ultra" in policy_str:
+                    self.ctx.account_tier = "ultra"
+                elif "pro" in policy_str or "advanced" in policy_str:
+                    if self.ctx.account_tier != "ultra":
+                        self.ctx.account_tier = "pro"
                 elif "free" in policy_str:
                     self.ctx.account_tier = "free"
 

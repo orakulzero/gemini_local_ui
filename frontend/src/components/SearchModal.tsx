@@ -7,6 +7,40 @@ import { SearchResultItem, RagStatusResponse, RagSearchResponse } from '../types
 
 type SearchMode = 'fts5' | 'hybrid';
 
+const MARK_SPAN_RE = /<mark(?:\s+class="search-highlight")?>([\s\S]*?)<\/mark>/gi;
+
+function decodeBasicEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function renderSafeHighlightedSnippet(snippet: string): React.ReactNode {
+  if (!snippet) return null;
+  const nodes: React.ReactNode[] = [];
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+  MARK_SPAN_RE.lastIndex = 0;
+  while ((match = MARK_SPAN_RE.exec(snippet)) !== null) {
+    if (match.index > lastIdx) {
+      nodes.push(decodeBasicEntities(snippet.slice(lastIdx, match.index)));
+    }
+    nodes.push(
+      <mark key={`hl_${match.index}`} className="search-highlight bg-amber-500/30 text-amber-200 rounded px-0.5">
+        {decodeBasicEntities(match[1])}
+      </mark>
+    );
+    lastIdx = MARK_SPAN_RE.lastIndex;
+  }
+  if (lastIdx < snippet.length) {
+    nodes.push(decodeBasicEntities(snippet.slice(lastIdx)));
+  }
+  return nodes;
+}
+
 export const SearchModal: React.FC = () => {
   const isSearchOpen = useSessionStore((s) => s.isSearchOpen);
   const toggleSearch = useSessionStore((s) => s.toggleSearch);
@@ -29,6 +63,18 @@ export const SearchModal: React.FC = () => {
       console.warn('Failed to fetch RAG status', err);
     }
   }, []);
+
+  useEffect(() => {
+    if (!isSearchOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        toggleSearch(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isSearchOpen, toggleSearch]);
 
   useEffect(() => {
     if (isSearchOpen) {
@@ -112,6 +158,11 @@ export const SearchModal: React.FC = () => {
             <button type="button" data-testid="search-mode-hybrid" onClick={() => setMode('hybrid')} className={`px-2.5 py-1 rounded-lg transition-colors ${mode === 'hybrid' ? 'bg-emerald-600/25 text-emerald-200 border border-emerald-500/40 font-medium' : 'text-zinc-400 hover:text-zinc-200'}`}>Hybrid RRF</button>
           </div>
           <div className="flex items-center gap-2">
+            {mode === 'hybrid' && ragResponse && typeof ragResponse.duration_ms === 'number' && (
+              <span data-testid="rag-latency-badge" className="text-[10px] font-mono text-emerald-400">
+                {ragResponse.duration_ms.toFixed(1)} ms
+              </span>
+            )}
             <span data-testid="rag-status-badge" className={`px-2 py-0.5 rounded-full text-[11px] border ${isDegraded ? 'bg-amber-950/50 border-amber-700/50 text-amber-300' : 'bg-zinc-800/80 border-zinc-700 text-zinc-300'}`}>
               {ragStatus ? `${ragStatus.total_chunks} chunks · ${isDegraded ? 'degraded' : 'sqlite-vec'}` : '... chunks'}
             </span>
@@ -131,7 +182,9 @@ export const SearchModal: React.FC = () => {
                 <span className="font-medium text-zinc-300 group-hover:text-blue-400 truncate max-w-[300px]">{item.conversation_title || 'Untitled'}</span>
                 <span className="text-[10px] text-zinc-500 capitalize">{item.role}</span>
               </div>
-              <p className="text-xs text-zinc-400 line-clamp-2" dangerouslySetInnerHTML={{ __html: item.content_snippet }} />
+              <p className="text-xs text-zinc-400 line-clamp-2">
+                {renderSafeHighlightedSnippet(item.snippet || item.content_snippet || '')}
+              </p>
             </button>
           ))}
           {mode === 'hybrid' && ragHits.map((hit) => (

@@ -47,6 +47,8 @@ def _verify_ws_security(websocket: WebSocket) -> bool:
         provided = ""
         if auth_hdr.lower().startswith("bearer "):
             provided = auth_hdr[7:].strip()
+        elif "x-gemini-local-token" in websocket.headers:
+            provided = websocket.headers["x-gemini-local-token"].strip()
         elif "x-local-api-token" in websocket.headers:
             provided = websocket.headers["x-local-api-token"].strip()
         elif "token" in websocket.query_params:

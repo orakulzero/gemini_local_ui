@@ -13,22 +13,23 @@ from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 ALLOWED_HOST_PATTERN = re.compile(
-    r"^(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?$",
+    r"^(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?\Z",
     re.IGNORECASE,
 )
 
 ALLOWED_ORIGIN_PATTERN = re.compile(
-    r"^(http://(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?|https://tauri\.localhost(:\d+)?|tauri://localhost|chrome-extension://[a-p0-9]{32}|moz-extension://[a-f0-9-]+)$",
+    r"^(http://(localhost|127\.0\.0\.1|testserver|tauri\.localhost)(:\d+)?|https://tauri\.localhost(:\d+)?|tauri://localhost|chrome-extension://[a-p0-9]{32}|moz-extension://[a-f0-9-]+)\Z",
     re.IGNORECASE,
 )
 
 
 def validate_host_and_origin(host: Optional[str], origin: Optional[str]) -> None:
-    """Validates Host and Origin headers, raising HTTPException on untrusted domains."""
-    if host:
-        clean_host = host.split(",")[0].strip()
-        if not ALLOWED_HOST_PATTERN.match(clean_host):
-            raise HTTPException(status_code=400, detail="Invalid Host header: untrusted domain")
+    """Validates Host and Origin headers, raising HTTPException on missing, empty, or untrusted domains."""
+    if host is None or not host.strip():
+        raise HTTPException(status_code=400, detail="Invalid Host header: missing or empty")
+    clean_host = host.split(",")[0].strip()
+    if not ALLOWED_HOST_PATTERN.match(clean_host):
+        raise HTTPException(status_code=400, detail="Invalid Host header: untrusted domain")
 
     if origin is not None:
         clean_origin = origin.strip().rstrip("/")
@@ -55,7 +56,7 @@ def validate_local_api_token(request: Request, token_env_var: str = "GEMINI_LOCA
     if path in ("/health", "/healthz", "/favicon.ico") or path.startswith("/files/"):
         return
 
-    if not (path.startswith("/v1") or path.startswith("/api")):
+    if not (path.startswith("/v1") or path.startswith("/api") or path.startswith("/mcp")):
         return
 
     auth_header = request.headers.get("authorization", "").strip()

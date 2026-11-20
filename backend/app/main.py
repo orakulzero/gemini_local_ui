@@ -652,7 +652,7 @@ async def search_messages(
     return {
         "query": q,
         "count": len(results),
-        "results": [r.model_dump() for r in results],
+        "results": [{**r.model_dump(), "content_snippet": r.snippet} for r in results],
     }
 
 
