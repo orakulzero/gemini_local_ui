@@ -1,5 +1,6 @@
 import type { ElicitationAction, StreamEvent } from '../types';
 import { ChatGeneratePayload, dispatchStreamEvent, StreamCallbacks } from './streaming';
+import { resolveWsUrl } from './desktopBridge';
 
 export const AGENT_PROTOCOL_VERSION = 'agy.stream.v1' as const;
 
@@ -83,11 +84,7 @@ export function streamChatOverWsV1(
   callbacks: StreamCallbacks,
   wsUrl?: string
 ): Promise<void> {
-  const defaultUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/chat/ws`
-      : 'ws://127.0.0.1:8000/api/chat/ws';
-  const targetUrl = wsUrl || defaultUrl;
+  const targetUrl = wsUrl || resolveWsUrl('/api/chat/ws');
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(targetUrl);

@@ -48,7 +48,7 @@ def validate_fetch_metadata(request: Request) -> None:
 def validate_local_api_token(request: Request, token_env_var: str = "GEMINI_LOCAL_API_TOKEN") -> None:
     """Enforces Bearer token authentication on protected endpoints when env var is set."""
     token = os.environ.get(token_env_var, "").strip()
-    if not token:
+    if not token or request.method.upper() == "OPTIONS":
         return
 
     path = request.url.path
@@ -62,6 +62,8 @@ def validate_local_api_token(request: Request, token_env_var: str = "GEMINI_LOCA
     provided_token = ""
     if auth_header.lower().startswith("bearer "):
         provided_token = auth_header[7:].strip()
+    elif "x-gemini-local-token" in request.headers:
+        provided_token = request.headers["x-gemini-local-token"].strip()
     elif "x-local-api-token" in request.headers:
         provided_token = request.headers["x-local-api-token"].strip()
 

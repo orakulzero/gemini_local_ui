@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$ExtensionId
+    [string]$ExtensionId,
+    [Parameter(Mandatory = $false)]
+    [string]$InstallDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +18,17 @@ if (-not (Test-Path $hostDir)) {
     New-Item -Path $hostDir -ItemType Directory -Force | Out-Null
 }
 
-$cmdPath = (Resolve-Path (Join-Path $PSScriptRoot "run_nmh.cmd")).Path
+if ($InstallDir -and $InstallDir.Trim().Length -gt 0) {
+    $resolvedInstall = (Resolve-Path $InstallDir).Path
+    $candidateCmd = Join-Path $resolvedInstall "run_nmh.cmd"
+    if (Test-Path $candidateCmd) {
+        $cmdPath = $candidateCmd
+    } else {
+        $cmdPath = Join-Path $resolvedInstall "gemini-local-ui-desktop.exe"
+    }
+} else {
+    $cmdPath = (Resolve-Path (Join-Path $PSScriptRoot "run_nmh.cmd")).Path
+}
 $manifestPath = Join-Path $hostDir "com.orakulzero.gemini_local_ui.json"
 
 $manifestContent = @{

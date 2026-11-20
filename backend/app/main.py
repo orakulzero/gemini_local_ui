@@ -114,37 +114,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         rag_service=app.state.rag_service,
     )
 
-    # Attempt bootstrapping with existing stored credentials from vault
-    try:
-        vdata = vault.load_vault_data() if vault else None
-        if vdata and vdata.accounts:
-            await session_manager.initialize_all()
-            logger.info(
-                "Session bootstrapped from credential vault with %d account(s) (active: %s)",
-                len(session_manager.sessions),
-                session_manager.active_account_id,
-            )
-            if session_manager.get_health().is_authenticated:
-                from backend.app.bridge.client import GeminiWebClient
-                c = GeminiWebClient(session_context=session_manager.context, base_url=base_url, timeout=15.0)
-                try:
-                    await c.list_models()
-                    remote_list = await c.list_remote_conversations(limit=50)
-                    if remote_list:
-                        await repository.reconcile_remote_conversations(remote_list)
-                except Exception as sync_err:
-                    logger.debug("Initial conversation sync skipped: %s", sync_err)
-                finally:
-                    await c.close()
-        else:
-            stored_cookies = vault.load_credentials() if vault else None
-            if stored_cookies and isinstance(stored_cookies, dict):
-                await session_manager.init_session(stored_cookies)
-                logger.info("Session bootstrapped from legacy credential vault")
-    except Exception as e:
-        logger.warning("Could not bootstrap session from vault: %s", e)
-
     import asyncio as _aio
+
+    async def _bootstrap_vault_sessions() -> None:
+        try:
+            vdata = vault.load_vault_data() if vault else None
+            if vdata and vdata.accounts:
+                await session_manager.initialize_all()
+                logger.info(
+                    "Session bootstrapped from credential vault with %d account(s) (active: %s)",
+                    len(session_manager.sessions),
+                    session_manager.active_account_id,
+                )
+                if session_manager.get_health().is_authenticated:
+                    from backend.app.bridge.client import GeminiWebClient
+                    c = GeminiWebClient(session_context=session_manager.context, base_url=base_url, timeout=15.0)
+                    try:
+                        await c.list_models()
+                        remote_list = await c.list_remote_conversations(limit=50)
+                        if remote_list:
+                            await repository.reconcile_remote_conversations(remote_list)
+                    except Exception as sync_err:
+                        logger.debug("Initial conversation sync skipped: %s", sync_err)
+                    finally:
+                        await c.close()
+            else:
+                stored_cookies = vault.load_credentials() if vault else None
+                if stored_cookies and isinstance(stored_cookies, dict):
+                    await session_manager.init_session(stored_cookies)
+                    logger.info("Session bootstrapped from legacy credential vault")
+        except _aio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Could not bootstrap session from vault: %s", e)
+
+    bootstrap_task: Optional[_aio.Task[None]] = None
+    if "127.0.0.1" in base_url or "localhost" in base_url:
+        await _bootstrap_vault_sessions()
+    else:
+        bootstrap_task = _aio.create_task(_bootstrap_vault_sessions())
+
     from backend.app.bridge.task_pipeline import get_task_pipeline_orchestrator
 
     async def _task_pipeline_scheduler_loop() -> None:
@@ -167,6 +176,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     scheduler_task.cancel()
+    if bootstrap_task is not None and not bootstrap_task.done():
+        bootstrap_task.cancel()
     try:
         from backend.app.api.workspace import get_mcp_manager as _get_mcp_mgr
         await _get_mcp_mgr().close_all()
@@ -191,10 +202,10 @@ app = FastAPI(
 configure_logging()
 configure_telemetry(app)
 
-# CORS restriction strictly to local interfaces and browser extensions
+# CORS restriction strictly to local interfaces, Tauri v2 WebView2 origins, and browser extensions
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|(chrome|moz)-extension://[a-zA-Z0-9_-]+)$",
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?|tauri://localhost|(chrome|moz)-extension://[a-zA-Z0-9_-]+)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -222,7 +233,10 @@ async def security_guard_middleware(request: Request, call_next: Any) -> Respons
             status_code=exc.status_code,
             media_type="text/plain",
         )
-    return await call_next(request)
+    resp = await call_next(request)
+    if request.method.upper() == "OPTIONS" and resp.status_code == 405 and request.headers.get("origin"):
+        return Response(status_code=200, headers=dict(resp.headers))
+    return resp
 
 
 app.middleware("http")(trace_middleware)
@@ -260,8 +274,12 @@ async def health_check() -> HealthResponse:
 @app.get("/api/session/status")
 async def get_session_status() -> Dict[str, Any]:
     """Returns the current Gemini web session authentication and health diagnostics."""
+    global session_manager
     if not session_manager:
-        raise HTTPException(status_code=500, detail="Session manager not initialized")
+        session_manager = getattr(app.state, "session_manager", None) or SessionManager(
+            base_url=os.environ.get("GEMINI_BASE_URL", "https://gemini.google.com"),
+            vault=vault,
+        )
 
     health = session_manager.get_health()
     vdata = vault.load_vault_data()

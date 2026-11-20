@@ -1,4 +1,5 @@
 import { ElicitationRequest, StreamEvent, ToolApprovalRequest } from '../types';
+import { getDesktopAuthHeaders, resolveApiUrl } from './desktopBridge';
 
 export interface ChatGeneratePayload {
   conversation_id?: string;
@@ -102,11 +103,12 @@ export async function streamChatGenerate(
   payload: ChatGeneratePayload,
   callbacks: StreamCallbacks
 ): Promise<void> {
-  const response = await fetch('/api/chat/generate', {
+  const response = await fetch(resolveApiUrl('/api/chat/generate'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
+      ...getDesktopAuthHeaders(),
     },
     body: JSON.stringify(payload),
     signal: callbacks.signal,

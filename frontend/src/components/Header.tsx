@@ -7,6 +7,7 @@ import { useChatStore } from '../store/chatStore';
 import { useNotebookLMStore } from '../store/notebooklmStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { exportConversationUrl } from '../services/api';
+import { isDesktopRuntime } from '../services/desktopBridge';
 
 export interface HeaderProps {
   onToggleSidebar?: () => void;
@@ -77,6 +78,14 @@ export const Header: React.FC<HeaderProps> = ({
         <span className="hidden xl:inline font-semibold text-sm tracking-tight text-blue-400 whitespace-nowrap">
           Gemini Local UI
         </span>
+        {isDesktopRuntime() && (
+          <span
+            data-testid="desktop-runtime-badge"
+            className="px-1.5 py-0.5 rounded-md bg-blue-950/70 border border-blue-500/40 text-blue-300 text-[10px] font-medium whitespace-nowrap"
+          >
+            Desktop
+          </span>
+        )}
         <ModelSelector />
         <AccountSwitcher />
       </div>

@@ -16,7 +16,9 @@ import {
 
 
 import type { RagStatusResponse, RagSearchResponse, AgentEngine, AcpRuntimeStatus } from '../types';
+import { desktopFetch, resolveApiUrl } from './desktopBridge';
 export { apiClient, type ApiPaths, type ApiComponents } from '../api/typedClient';
+const fetch = desktopFetch;
 export async function fetchSessionStatus(): Promise<{
   authenticated: boolean;
   health: SessionHealthStatus | null;
@@ -477,7 +479,7 @@ export function exportConversationUrl(
   id: string,
   format: 'markdown' | 'json' = 'markdown'
 ): string {
-  return `/api/conversations/${encodeURIComponent(id)}/export?format=${format}`;
+  return resolveApiUrl(`/api/conversations/${encodeURIComponent(id)}/export?format=${format}`);
 }
 
 export async function modifyResponse(req: {
