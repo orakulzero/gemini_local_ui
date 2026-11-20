@@ -62,6 +62,7 @@ class ChatGenerateRequest(BaseModel):
     connector_ids: list[str] | None = None
     use_rag: bool = False
     rag_top_k: int = 5
+    engine: str | None = None
 
 
 class ChatTTSRequest(BaseModel):
@@ -143,17 +144,25 @@ async def chat_tts(request: Request, tts_req: ChatTTSRequest) -> Response:
 
 
 @router.post("/tool-approvals/{approval_id}")
-async def submit_tool_approval(approval_id: str, dec_req: ToolApprovalDecisionRequest) -> dict[str, Any]:
+async def submit_tool_approval(approval_id: str, dec_req: ToolApprovalDecisionRequest, request: Request) -> dict[str, Any]:
     from backend.app.mcp.approval_gate import get_approval_gate
-    if not get_approval_gate().submit_decision(approval_id, dec_req.decision):  # type: ignore[arg-type]
+    ok = get_approval_gate().submit_decision(approval_id, dec_req.decision)  # type: ignore[arg-type]
+    if not ok:
+        acp_cli = getattr(request.app.state, "rust_acp_client", None)
+        ok = bool(acp_cli and acp_cli.ws_url and await acp_cli.forward_permission(approval_id, dec_req.decision))
+    if not ok:
         raise HTTPException(status_code=404, detail="Approval request not found or expired")
     return {"ok": True, "approval_id": approval_id, "decision": dec_req.decision}
 
 
 @router.post("/elicitations/{elicitation_id}")
-async def submit_elicitation_decision(elicitation_id: str, el_req: ElicitationDecisionRequest) -> dict[str, Any]:
+async def submit_elicitation_decision(elicitation_id: str, el_req: ElicitationDecisionRequest, request: Request) -> dict[str, Any]:
     from backend.app.mcp.elicitation_gate import get_elicitation_gate
-    if not get_elicitation_gate().submit_response(elicitation_id, el_req.action, el_req.content):
+    ok = get_elicitation_gate().submit_response(elicitation_id, el_req.action, el_req.content)
+    if not ok:
+        acp_cli = getattr(request.app.state, "rust_acp_client", None)
+        ok = bool(acp_cli and acp_cli.ws_url and await acp_cli.forward_elicitation(elicitation_id, el_req.action, el_req.content))
+    if not ok:
         raise HTTPException(status_code=404, detail="Elicitation request not found or expired")
     return {"ok": True, "elicitation_id": elicitation_id, "action": el_req.action}
 

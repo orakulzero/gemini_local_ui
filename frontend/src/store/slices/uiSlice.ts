@@ -17,6 +17,8 @@ export const createUiSlice: StateCreator<ChatState, [], [], UiSlice> = (set, get
   injectedContext: '',
   pendingAttachments: [],
   useRag: false,
+  agentEngine: 'python',
+  streamTransport: 'sse',
   error: null,
 
   setIncognito: (incognito) => {
@@ -69,6 +71,8 @@ export const createUiSlice: StateCreator<ChatState, [], [], UiSlice> = (set, get
   setDraftPrompt: (draft) => set({ draftPrompt: draft }),
   injectContext: (context) => set({ injectedContext: context }),
   setUseRag: (enabled) => set({ useRag: Boolean(enabled) }),
+  setAgentEngine: (engine) => set({ agentEngine: engine }),
+  setStreamTransport: (transport) => set({ streamTransport: transport }),
 
   addAttachment: (file) => {
     const clientId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;

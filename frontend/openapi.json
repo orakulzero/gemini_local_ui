@@ -184,6 +184,51 @@
         "title": "AccountsListResponse",
         "type": "object"
       },
+      "AcpEngineSwitchRequest": {
+        "properties": {
+          "engine": {
+            "enum": [
+              "python",
+              "rust_acp"
+            ],
+            "title": "Engine",
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine"
+        ],
+        "title": "AcpEngineSwitchRequest",
+        "type": "object"
+      },
+      "AcpPingRequest": {
+        "properties": {
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
+          "ws_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ws Url"
+          }
+        },
+        "title": "AcpPingRequest",
+        "type": "object"
+      },
       "AdaptSkillRequest": {
         "properties": {
           "raw_content": {
@@ -1144,6 +1189,17 @@
               }
             ],
             "title": "Conversation Id"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
           },
           "existing_user_message_id": {
             "anyOf": [
@@ -5820,6 +5876,122 @@
         "summary": "Activate Account",
         "tags": [
           "Accounts"
+        ]
+      }
+    },
+    "/api/acp/engine": {
+      "post": {
+        "operationId": "set_acp_engine_api_acp_engine_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcpEngineSwitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Acp Engine Api Acp Engine Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Acp Engine",
+        "tags": [
+          "ACP Runtime"
+        ]
+      }
+    },
+    "/api/acp/ping": {
+      "post": {
+        "operationId": "ping_acp_runtime_api_acp_ping_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AcpPingRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ping Acp Runtime Api Acp Ping Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ping Acp Runtime",
+        "tags": [
+          "ACP Runtime"
+        ]
+      }
+    },
+    "/api/acp/status": {
+      "get": {
+        "operationId": "get_acp_status_api_acp_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Acp Status Api Acp Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Acp Status",
+        "tags": [
+          "ACP Runtime"
         ]
       }
     },

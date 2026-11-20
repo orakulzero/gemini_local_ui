@@ -9,12 +9,15 @@ import { applyNodePatch, ChatState } from './types';
 
 export function getWorkspaceRequestPayload() {
   const ws = useWorkspaceStore.getState();
-  const useRag = typeof useChatStore?.getState === 'function' ? Boolean(useChatStore.getState().useRag) : false;
+  const state = typeof useChatStore?.getState === 'function' ? useChatStore.getState() : null;
+  const useRag = Boolean(state?.useRag);
+  const agentEngine = state?.agentEngine ?? 'python';
   return {
     use_global_prompt: Boolean(ws.promptsEnabled && ws.useGlobalPromptForChat && ws.activePromptId),
     skill_ids: ws.enabledSkillIds,
     connector_ids: ws.connectors.filter((c) => c.enabled).map((c) => c.id),
     ...(useRag ? { use_rag: true } : {}),
+    ...(agentEngine === 'rust_acp' ? { engine: 'rust_acp' } : {}),
   };
 }
 

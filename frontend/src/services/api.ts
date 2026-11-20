@@ -15,7 +15,7 @@ import {
 } from '../types';
 
 
-import type { RagStatusResponse, RagSearchResponse } from '../types';
+import type { RagStatusResponse, RagSearchResponse, AgentEngine, AcpRuntimeStatus } from '../types';
 export { apiClient, type ApiPaths, type ApiComponents } from '../api/typedClient';
 export async function fetchSessionStatus(): Promise<{
   authenticated: boolean;
@@ -618,6 +618,25 @@ export async function searchRagHybrid(payload: {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `RAG search failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchAcpStatus(): Promise<AcpRuntimeStatus> {
+  const res = await fetch('/api/acp/status');
+  if (!res.ok) throw new Error(`ACP status failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function switchAcpEngine(engine: AgentEngine): Promise<AcpRuntimeStatus> {
+  const res = await fetch('/api/acp/engine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Switch ACP engine failed: HTTP ${res.status}`);
   }
   return res.json();
 }

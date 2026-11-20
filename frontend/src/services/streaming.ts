@@ -15,6 +15,7 @@ export interface ChatGeneratePayload {
   connector_ids?: string[];
   use_rag?: boolean;
   rag_top_k?: number;
+  engine?: string;
   attachments?: Array<{
     uri?: string;
     filename: string;

@@ -87,6 +87,8 @@ class PreparedTurn:
     session_mgr: Any
     image_data_dir: Any = None
     trace_id: str = ""
+    rust_acp_client: Any = None
+    requested_engine: str = "python"
 
 
 async def prepare_chat_turn(
@@ -182,6 +184,12 @@ async def prepare_chat_turn(
     elif is_incognito and user_msg_id is None:
         user_msg_id = now_ms
 
+    req_engine = (getattr(req, "engine", None) or getattr(request.app.state, "active_agent_engine", "python") or "python").strip()
+    acp_cli = getattr(request.app.state, "rust_acp_client", None)
+    if acp_cli is None and req_engine in ("rust_acp", "rust_acp_strict"):
+        from backend.app.api.acp_runtime import get_rust_acp_client
+        acp_cli = get_rust_acp_client(request)
+
     return PreparedTurn(
         req=req,
         conv_id=conv_id,
@@ -195,6 +203,8 @@ async def prepare_chat_turn(
         session_mgr=session_mgr,
         image_data_dir=getattr(request.app.state, "image_data_dir", None),
         trace_id=trace_id,
+        rust_acp_client=acp_cli,
+        requested_engine=req_engine,
     )
 
 
@@ -307,6 +317,58 @@ async def stream_chat_turn(
             user_message_id=user_msg_id if user_msg_id is not None else 0,
             trace_id=prepared.trace_id,
         )
+
+        if prepared.requested_engine in ("rust_acp", "rust_acp_strict") and prepared.rust_acp_client is not None:
+            rust_emitted = False
+            saw_saved = False
+            rust_texts: list[str] = []
+            try:
+                rust_payload = {
+                    "conversation_id": conv_id,
+                    "prompt": effective_prompt,
+                    "model": req.model,
+                    "gem_id": req.gem_id,
+                    "incognito": is_incognito,
+                }
+                async for r_ev in prepared.rust_acp_client.stream_prompt(
+                    rust_payload, cancel_event=cancel_event, trace_id=prepared.trace_id
+                ):
+                    if isinstance(r_ev, StartEvent):
+                        continue
+                    rust_emitted = True
+                    if isinstance(r_ev, TextEvent):
+                        rust_texts.append(r_ev.delta)
+                    elif isinstance(r_ev, SavedEvent):
+                        saw_saved = True
+                    yield r_ev
+                if not saw_saved:
+                    asst_id = None
+                    if not is_incognito and repo and user_msg_id is not None:
+                        with contextlib.suppress(Exception):
+                            amsg = await repo.add_message(
+                                conversation_id=conv_id,
+                                role="assistant",
+                                content="".join(rust_texts),
+                                parent_id=user_msg_id,
+                                model=req.model,
+                                metadata={"engine": "rust_acp"},
+                                created_at=int(time.time() * 1000),
+                            )
+                            asst_id = amsg.id
+                    yield SavedEvent(assistant_message_id=asst_id)  # type: ignore[arg-type]
+                if prepared.client and hasattr(prepared.client, "close"):
+                    with contextlib.suppress(Exception):
+                        await prepared.client.close()
+                return
+            except Exception as rust_err:
+                if not rust_emitted and prepared.requested_engine != "rust_acp_strict":
+                    logger.warning("Rust ACP bridge unreachable (%s); falling back to Python orchestrator", rust_err)
+                else:
+                    yield ErrorEvent(error=f"Rust ACP error: {rust_err}")
+                    if prepared.client and hasattr(prepared.client, "close"):
+                        with contextlib.suppress(Exception):
+                            await prepared.client.close()
+                    return
 
         start_time = time.time()
         full_text_list: list[str] = []

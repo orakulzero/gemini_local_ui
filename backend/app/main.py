@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.app.api.accounts import router as accounts_router
+from backend.app.api.acp_runtime import router as acp_runtime_router
 from backend.app.api.chat import router as chat_router
 from backend.app.api.rag import router as rag_router
 from backend.app.api.ws_chat import router as ws_chat_router
@@ -45,6 +46,7 @@ from backend.app.storage.repository import ConversationRepository
 from backend.app.storage.search import SearchEngine
 from backend.app.storage.vault import CredentialVault
 from backend.app.rag.hybrid_search import HybridRAGService
+from backend.app.bridge.rust_acp_client import RustAcpBridgeClient
 from backend.app.observability import (
     configure_logging,
     configure_telemetry,
@@ -101,6 +103,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if getattr(app.state, "rag_service", None) is None:
         owned_rag_service = HybridRAGService(db)
         app.state.rag_service = owned_rag_service
+    owned_acp_client: Optional[RustAcpBridgeClient] = None
+    if getattr(app.state, "rust_acp_client", None) is None:
+        owned_acp_client = RustAcpBridgeClient()
+        app.state.rust_acp_client = owned_acp_client
+    if getattr(app.state, "active_agent_engine", None) is None:
+        app.state.active_agent_engine = os.environ.get("GEMINI_AGENT_ENGINE", "python")
     app.state.mcp_server = MCPServer(
         session_manager=session_manager,
         rag_service=app.state.rag_service,
@@ -164,6 +172,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _get_mcp_mgr().close_all()
     except Exception as mcp_err:
         logger.debug("Error closing MCP manager: %s", mcp_err)
+    if owned_acp_client is not None:
+        await owned_acp_client.shutdown()
     if owned_rag_service is not None:
         owned_rag_service.embedder.shutdown()
     if session_manager:
@@ -701,6 +711,7 @@ async def serve_local_generated_image(name: str, request: Request) -> Any:
 
 # Mount API, OpenAI, Anthropic, and MCP routers
 app.include_router(conversations_router)
+app.include_router(acp_runtime_router)
 app.include_router(chat_router)
 app.include_router(ws_chat_router)
 app.include_router(rag_router)

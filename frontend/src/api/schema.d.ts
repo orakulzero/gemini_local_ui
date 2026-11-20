@@ -116,6 +116,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/acp/engine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Acp Engine */
+        post: operations["set_acp_engine_api_acp_engine_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/acp/ping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ping Acp Runtime */
+        post: operations["ping_acp_runtime_api_acp_ping_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/acp/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Acp Status */
+        get: operations["get_acp_status_api_acp_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat/elicitations/{elicitation_id}": {
         parameters: {
             query?: never;
@@ -3400,6 +3451,21 @@ export interface components {
             active_account_id: string;
             failover_config: components["schemas"]["FailoverConfigUpdate"];
         };
+        /** AcpEngineSwitchRequest */
+        AcpEngineSwitchRequest: {
+            /**
+             * Engine
+             * @enum {string}
+             */
+            engine: "python" | "rust_acp";
+        };
+        /** AcpPingRequest */
+        AcpPingRequest: {
+            /** Trace Id */
+            trace_id?: string | null;
+            /** Ws Url */
+            ws_url?: string | null;
+        };
         /** AdaptSkillRequest */
         AdaptSkillRequest: {
             /** Raw Content */
@@ -3737,6 +3803,8 @@ export interface components {
             connector_ids?: string[] | null;
             /** Conversation Id */
             conversation_id?: string | null;
+            /** Engine */
+            engine?: string | null;
             /** Existing User Message Id */
             existing_user_message_id?: number | null;
             /**
@@ -5761,6 +5829,98 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_acp_engine_api_acp_engine_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcpEngineSwitchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ping_acp_runtime_api_acp_ping_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AcpPingRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_acp_status_api_acp_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

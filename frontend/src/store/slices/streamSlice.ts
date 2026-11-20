@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { Message } from '../../types';
 import { ChatGeneratePayload, streamChatGenerate } from '../../services/streaming';
+import * as wsProtocolV1 from '../../services/wsProtocolV1';
 import * as api from '../../services/api';
 import { useSessionStore } from '../sessionStore';
 import { applyNodePatch, ChatState, StreamSlice } from './types';
@@ -73,7 +74,8 @@ async function runAssistantTurnStream({
   };
 
   try {
-    await streamChatGenerate(payload, {
+    const runChatStream = get().streamTransport === 'ws' ? wsProtocolV1.streamChatOverWsV1 : streamChatGenerate;
+    await runChatStream(payload, {
       signal: abortController.signal,
       onStart: (_serverConvId, serverUserMsgId) => {
         if (tempUserId !== undefined && serverUserMsgId) {

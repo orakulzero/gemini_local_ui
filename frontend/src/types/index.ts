@@ -386,4 +386,17 @@ export interface RagSearchResponse {
   results: RagSearchHit[];
 }
 
+export type AgentEngine = 'python' | 'rust_acp';
+
+export type StreamTransport = 'sse' | 'ws';
+
+export interface AcpRuntimeStatus {
+  available: boolean;
+  binary_path?: string | null;
+  active_engine: AgentEngine;
+  ws_url?: string | null;
+  protocol_version: string;
+  win32_job_bound: boolean;
+}
+
 

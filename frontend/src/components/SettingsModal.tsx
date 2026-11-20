@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSessionStore } from '../store/sessionStore';
 import { useChatStore } from '../store/chatStore';
 import * as api from '../services/api';
+import type { AcpRuntimeStatus } from '../types';
 
 export const SettingsModal: React.FC = () => {
   const isSettingsOpen = useSessionStore((s) => s.isSettingsOpen);
@@ -13,6 +14,10 @@ export const SettingsModal: React.FC = () => {
   const isLoading = useSessionStore((s) => s.isLoading);
   const error = useSessionStore((s) => s.error);
   const syncRemoteConversations = useChatStore((s) => s.syncRemoteConversations);
+  const agentEngine = useChatStore((s) => s.agentEngine);
+  const streamTransport = useChatStore((s) => s.streamTransport);
+  const setAgentEngine = useChatStore((s) => s.setAgentEngine);
+  const setStreamTransport = useChatStore((s) => s.setStreamTransport);
 
   const [activeTab, setActiveTab] = useState<'session' | 'saved_info'>('session');
   const [cookieInput, setCookieInput] = useState('');
@@ -20,6 +25,15 @@ export const SettingsModal: React.FC = () => {
   const [memories, setMemories] = useState<Array<{ id: string; content: string; category: string }>>([]);
   const [newMemory, setNewMemory] = useState('');
   const [memoryLoading, setMemoryLoading] = useState(false);
+  const [acpStatus, setAcpStatus] = useState<AcpRuntimeStatus | null>(null);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    api
+      .fetchAcpStatus()
+      .then((status) => setAcpStatus(status))
+      .catch(() => {});
+  }, [isSettingsOpen]);
 
   useEffect(() => {
     if (!isSettingsOpen || activeTab !== 'saved_info') return;
@@ -76,7 +90,7 @@ export const SettingsModal: React.FC = () => {
       <div className="fixed inset-0" onClick={() => toggleSettings(false)} />
       <div
         data-testid="settings-modal"
-        className="relative w-full max-w-md rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl overflow-hidden z-10 p-5 space-y-4 text-xs text-zinc-300"
+        className="relative w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl z-10 p-5 space-y-4 text-xs text-zinc-300"
       >
         <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
           <div className="flex items-center gap-2">
@@ -236,6 +250,81 @@ export const SettingsModal: React.FC = () => {
               className="py-1.5 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors"
             >
               Auto-Import from Browser
+            </button>
+          </div>
+        </div>
+
+        {/* Agent Core & Stream Transport (M8) */}
+        <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800/80 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-zinc-200">Agent Core &amp; Stream Transport</span>
+            <span
+              data-testid="acp-runtime-badge"
+              className={`px-2 py-0.5 rounded-full text-[10px] border ${
+                acpStatus?.available
+                  ? 'bg-emerald-950/60 border-emerald-700/60 text-emerald-300'
+                  : 'bg-zinc-900 border-zinc-700 text-zinc-400'
+              }`}
+            >
+              {acpStatus?.protocol_version || 'agy.stream.v1'} · {acpStatus?.available ? 'Rust Ready' : 'Python Active'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              data-testid="engine-python-btn"
+              onClick={() => {
+                setAgentEngine('python');
+                api.switchAcpEngine('python').then(setAcpStatus).catch(() => {});
+              }}
+              className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-colors ${
+                agentEngine === 'python'
+                  ? 'bg-blue-600/20 border-blue-500/50 text-blue-200'
+                  : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Python Native
+            </button>
+            <button
+              type="button"
+              data-testid="engine-rust-btn"
+              onClick={() => {
+                setAgentEngine('rust_acp');
+                api.switchAcpEngine('rust_acp').then(setAcpStatus).catch(() => {});
+              }}
+              className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-colors ${
+                agentEngine === 'rust_acp'
+                  ? 'bg-amber-600/20 border-amber-500/50 text-amber-200'
+                  : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Rust ACP
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              type="button"
+              data-testid="transport-sse-btn"
+              onClick={() => setStreamTransport('sse')}
+              className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-colors ${
+                streamTransport === 'sse'
+                  ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
+                  : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              HTTP SSE
+            </button>
+            <button
+              type="button"
+              data-testid="transport-ws-btn"
+              onClick={() => setStreamTransport('ws')}
+              className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-colors ${
+                streamTransport === 'ws'
+                  ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-200'
+                  : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              WebSocket v1
             </button>
           </div>
         </div>

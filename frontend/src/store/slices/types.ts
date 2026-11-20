@@ -1,9 +1,11 @@
 import type {
+  AgentEngine,
   ChatAttachment,
   ConversationSummary,
   ElicitationAction,
   ElicitationRequest,
   Message,
+  StreamTransport,
   ToolApprovalRequest,
 } from '../../types';
 
@@ -77,6 +79,8 @@ export interface UiSlice {
   injectedContext: string;
   pendingAttachments: ChatAttachment[];
   useRag: boolean;
+  agentEngine: AgentEngine;
+  streamTransport: StreamTransport;
   error: string | null;
 
   setIncognito: (incognito: boolean) => void;
@@ -86,6 +90,8 @@ export interface UiSlice {
   setDraftPrompt: (draft: string) => void;
   injectContext: (context: string) => void;
   setUseRag: (enabled: boolean) => void;
+  setAgentEngine: (engine: AgentEngine) => void;
+  setStreamTransport: (transport: StreamTransport) => void;
   addAttachment: (file: File) => void;
   removeAttachment: (index: number) => void;
   clearAttachments: () => void;
