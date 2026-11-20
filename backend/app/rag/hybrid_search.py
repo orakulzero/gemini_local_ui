@@ -232,16 +232,18 @@ class HybridRAGService:
                     stype, sid, stitle, p.chunk_index, p.content, p.content_sha256, json.dumps(p.metadata)
                 ))
 
-        vectors = None
-        if pending_items and self.embedder.is_available:
-            texts_to_embed = [ f"{it[2]}\n{it[4]}" for it in pending_items ]
-            vectors = await self.embedder.embed_documents(texts_to_embed)
-
+        wave_size = 64 if self.embedder.weights_available else max(len(pending_items), 1)
         now_ms = int(time.time() * 1000)
-        vec_pairs: list[tuple[int, Any]] = []
-        if pending_items:
+        for wave_start in range(0, len(pending_items), wave_size):
+            wave = pending_items[wave_start : wave_start + wave_size]
+            vectors = None
+            if self.embedder.is_available:
+                texts_to_embed = [f"{it[2]}\n{it[4]}" for it in wave]
+                vectors = await self.embedder.embed_documents(texts_to_embed)
+
+            vec_pairs: list[tuple[int, Any]] = []
             async with self.db.write_transaction() as conn:
-                for idx, (stype, sid, stitle, cidx, content, sha, meta_json) in enumerate(pending_items):
+                for idx, (stype, sid, stitle, cidx, content, sha, meta_json) in enumerate(wave):
                     prev = existing_map.get((stype, sid, cidx))
                     if prev is not None:
                         chunk_id = prev[0]
@@ -258,11 +260,12 @@ class HybridRAGService:
                             (stype, sid, stitle, cidx, content, sha, meta_json, target_model, now_ms, now_ms),
                         )
                         chunk_id = int(cur.lastrowid)
+                        existing_map[(stype, sid, cidx)] = (chunk_id, sha, target_model)
                     if vectors is not None:
                         vec_pairs.append((chunk_id, vectors[idx]))
 
-        if vec_pairs:
-            await self.vector_store.upsert_vectors(vec_pairs)
+            if vec_pairs:
+                await self.vector_store.upsert_vectors(vec_pairs)
         self.invalidate_cache()
         return {
             "ok": True,

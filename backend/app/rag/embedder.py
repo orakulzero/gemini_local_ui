@@ -66,6 +66,9 @@ def _apply_worker_below_normal_priority() -> None:
             import ctypes
 
             k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            k32.SetPriorityClass.restype = ctypes.c_int
             k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
         except Exception:
             pass
@@ -247,7 +250,7 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
                 pad_id = _WORKER_TOKENIZER.token_to_id("<|endoftext|>")
                 if pad_id is None:
                     pad_id = 151643
-                max_len = max(32, min(1024, int(os.environ.get("GEMINI_RAG_MAX_TOKENS", "256"))))
+                max_len = max(32, min(1024, int(os.environ.get("GEMINI_RAG_MAX_TOKENS", "192"))))
                 _WORKER_TOKENIZER.enable_padding(pad_id=int(pad_id), pad_token="<|endoftext|>")
                 _WORKER_TOKENIZER.enable_truncation(max_length=max_len)
 
@@ -255,11 +258,14 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
             in_names = {i.name for i in in_meta}
             kv_specs = [(i.name, i.shape) for i in in_meta if i.name.startswith("past_key_values.")]
             out_name = _WORKER_ONNX_SESSION.get_outputs()[0].name
-            batch_size = max(1, min(64, int(os.environ.get("GEMINI_RAG_BATCH_SIZE", "16"))))
+            batch_size = max(1, min(32, int(os.environ.get("GEMINI_RAG_BATCH_SIZE", "8"))))
 
-            chunks_out: list[np.ndarray] = []
-            for start in range(0, len(texts), batch_size):
-                sub = texts[start : start + batch_size]
+            # Length-bucketed micro-batching eliminates worst-case padding waste while restoring input order.
+            order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+            result = np.zeros((len(texts), dim), dtype=np.float32)
+            for start in range(0, len(order), batch_size):
+                batch_indices = order[start : start + batch_size]
+                sub = [texts[i] for i in batch_indices]
                 encodings = _WORKER_TOKENIZER.encode_batch(sub)
                 input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
                 attn_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
@@ -282,8 +288,10 @@ def _worker_embed_batch(texts: list[str], dim: int, onnx_dir: str | None) -> np.
                 sliced = pooled[:, :dim].astype(np.float32, copy=False)
                 norms = np.linalg.norm(sliced, axis=1, keepdims=True)
                 norms = np.where(norms > 1e-12, norms, 1.0)
-                chunks_out.append((sliced / norms).astype(np.float32))
-            return np.vstack(chunks_out) if chunks_out else np.zeros((0, dim), dtype=np.float32)
+                normed = (sliced / norms).astype(np.float32)
+                for row_i, orig_idx in enumerate(batch_indices):
+                    result[orig_idx] = normed[row_i]
+            return result
         except Exception as err:
             logger.warning("ONNX worker inference failed, falling back to subword_ngram_512: %s", err)
     return compute_subword_ngram_embeddings(texts, dim=dim)
