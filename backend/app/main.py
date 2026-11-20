@@ -42,6 +42,11 @@ from backend.app.storage.database import Database
 from backend.app.storage.repository import ConversationRepository
 from backend.app.storage.search import SearchEngine
 from backend.app.storage.vault import CredentialVault
+from backend.app.observability import (
+    configure_logging,
+    configure_telemetry,
+    trace_middleware,
+)
 
 logger = logging.getLogger("gemini_backend")
 
@@ -161,6 +166,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configure_logging()
+configure_telemetry(app)
+
 # CORS restriction strictly to local interfaces and browser extensions
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +201,9 @@ async def security_guard_middleware(request: Request, call_next: Any) -> Respons
             media_type="text/plain",
         )
     return await call_next(request)
+
+
+app.middleware("http")(trace_middleware)
 
 
 # Request / Response Schemas

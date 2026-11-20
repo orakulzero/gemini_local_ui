@@ -11,7 +11,10 @@ import json
 import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from urllib.parse import urlsplit
 import wreq
+
+from backend.app.observability.telemetry import current_trace_id, get_tracer
 
 logger = logging.getLogger("gemini_bridge.wreq")
 
@@ -187,24 +190,31 @@ class WreqTransportClient:
         if body_data is None and content is not None:
             body_data = content if isinstance(content, (str, bytes)) else bytes(content)
         m = method.upper()
-        if m == "POST":
-            raw = await cli.post(url, query=params, form=form_data, body=body_data, headers=headers, timeout=td)
-        elif m == "GET":
-            raw = await cli.get(url, query=params, headers=headers, timeout=td)
-        else:
-            raw = await cli.request(m, url, query=params, form=form_data, body=body_data, headers=headers, timeout=td)
-        req_adapter = WreqRequestAdapter(m, str(url), headers=headers, extensions=extensions)
-        adapter = WreqResponseAdapter(raw, url=str(url), request=req_adapter)
-        if not stream:
-            await adapter.aread()
-        if self.on_response:
-            try:
-                res = self.on_response(adapter)
-                if inspect.isawaitable(res):
-                    await res
-            except Exception as e:
-                logger.debug("on_response hook error: %s", e)
-        return adapter
+        tracer = get_tracer("gemini_local_ui.wreq")
+        with tracer.start_as_current_span("bridge.wreq.request") as span:
+            span.set_attribute("http.method", m)
+            host = urlsplit(str(url)).hostname or ""
+            span.set_attribute("server.address", host)
+            span.set_attribute("trace_id", current_trace_id())
+            if m == "POST":
+                raw = await cli.post(url, query=params, form=form_data, body=body_data, headers=headers, timeout=td)
+            elif m == "GET":
+                raw = await cli.get(url, query=params, headers=headers, timeout=td)
+            else:
+                raw = await cli.request(m, url, query=params, form=form_data, body=body_data, headers=headers, timeout=td)
+            req_adapter = WreqRequestAdapter(m, str(url), headers=headers, extensions=extensions)
+            adapter = WreqResponseAdapter(raw, url=str(url), request=req_adapter)
+            span.set_attribute("http.status_code", adapter.status_code)
+            if not stream:
+                await adapter.aread()
+            if self.on_response:
+                try:
+                    res = self.on_response(adapter)
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception as e:
+                    logger.debug("on_response hook error: %s", e)
+            return adapter
 
     def stream(self, method: str, url: str, **kwargs: Any) -> WreqStreamContext:
         return WreqStreamContext(self, method, url, kwargs)

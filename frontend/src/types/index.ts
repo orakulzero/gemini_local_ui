@@ -29,7 +29,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   thoughts?: string | null;
-  model: string;
+  model?: string;
   token_count?: number | null;
   is_error?: boolean;
   created_at: number;
@@ -97,7 +97,7 @@ export interface SessionHealthStatus {
 }
 
 export type StreamEvent =
-  | { type: 'start'; conversation_id: string; user_message_id?: number }
+  | { type: 'start'; conversation_id: string; user_message_id?: number; trace_id?: string }
   | { type: 'thought'; delta: string }
   | { type: 'text'; delta: string }
   | { type: 'failover'; from: string; to: string; error_code?: number; reason?: string; timestamp?: number }

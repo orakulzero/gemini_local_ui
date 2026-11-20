@@ -15,6 +15,7 @@ import {
 } from '../types';
 
 
+export { apiClient, type ApiPaths, type ApiComponents } from '../api/typedClient';
 export async function fetchSessionStatus(): Promise<{
   authenticated: boolean;
   health: SessionHealthStatus | null;

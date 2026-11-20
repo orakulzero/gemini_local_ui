@@ -1,7 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './index.css';
+import { queryClient } from './api/queryClient';
 import { useChatStore } from './store/chatStore';
 import { useSessionStore } from './store/sessionStore';
 import { Message } from './types';
@@ -84,6 +86,8 @@ if (typeof window !== 'undefined') {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
   </React.StrictMode>
 );
