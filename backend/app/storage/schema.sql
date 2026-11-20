@@ -122,3 +122,47 @@ CREATE TABLE IF NOT EXISTS account_limits_config (
     updated_at INTEGER NOT NULL
 );
 
+
+-- 8. Local Hybrid RAG Chunks & FTS5 Index
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL CHECK(source_type IN ('conversation', 'workspace_file', 'brain_digest', 'note')),
+    source_id TEXT NOT NULL,
+    source_title TEXT NOT NULL DEFAULT '',
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    metadata_json TEXT,
+    embedding_model TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(source_type, source_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_sha256 ON rag_chunks(content_sha256);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+    content,
+    source_title,
+    content='rag_chunks',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rowid, content, source_title)
+    VALUES (new.id, new.content, new.source_title);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content, source_title)
+    VALUES ('delete', old.id, old.content, old.source_title);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content, source_title)
+    VALUES ('delete', old.id, old.content, old.source_title);
+    INSERT INTO rag_chunks_fts(rowid, content, source_title)
+    VALUES (new.id, new.content, new.source_title);
+END;

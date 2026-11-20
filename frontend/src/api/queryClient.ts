@@ -1,5 +1,6 @@
 import { QueryClient, useQuery } from '@tanstack/react-query';
 import { apiClient } from './typedClient';
+import { fetchRagStatus } from '../services/api';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +19,7 @@ export const queryKeys = {
   models: ['models'] as const,
   sessionStatus: ['sessionStatus'] as const,
   workspaceConfig: ['workspaceConfig'] as const,
+  ragStatus: ['ragStatus'] as const,
 };
 
 export function useConversationsQuery(limit = 50, pinnedFirst = true) {
@@ -83,5 +85,12 @@ export function useWorkspaceConfigQuery() {
       if (error) throw new Error('Failed to fetch workspace config');
       return data as any;
     },
+  });
+}
+
+export function useRagStatusQuery() {
+  return useQuery({
+    queryKey: queryKeys.ragStatus,
+    queryFn: async () => fetchRagStatus(),
   });
 }

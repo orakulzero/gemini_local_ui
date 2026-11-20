@@ -60,6 +60,8 @@ class ChatGenerateRequest(BaseModel):
     use_global_prompt: bool | None = None
     skill_ids: list[str] | None = None
     connector_ids: list[str] | None = None
+    use_rag: bool = False
+    rag_top_k: int = 5
 
 
 class ChatTTSRequest(BaseModel):

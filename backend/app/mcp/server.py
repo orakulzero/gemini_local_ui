@@ -43,9 +43,11 @@ class MCPServer:
         self,
         session_manager: Optional[SessionManager] = None,
         image_data_dir: Optional[Any] = None,
+        rag_service: Optional[Any] = None,
     ) -> None:
         self.session_manager = session_manager
         self.image_data_dir = image_data_dir
+        self.rag_service = rag_service
         self.is_initialized = False
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._register_tools()
@@ -561,6 +563,36 @@ class MCPServer:
                 "required": ["action"],
             },
             "handler": self._call_gemini_ecosystem_scout,
+        }
+
+        self._tools["local_rag_search"] = {
+            "name": "local_rag_search",
+            "description": "Search local Hybrid RAG index (sqlite-vec 512d + SQLite FTS5 + RRF + Reranker) across conversations, workspace files, and brain digests.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                    "top_k": {"type": "integer", "default": 5, "description": "Number of passages to return."},
+                    "mode": {"type": "string", "enum": ["hybrid", "fts5", "vector"], "default": "hybrid"},
+                    "source_types": {"type": "array", "items": {"type": "string"}},
+                    "rerank": {"type": "boolean", "default": True},
+                },
+                "required": ["query"],
+            },
+            "handler": self._call_local_rag_search,
+        }
+
+        self._tools["local_rag_index"] = {
+            "name": "local_rag_index",
+            "description": "Incrementally index conversations, workspace files, or brain digests into the local Hybrid RAG store.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_types": {"type": "array", "items": {"type": "string"}},
+                    "workspace_dir": {"type": "string", "description": "Optional workspace directory path to index."},
+                },
+            },
+            "handler": self._call_local_rag_index,
         }
 
 
@@ -1776,3 +1808,51 @@ class MCPServer:
             return ([{"type": "text", "text": f"Error in gemini_ecosystem_scout: {exc}"}], True)
 
 
+    def _resolve_rag_service(self) -> Any:
+        if self.rag_service is not None:
+            return self.rag_service
+        from backend.app.api.rag import get_rag_service
+        return get_rag_service()
+
+    async def _call_local_rag_search(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient] = None,
+        notebooklm_client: Optional[NotebookLMClient] = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        _ = (client, notebooklm_client)
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return ([{"type": "text", "text": "Parameter 'query' is required"}], True)
+        try:
+            svc = self._resolve_rag_service()
+            res = await svc.search(
+                query,
+                top_k=int(params.get("top_k", 5)),
+                mode=str(params.get("mode", "hybrid")),
+                source_types=params.get("source_types"),
+                rerank=bool(params.get("rerank", True)),
+            )
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as exc:
+            return ([{"type": "text", "text": f"Error in local_rag_search: {exc}"}], True)
+
+    async def _call_local_rag_index(
+        self,
+        params: Dict[str, Any],
+        client: Optional[GeminiWebClient] = None,
+        notebooklm_client: Optional[NotebookLMClient] = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        _ = (client, notebooklm_client)
+        try:
+            from backend.app.api.rag import _validate_workspace_dir
+            svc = self._resolve_rag_service()
+            raw_ws = params.get("workspace_dir")
+            ws_path = _validate_workspace_dir(str(raw_ws)) if raw_ws else None
+            res = await svc.index_sources(
+                source_types=params.get("source_types"),
+                workspace_dir=ws_path,
+            )
+            return ([{"type": "text", "text": json.dumps(res, indent=2, ensure_ascii=False)}], False)
+        except Exception as exc:
+            return ([{"type": "text", "text": f"Error in local_rag_index: {exc}"}], True)

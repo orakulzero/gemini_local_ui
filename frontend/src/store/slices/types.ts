@@ -76,6 +76,7 @@ export interface UiSlice {
   draftPrompt: string;
   injectedContext: string;
   pendingAttachments: ChatAttachment[];
+  useRag: boolean;
   error: string | null;
 
   setIncognito: (incognito: boolean) => void;
@@ -84,6 +85,7 @@ export interface UiSlice {
   recallPromptDown: () => string;
   setDraftPrompt: (draft: string) => void;
   injectContext: (context: string) => void;
+  setUseRag: (enabled: boolean) => void;
   addAttachment: (file: File) => void;
   removeAttachment: (index: number) => void;
   clearAttachments: () => void;

@@ -132,6 +132,7 @@ async def prepare_chat_turn(
     assembled = await assemble_prompt(
         req,
         existing_msg=existing_msg,
+        rag_service=getattr(request.app.state, "rag_service", None),
         base_url=session_mgr.base_url if session_mgr else None,
     )
 
@@ -506,6 +507,8 @@ async def stream_chat_turn(
                                 done_meta["code_executions"] = media_acc.code_executions
                             if recorded_tool_calls:
                                 done_meta["tool_calls"] = recorded_tool_calls
+                            if prepared.assembled.rag_sources:
+                                done_meta["rag_sources"] = prepared.assembled.rag_sources
                             if "full_text" in done_meta:
                                 done_meta["full_text"] = strip_tool_call_fences(done_meta["full_text"])
                             yield DoneEvent(metadata=done_meta)

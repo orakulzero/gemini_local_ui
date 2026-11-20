@@ -1208,6 +1208,11 @@
             "title": "Prompt",
             "type": "string"
           },
+          "rag_top_k": {
+            "default": 5,
+            "title": "Rag Top K",
+            "type": "integer"
+          },
           "rcid": {
             "anyOf": [
               {
@@ -1265,6 +1270,11 @@
               }
             ],
             "title": "Use Global Prompt"
+          },
+          "use_rag": {
+            "default": false,
+            "title": "Use Rag",
+            "type": "boolean"
           }
         },
         "title": "ChatGenerateRequest",
@@ -3693,6 +3703,86 @@
           "content"
         ],
         "title": "PromptCreateRequest",
+        "type": "object"
+      },
+      "RagIndexRequest": {
+        "properties": {
+          "source_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Types"
+          },
+          "workspace_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Dir"
+          }
+        },
+        "title": "RagIndexRequest",
+        "type": "object"
+      },
+      "RagSearchRequest": {
+        "properties": {
+          "mode": {
+            "default": "hybrid",
+            "enum": [
+              "hybrid",
+              "fts5",
+              "vector"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "rerank": {
+            "default": true,
+            "title": "Rerank",
+            "type": "boolean"
+          },
+          "source_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Types"
+          },
+          "top_k": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "RagSearchRequest",
         "type": "object"
       },
       "RedactedThinkingBlock": {
@@ -9738,6 +9828,164 @@
         "summary": "Sync Repo Endpoint",
         "tags": [
           "notebooklm"
+        ]
+      }
+    },
+    "/api/rag/index": {
+      "delete": {
+        "operationId": "rag_clear_index_api_rag_index_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rag Clear Index Api Rag Index Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rag Clear Index",
+        "tags": [
+          "Hybrid RAG"
+        ]
+      },
+      "post": {
+        "operationId": "rag_index_api_rag_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RagIndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rag Index Api Rag Index Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rag Index",
+        "tags": [
+          "Hybrid RAG"
+        ]
+      }
+    },
+    "/api/rag/search": {
+      "post": {
+        "operationId": "rag_search_api_rag_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RagSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rag Search Api Rag Search Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rag Search",
+        "tags": [
+          "Hybrid RAG"
+        ]
+      }
+    },
+    "/api/rag/status": {
+      "get": {
+        "operationId": "rag_status_api_rag_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rag Status Api Rag Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Rag Status",
+        "tags": [
+          "Hybrid RAG"
         ]
       }
     },

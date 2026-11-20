@@ -106,6 +106,7 @@ class Database:
         self._write_lock = AsyncRLock()
         self._tx_depth: Dict[asyncio.Task, int] = {}
         self._initialized = False
+        self.sqlite_vec_loaded: bool = False
         self.is_memory = str(self.db_path) == ":memory:"
 
         # Optimal reader pool scaling: default 2-4 workers on desktop, env override GEMINI_DB_MAX_READERS
@@ -139,6 +140,19 @@ class Database:
             except Exception as e:
                 logger.warning("Error in mutation listener: %s", e)
 
+    @staticmethod
+    def _load_vec_sync(conn: sqlite3.Connection) -> bool:
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            try:
+                sqlite_vec.load(conn)
+            finally:
+                conn.enable_load_extension(False)
+            return True
+        except Exception:
+            return False
+
     def _get_sync_reader_conn(self) -> sqlite3.Connection:
         """Returns thread-local cached synchronous reader connection in autocommit mode."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -154,6 +168,7 @@ class Database:
             conn.execute("PRAGMA cache_size = -16000;")
             conn.execute("PRAGMA temp_store = MEMORY;")
             conn.execute("PRAGMA mmap_size = 67108864;")
+            self._load_vec_sync(conn)
             self._local.conn = conn
             with self._reader_lock:
                 self._reader_conns.append(conn)
@@ -185,6 +200,15 @@ class Database:
             await self._db.execute("PRAGMA cache_size = -16000;")
             await self._db.execute("PRAGMA temp_store = MEMORY;")
             await self._db.execute("PRAGMA mmap_size = 67108864;")
+            try:
+                import sqlite_vec
+                await self._db.enable_load_extension(True)
+                await self._db._execute(sqlite_vec.load, self._db._conn)
+                await self._db.enable_load_extension(False)
+                self.sqlite_vec_loaded = True
+            except Exception as vec_err:
+                logger.debug("sqlite_vec not loaded on writer connection: %s", vec_err)
+                self.sqlite_vec_loaded = False
             self._ensure_reader_pool()
             logger.info("Connected to SQLite database at %s (WAL mode, autocommit, FK=ON)", target)
 
@@ -223,6 +247,11 @@ class Database:
 
         async with self._write_lock:
             await db.executescript(ddl)
+            if self.sqlite_vec_loaded:
+                await db.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0("
+                    "chunk_id INTEGER PRIMARY KEY, embedding float[512] distance_metric=cosine)"
+                )
             await db.commit()
 
         self._initialized = True
@@ -374,6 +403,7 @@ class Database:
         conn.execute("PRAGMA cache_size = -16000;")
         conn.execute("PRAGMA temp_store = MEMORY;")
         conn.execute("PRAGMA mmap_size = 67108864;")
+        self._load_vec_sync(conn)
         return conn
 
     async def record_telemetry(

@@ -17,12 +17,19 @@ dependencies = [
     "wreq>=0.13.0",
     "structlog>=24.1.0",
     "mcp>=2.3.0",
+    "sqlite-vec>=0.1.9",
+    "numpy>=2.0.0",
 ]
 
 [project.optional-dependencies]
 otel = [
     "opentelemetry-api>=1.24.0",
     "opentelemetry-sdk>=1.24.0",
+]
+rag = [
+    "onnxruntime>=1.20.0",
+    "tokenizers>=0.20.0",
+    "huggingface-hub>=0.25.0",
 ]
 
 [tool.setuptools.packages.find]

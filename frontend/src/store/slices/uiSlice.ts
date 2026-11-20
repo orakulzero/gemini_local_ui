@@ -16,6 +16,7 @@ export const createUiSlice: StateCreator<ChatState, [], [], UiSlice> = (set, get
   draftPrompt: '',
   injectedContext: '',
   pendingAttachments: [],
+  useRag: false,
   error: null,
 
   setIncognito: (incognito) => {
@@ -67,6 +68,7 @@ export const createUiSlice: StateCreator<ChatState, [], [], UiSlice> = (set, get
 
   setDraftPrompt: (draft) => set({ draftPrompt: draft }),
   injectContext: (context) => set({ injectedContext: context }),
+  setUseRag: (enabled) => set({ useRag: Boolean(enabled) }),
 
   addAttachment: (file) => {
     const clientId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;

@@ -42,6 +42,8 @@ export const PromptInput: React.FC = () => {
   const setIncognito = useChatStore((s) => s.setIncognito);
   const injectedContext = useChatStore((s) => s.injectedContext);
   const injectContext = useChatStore((s) => s.injectContext);
+  const useRag = useChatStore((s) => s.useRag);
+  const setUseRag = useChatStore((s) => s.setUseRag);
 
   const featureMode = useSessionStore((s) => s.featureMode);
   const setFeatureMode = useSessionStore((s) => s.setFeatureMode);
@@ -510,6 +512,21 @@ export const PromptInput: React.FC = () => {
               <span>Research</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            data-testid="rag-toggle-btn"
+            aria-pressed={useRag}
+            onClick={() => setUseRag(!useRag)}
+            title="Augment prompt with local hybrid RAG memory"
+            className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors ${
+              useRag
+                ? 'bg-emerald-600/25 text-emerald-200 border-emerald-500/50 shadow-sm'
+                : 'bg-zinc-950/80 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:bg-zinc-800'
+            }`}
+          >
+            RAG
+          </button>
         </div>
 
         <div className="flex items-center gap-2">

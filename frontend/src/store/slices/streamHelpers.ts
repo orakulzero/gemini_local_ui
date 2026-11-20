@@ -3,15 +3,18 @@ import type { ChatGeneratePayload } from '../../services/streaming';
 import * as api from '../../services/api';
 import { queryClient, queryKeys } from '../../api/queryClient';
 import { useWorkspaceStore } from '../workspaceStore';
+import { useChatStore } from '../chatStore';
 import { pendingUploadPromises } from './uiSlice';
 import { applyNodePatch, ChatState } from './types';
 
 export function getWorkspaceRequestPayload() {
   const ws = useWorkspaceStore.getState();
+  const useRag = typeof useChatStore?.getState === 'function' ? Boolean(useChatStore.getState().useRag) : false;
   return {
     use_global_prompt: Boolean(ws.promptsEnabled && ws.useGlobalPromptForChat && ws.activePromptId),
     skill_ids: ws.enabledSkillIds,
     connector_ids: ws.connectors.filter((c) => c.enabled).map((c) => c.id),
+    ...(useRag ? { use_rag: true } : {}),
   };
 }
 

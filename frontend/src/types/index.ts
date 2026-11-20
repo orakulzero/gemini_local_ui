@@ -352,4 +352,38 @@ export interface ElicitationRequest {
   url?: string | null;
 }
 
+export interface RagStatusResponse {
+  total_chunks: number;
+  by_source_type?: Record<string, number>;
+  sqlite_vec_loaded?: boolean;
+  sqlite_vec_available?: boolean;
+  vector_dim?: number;
+  embedder_backend?: string;
+  weights_available?: boolean;
+  degraded?: boolean;
+  win32_job_bound?: boolean;
+  worker_pid?: number | null;
+}
+
+export interface RagSearchHit {
+  chunk_id: number;
+  source_type: 'conversation' | 'workspace_file' | 'brain_digest' | 'note' | string;
+  source_id: string;
+  source_title: string;
+  content: string;
+  score: number;
+  rrf_score?: number;
+  chunk_index?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface RagSearchResponse {
+  query: string;
+  effective_mode: string;
+  degraded: boolean;
+  duration_ms: number;
+  formatted_xml_context: string;
+  results: RagSearchHit[];
+}
+
 

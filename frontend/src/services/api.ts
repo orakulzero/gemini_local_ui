@@ -15,6 +15,7 @@ import {
 } from '../types';
 
 
+import type { RagStatusResponse, RagSearchResponse } from '../types';
 export { apiClient, type ApiPaths, type ApiComponents } from '../api/typedClient';
 export async function fetchSessionStatus(): Promise<{
   authenticated: boolean;
@@ -578,4 +579,45 @@ export async function synthesizeSpeech(
     throw new Error(err.detail || `Speech synthesis failed: HTTP ${res.status}`);
   }
   return res.blob();
+}
+
+export async function fetchRagStatus(): Promise<RagStatusResponse> {
+  const res = await fetch('/api/rag/status');
+  if (!res.ok) throw new Error(`RAG status failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function triggerRagIndex(payload?: {
+  source_types?: string[];
+  workspace_dir?: string;
+}): Promise<any> {
+  const res = await fetch('/api/rag/index', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `RAG index failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function searchRagHybrid(payload: {
+  query: string;
+  top_k?: number;
+  mode?: 'hybrid' | 'fts5' | 'vector';
+  source_types?: string[];
+  rerank?: boolean;
+}): Promise<RagSearchResponse> {
+  const res = await fetch('/api/rag/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `RAG search failed: HTTP ${res.status}`);
+  }
+  return res.json();
 }

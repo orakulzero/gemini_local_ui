@@ -22,6 +22,7 @@ class AssembledPrompt:
     skill_injections: list[str]
     bridge_attachments: list[dict[str, Any]] | None = None
     active_tools: list[dict[str, Any]] = field(default_factory=list)
+    rag_sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 def normalize_bridge_attachments(
@@ -119,6 +120,7 @@ async def assemble_prompt(
     existing_msg: Any = None,
     workspace_store: Any = None,
     mcp_manager: Any = None,
+    rag_service: Any = None,
     base_url: str | None = None,
 ) -> AssembledPrompt:
     """Decompose prompt, skills, persona, and MCP tools with full parity with legacy chat.py."""
@@ -217,6 +219,31 @@ async def assemble_prompt(
         except Exception as e:
             logger.debug("Failed resolving active MCP tools: %s", e)
 
+    rag_sources: list[dict[str, Any]] = []
+    if req and getattr(req, "use_rag", False) and clean_user_prompt.strip():
+        try:
+            svc = rag_service
+            if svc is None:
+                from backend.app.api.rag import get_rag_service
+                svc = get_rag_service()
+            rag_k = int(getattr(req, "rag_top_k", 5) or 5)
+            rag_res = await svc.search(clean_user_prompt, top_k=rag_k, mode="hybrid")
+            xml_ctx = rag_res.get("formatted_xml_context") or ""
+            if xml_ctx:
+                effective_prompt = f"{xml_ctx}\n\n{effective_prompt}"
+                rag_sources = [
+                    {
+                        "chunk_id": h.get("chunk_id"),
+                        "source_type": h.get("source_type"),
+                        "source_id": h.get("source_id"),
+                        "source_title": h.get("source_title"),
+                        "score": h.get("score"),
+                    }
+                    for h in rag_res.get("results", [])
+                ]
+        except Exception as rag_err:
+            logger.debug("RAG augmentation skipped: %s", rag_err)
+
     return AssembledPrompt(
         wire_prompt=effective_prompt,
         clean_storage_text=saved_user_prompt,
@@ -224,6 +251,7 @@ async def assemble_prompt(
         skill_injections=skill_injections,
         bridge_attachments=bridge_attachments,
         active_tools=active_tools,
+        rag_sources=rag_sources,
     )
 
 

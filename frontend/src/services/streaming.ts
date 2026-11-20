@@ -13,6 +13,8 @@ export interface ChatGeneratePayload {
   use_global_prompt?: boolean;
   skill_ids?: string[];
   connector_ids?: string[];
+  use_rag?: boolean;
+  rag_top_k?: number;
   attachments?: Array<{
     uri?: string;
     filename: string;

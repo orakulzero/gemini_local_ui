@@ -1695,6 +1695,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rag/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rag Index */
+        post: operations["rag_index_api_rag_index_post"];
+        /** Rag Clear Index */
+        delete: operations["rag_clear_index_api_rag_index_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rag Search */
+        post: operations["rag_search_api_rag_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Rag Status */
+        get: operations["rag_status_api_rag_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/search": {
         parameters: {
             query?: never;
@@ -3711,6 +3763,11 @@ export interface components {
              * @default
              */
             prompt: string;
+            /**
+             * Rag Top K
+             * @default 5
+             */
+            rag_top_k: number;
             /** Rcid */
             rcid?: string | null;
             /** Rid */
@@ -3721,6 +3778,11 @@ export interface components {
             system_instruction?: string | null;
             /** Use Global Prompt */
             use_global_prompt?: boolean | null;
+            /**
+             * Use Rag
+             * @default false
+             */
+            use_rag: boolean;
         };
         /** ChatTTSRequest */
         ChatTTSRequest: {
@@ -4679,6 +4741,36 @@ export interface components {
             description: string;
             /** Name */
             name: string;
+        };
+        /** RagIndexRequest */
+        RagIndexRequest: {
+            /** Source Types */
+            source_types?: string[] | null;
+            /** Workspace Dir */
+            workspace_dir?: string | null;
+        };
+        /** RagSearchRequest */
+        RagSearchRequest: {
+            /**
+             * Mode
+             * @default hybrid
+             * @enum {string}
+             */
+            mode: "hybrid" | "fts5" | "vector";
+            /** Query */
+            query: string;
+            /**
+             * Rerank
+             * @default true
+             */
+            rerank: boolean;
+            /** Source Types */
+            source_types?: string[] | null;
+            /**
+             * Top K
+             * @default 8
+             */
+            top_k: number;
         };
         /** RedactedThinkingBlock */
         RedactedThinkingBlock: {
@@ -8591,6 +8683,131 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rag_index_api_rag_index_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RagIndexRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rag_clear_index_api_rag_index_delete: {
+        parameters: {
+            query?: {
+                source_type?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rag_search_api_rag_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RagSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rag_status_api_rag_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
