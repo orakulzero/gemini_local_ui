@@ -795,3 +795,49 @@ async def test_delete_everywhere_cleans_all_branch_cids_and_chains_parent(tmp_pa
         main_mod.app.dependency_overrides.pop(conv_api.get_optional_client, None)
         main_mod.app.state.repository = prev_repo
         await db.close()
+
+
+def test_strip_protocol_markup_removes_followup_tags_cleanly() -> None:
+    """Lock down Nit #2: OpenAI/Anthropic/orchestrator strip Google <FollowUp ...> UI tags."""
+    from backend.app.services.media_postprocessor import strip_protocol_markup
+
+    raw = 'FFT_OAI_V2_OK\n\n<FollowUp label="Want to explore Radix-4?" prompt="Explain Radix-4" />'
+    assert strip_protocol_markup(raw) == "FFT_OAI_V2_OK"
+    paired = "Result: 42\n<FollowUp label='Next'>Explain</FollowUp>"
+    assert strip_protocol_markup(paired) == "Result: 42"
+    plain = "No directives here: a < b and c > d."
+    assert strip_protocol_markup(plain) == plain
+
+
+@pytest.mark.asyncio
+async def test_deep_research_and_deep_think_fallback_cleanly_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock down Nit #1: bounded timeout fallback switches from stalled container/deep-think to gemini-4-argon."""
+    import asyncio
+    from types import SimpleNamespace
+    from backend.app.bridge.gemini_capabilities import DeepResearchEngine
+    from backend.app.bridge.ultra_capabilities import run_deep_think_reasoning
+
+    seen_models: list[str] = []
+
+    class _FakeClient:
+        async def generate_stream(self, prompt: str, model: str = "", **kwargs):
+            seen_models.append(model)
+            if "deep-research" in model or "deep-think" in model:
+                raise asyncio.TimeoutError("simulated container stall")
+            yield SimpleNamespace(type="text", delta="1. Analyze DSP48 slices\n2. Measure throughput", metadata={})
+            yield SimpleNamespace(type="done", delta="", metadata={"cid": "c_live_fallback_99", "rid": "r_1", "rcid": "rc_1"})
+
+        async def close(self) -> None:
+            pass
+
+    dr = DeepResearchEngine()
+    plan = await dr.generate_research_plan("Polyphase FPGA", client=_FakeClient())
+    assert plan["cid"] == "c_live_fallback_99"
+    assert len(plan["sub_questions"]) == 2
+    assert "gemini-4-argon@mode=deep-research" in seen_models
+    assert "gemini-4-argon" in seen_models
+
+    dt = await run_deep_think_reasoning("Polyphase MAC savings", branch_count=2, client=_FakeClient())
+    assert dt["cid"] == "c_live_fallback_99"
+    assert len(dt["branches"]) == 2
+    assert "gemini-4-argon-deep-think" in seen_models

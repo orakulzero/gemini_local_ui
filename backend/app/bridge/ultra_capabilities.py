@@ -247,14 +247,20 @@ async def run_deep_think_reasoning(
     full_text = ""
 
     if client is not None:
-        try:
-            dt_prompt = (
-                f"[Deep Think Parallel Reasoning - Explore {branch_count} hypothesis branches]\n"
-                f"{prompt}"
-            )
-            async for chunk in client.generate_stream(
+        import asyncio
+
+        from backend.app.services.media_postprocessor import strip_protocol_markup
+
+        dt_prompt = (
+            f"[Deep Think Parallel Reasoning - Explore {branch_count} hypothesis branches]\n"
+            f"{prompt}"
+        )
+
+        async def _collect_dt(active_client: Any, model_name: str) -> None:
+            nonlocal out_cid, out_rid, out_rcid, full_text
+            async for chunk in active_client.generate_stream(
                 prompt=dt_prompt,
-                model="gemini-4-argon-deep-think",
+                model=model_name,
                 cid=cid,
             ):
                 if chunk.type in ("thinking", "thought"):
@@ -270,10 +276,32 @@ async def run_deep_think_reasoning(
                         full_text = str(meta["full_text"])
             if not full_text:
                 full_text = "".join(text_parts)
+
+        try:
+            try:
+                await asyncio.wait_for(_collect_dt(client, "gemini-4-argon-deep-think"), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.info("Deep Think stream exceeded 30s; falling back to gemini-4-argon")
+                if not full_text and not text_parts:
+                    fallback_client = client
+                    if owned_client:
+                        if hasattr(client, "close"):
+                            await client.close()
+                        fresh = _get_live_client_if_available(timeout=90.0)
+                        if fresh is not None:
+                            client = fresh
+                            fallback_client = fresh
+                    await asyncio.wait_for(_collect_dt(fallback_client, "gemini-4-argon"), timeout=55.0)
+                elif not full_text:
+                    full_text = "".join(text_parts)
         except Exception as exc:
             logger.debug("Deep Think stream fallback: %s", exc)
         finally:
-            if owned_client and hasattr(client, "close"):
+            if not full_text and text_parts:
+                full_text = "".join(text_parts)
+            if full_text:
+                full_text = strip_protocol_markup(full_text)
+            if owned_client and client is not None and hasattr(client, "close"):
                 await client.close()
 
     branches: List[str] = []

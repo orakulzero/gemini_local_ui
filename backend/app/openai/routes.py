@@ -511,7 +511,9 @@ async def chat_completions(
                     except Exception:
                         pass
 
-            full_text = "".join(full_text_chunks)
+            from backend.app.services.media_postprocessor import strip_protocol_markup
+
+            full_text = strip_protocol_markup("".join(full_text_chunks))
 
             # Apply stop sequence truncation if applicable
             if stop_seqs:

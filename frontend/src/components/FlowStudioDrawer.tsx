@@ -41,9 +41,23 @@ export const FlowStudioDrawer: React.FC<FlowStudioDrawerProps> = ({
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [sourceContext, setSourceContext] = useState('');
   const [project, setProject] = useState<FlowProjectItem | null>(null);
+  const [savedProjects, setSavedProjects] = useState<FlowProjectItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [flowAuth, setFlowAuth] = useState(false);
+
+  const refreshProjects = async () => {
+    try {
+      const resp = await fetch('/api/flow/projects');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data && Array.isArray(data.projects)) {
+        setSavedProjects(data.projects);
+      }
+    } catch {
+      // Ignore transient load error
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -55,6 +69,7 @@ export const FlowStudioDrawer: React.FC<FlowStudioDrawerProps> = ({
         }
       })
       .catch(() => {});
+    void refreshProjects();
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -83,6 +98,7 @@ export const FlowStudioDrawer: React.FC<FlowStudioDrawerProps> = ({
         throw new Error(data.detail || 'Failed to generate storyboard');
       }
       setProject(data.project);
+      void refreshProjects();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -133,6 +149,7 @@ export const FlowStudioDrawer: React.FC<FlowStudioDrawerProps> = ({
         throw new Error(data.detail || 'Failed to assemble educational video');
       }
       setProject(data.project);
+      void refreshProjects();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -264,6 +281,49 @@ export const FlowStudioDrawer: React.FC<FlowStudioDrawerProps> = ({
             </div>
           )}
         </div>
+
+        {savedProjects.length > 0 && (
+          <div
+            data-testid="flow-saved-projects"
+            className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-3 space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-zinc-300">
+                Saved Projects ({savedProjects.length})
+              </h3>
+              <button
+                type="button"
+                onClick={() => void refreshProjects()}
+                className="text-[11px] text-zinc-400 hover:text-zinc-200"
+              >
+                Refresh
+              </button>
+            </div>
+            <div className="space-y-1.5 max-h-40 overflow-y-auto">
+              {savedProjects.map((item) => {
+                const isSelected = project?.project_id === item.project_id;
+                return (
+                  <button
+                    key={item.project_id}
+                    type="button"
+                    data-testid={`flow-saved-project-${item.project_id}`}
+                    onClick={() => setProject(item)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg border text-xs flex items-center justify-between gap-2 transition ${
+                      isSelected
+                        ? 'bg-blue-950/40 border-blue-600/60 text-zinc-100'
+                        : 'bg-zinc-950/70 border-zinc-800/80 text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    <span className="truncate font-medium">{item.topic}</span>
+                    <span className="shrink-0 text-[10px] font-mono text-zinc-400">
+                      {item.scenes.length} scenes • {item.status}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {project && (
           <div className="space-y-3">

@@ -16,6 +16,17 @@ logger = logging.getLogger("gemini_backend.media_postprocessor")
 _FIFE_INLINE_URL_RE = re.compile(
     r"https://(?:[a-zA-Z0-9-]+\.)*(?:googleusercontent\.com/(?:rd-)?gg[^\s)\"'>]*|fife\.usercontent\.google\.com/[^\s)\"'>]+)"
 )
+_FOLLOW_UP_TAG_RE = re.compile(r"<FollowUp\b[^>]*/?>(?:[\s\S]*?</FollowUp>)?", re.IGNORECASE)
+
+
+def strip_protocol_markup(text: str) -> str:
+    """Strip transient Google UI directive tags such as <FollowUp ...> from model output."""
+    if not text or ("followup" not in text.lower()):
+        return text
+    cleaned = _FOLLOW_UP_TAG_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def build_image_proxy_url(raw_url: str) -> str:

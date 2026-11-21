@@ -389,7 +389,9 @@ async def create_anthropic_message(
                 with contextlib.suppress(Exception):
                     await client.close()
 
-        raw_reply_text = "".join(full_text_chunks)
+        from backend.app.services.media_postprocessor import strip_protocol_markup
+
+        raw_reply_text = strip_protocol_markup("".join(full_text_chunks))
         thought_text = "".join(thought_chunks)
 
         # Check stop sequences

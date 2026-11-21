@@ -6,6 +6,7 @@ import { resolveAuthenticatedWsUrl, resolveWsUrl } from '../services/desktopBrid
 import { segmentStreamingMarkdown } from '../components/StreamingMarkdown';
 import { SearchModal } from '../components/SearchModal';
 import { ModelSelector } from '../components/ModelSelector';
+import { FlowStudioDrawer } from '../components/FlowStudioDrawer';
 import { useSessionStore } from '../store/sessionStore';
 import { resolveRenderableImageUrl } from '../utils/imageUrl';
 
@@ -175,5 +176,50 @@ describe('Deep Verification Invariants (Frontend)', () => {
     expect(resolveRenderableImageUrl('/files/abc123.png')).toBe('/files/abc123.png');
     expect(resolveRenderableImageUrl('/api/images/proxy?url=already')).toBe('/api/images/proxy?url=already');
     expect(resolveRenderableImageUrl('https://example.com/chart.png')).toBe('https://example.com/chart.png');
+  });
+
+  it('FlowStudioDrawer loads and selects saved projects from /api/flow/projects', async () => {
+    const savedProj = {
+      project_id: 'flow_saved_01',
+      topic: 'Polyphase FFT Spectrometer',
+      language: 'en',
+      target_audience: 'university',
+      aspect_ratio: '16:9',
+      model_key: 'veo_3_1_t2v_fast_audio',
+      status: 'assembled',
+      assembled_video_url: '/api/flow/media/flow_saved_01_lesson.mp4',
+      scenes: [
+        {
+          scene_id: 'sc_1',
+          scene_number: 1,
+          title: 'Intro',
+          narration_text: 'Polyphase channels.',
+          visual_prompt: 'DSP diagram',
+          duration_sec: 5,
+          camera_motion: 'slow push-in',
+          on_screen_bullets: ['FFT'],
+          status: 'completed',
+        },
+      ],
+    };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/flow/status')) {
+        return new Response(JSON.stringify({ ok: true, authenticated: true }), { status: 200 });
+      }
+      if (url.includes('/api/flow/projects')) {
+        return new Response(JSON.stringify({ ok: true, count: 1, projects: [savedProj] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as any;
+
+    render(<FlowStudioDrawer isOpen={true} onClose={() => {}} />);
+    const itemBtn = await screen.findByTestId('flow-saved-project-flow_saved_01');
+    expect(itemBtn.textContent).toContain('Polyphase FFT Spectrometer');
+    fireEvent.click(itemBtn);
+    await waitFor(() => {
+      expect(screen.getByText(/Storyboard: Polyphase FFT Spectrometer/)).toBeTruthy();
+      expect(screen.getByText(/Assembled Educational Video Lesson/)).toBeTruthy();
+    });
   });
 });

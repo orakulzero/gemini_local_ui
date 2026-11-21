@@ -29,7 +29,7 @@ _URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
 _NUMBERED_LINE_RE = re.compile(r"^\s*(?:\d+[\.\)]|[-*])\s+(.+)$")
 
 
-def _get_live_client_if_available() -> Optional[Any]:
+def _get_live_client_if_available(timeout: float = 90.0) -> Optional[Any]:
     """Attempts to build a GeminiWebClient from main.session_manager if authenticated."""
     try:
         from backend.app import main as _main
@@ -37,7 +37,7 @@ def _get_live_client_if_available() -> Optional[Any]:
 
         sm = getattr(_main, "session_manager", None)
         if sm and sm.get_health().is_authenticated:
-            return GeminiWebClient(session_context=sm.context, base_url=sm.base_url, timeout=60.0)
+            return GeminiWebClient(session_context=sm.context, base_url=sm.base_url, timeout=timeout)
     except Exception:
         pass
     return None
@@ -255,20 +255,21 @@ class DeepResearchEngine:
         raw_text = ""
 
         native_plan: Optional[Dict[str, Any]] = None
+        collected_parts: List[str] = []
         if client is not None:
-            try:
-                prompt = (
-                    f"Create a structured Deep Research plan for the topic: {topic}\n"
-                    "List 3 to 5 numbered research sub-questions."
-                )
-                parts: List[str] = []
-                async for chunk in client.generate_stream(
-                    prompt=prompt,
-                    model="gemini-4-argon@mode=deep-research",
-                    feature_mode=40,
+            import asyncio
+
+            from backend.app.services.media_postprocessor import strip_protocol_markup
+
+            async def _collect_plan(active_client: Any, model_name: str, fmode: int, req_prompt: str) -> None:
+                nonlocal cid, rid, rcid, raw_text, native_plan
+                async for chunk in active_client.generate_stream(
+                    prompt=req_prompt,
+                    model=model_name,
+                    feature_mode=fmode,
                 ):
                     if chunk.type == "text":
-                        parts.append(chunk.delta)
+                        collected_parts.append(chunk.delta)
                     elif chunk.type == "done" and isinstance(chunk.metadata, dict):
                         cid = str(chunk.metadata.get("cid") or cid)
                         rid = str(chunk.metadata.get("rid") or rid)
@@ -277,12 +278,57 @@ class DeepResearchEngine:
                             raw_text = str(chunk.metadata["full_text"])
                         if isinstance(chunk.metadata.get("research_plan"), dict):
                             native_plan = chunk.metadata["research_plan"]
-                if not raw_text:
-                    raw_text = "".join(parts)
+                if not raw_text and collected_parts:
+                    raw_text = "".join(collected_parts)
+
+            prompt = (
+                f"Create a structured Deep Research plan for the topic: {topic}\n"
+                "List 3 to 5 numbered research sub-questions."
+            )
+            fallback_prompt = (
+                f"List 4 concise numbered research questions (one sentence each) to investigate: {topic}.\n"
+                "Output only the numbered list."
+            )
+            try:
+                try:
+                    await asyncio.wait_for(
+                        _collect_plan(client, "gemini-4-argon@mode=deep-research", 40, prompt),
+                        timeout=25.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.info("Deep research container plan exceeded 25s; falling back to standard gemini-4-argon")
+                    if not raw_text and collected_parts:
+                        raw_text = "".join(collected_parts)
+                    if not raw_text and not native_plan:
+                        for fb_model, fb_timeout in (("gemini-4-argon", 35.0), ("gemini-4-hydrogen", 25.0)):
+                            fallback_client = client
+                            if owned_client:
+                                if hasattr(client, "close"):
+                                    await client.close()
+                                fresh = _get_live_client_if_available(timeout=90.0)
+                                if fresh is not None:
+                                    client = fresh
+                                    fallback_client = fresh
+                            collected_parts.clear()
+                            try:
+                                await asyncio.wait_for(
+                                    _collect_plan(fallback_client, fb_model, 0, fallback_prompt),
+                                    timeout=fb_timeout,
+                                )
+                            except asyncio.TimeoutError:
+                                logger.info("Deep research fallback %s exceeded %.0fs", fb_model, fb_timeout)
+                                if not raw_text and collected_parts:
+                                    raw_text = "".join(collected_parts)
+                            if raw_text or native_plan:
+                                break
             except Exception as exc:
                 logger.debug("Deep research plan generation fallback: %s", exc)
             finally:
-                if owned_client and hasattr(client, "close"):
+                if not raw_text and collected_parts:
+                    raw_text = "".join(collected_parts)
+                if raw_text:
+                    raw_text = strip_protocol_markup(raw_text)
+                if owned_client and client is not None and hasattr(client, "close"):
                     await client.close()
 
         sub_questions: List[str] = []
