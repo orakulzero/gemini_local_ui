@@ -229,15 +229,20 @@ class GeminiWebClient:
         if not harvested:
             return
 
+        changed: dict[str, str] = harvested
+        if hasattr(self.ctx, "cookies") and isinstance(self.ctx.cookies, dict):
+            changed = {k: v for k, v in harvested.items() if self.ctx.cookies.get(k) != v}
+            if not changed:
+                return
+            self.ctx.cookies.update(changed)
+
         logger.debug(
-            "Passively harvested %d cookies from %s: %s",
-            len(harvested),
+            "Passively harvested %d changed cookies from %s: %s",
+            len(changed),
             response.url,
-            list(harvested.keys()),
+            list(changed.keys()),
         )
 
-        if hasattr(self.ctx, "cookies") and isinstance(self.ctx.cookies, dict):
-            self.ctx.cookies.update(harvested)
         self.ctx.last_refresh = time.time()
         if hasattr(self.ctx, "status") and hasattr(self.ctx, "cookies"):
             if str(getattr(self.ctx, "status", "")) != "healthy" and self.ctx.cookies.get("__Secure-1PSID"):

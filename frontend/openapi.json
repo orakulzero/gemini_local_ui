@@ -327,6 +327,15 @@
             ],
             "title": "Gemini Bl"
           },
+          "notebooklm_cookies": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notebooklm Cookies"
+          },
           "sapisid": {
             "anyOf": [
               {
@@ -337,6 +346,23 @@
               }
             ],
             "title": "Sapisid"
+          },
+          "service_cookies": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Cookies"
           },
           "xsrf_token": {
             "anyOf": [
@@ -4786,7 +4812,7 @@
             "type": "string"
           },
           "voice_style": {
-            "default": "conversational",
+            "default": "warm, articulate educator voice, natural human cadence with expressive intonation and clear vocal emphasis on key technical terms",
             "title": "Voice Style",
             "type": "string"
           }
@@ -9937,7 +9963,7 @@
     },
     "/api/notebooklm/status": {
       "get": {
-        "description": "Returns NotebookLM bridge availability and session health.",
+        "description": "Returns truthful NotebookLM bridge availability and live upstream session health.",
         "operationId": "get_status_api_notebooklm_status_get",
         "responses": {
           "200": {

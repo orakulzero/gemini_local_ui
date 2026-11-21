@@ -279,6 +279,8 @@ class AdminSessionRequest(BaseModel):
     xsrf_token: Optional[str] = None
     gemini_bl: Optional[str] = None
     account_id: Optional[str] = None
+    notebooklm_cookies: Optional[Any] = None
+    service_cookies: Optional[Dict[str, Dict[str, str]]] = None
 
 
 FOREIGN_SERVICE_COOKIES = {"OSID", "__Secure-OSID", "LSID", "__Host-1PLSID", "__Host-3PLSID"}
@@ -509,6 +511,22 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
             },
         )
 
+    incoming_service_cookies: Dict[str, Dict[str, str]] = {}
+    if isinstance(req.service_cookies, dict):
+        for svc_name, svc_map in req.service_cookies.items():
+            if isinstance(svc_map, dict):
+                cleaned = {str(k).strip(): str(v).strip() for k, v in svc_map.items() if k and v}
+                if cleaned:
+                    incoming_service_cookies[str(svc_name).strip()] = cleaned
+    if isinstance(req.notebooklm_cookies, dict):
+        nb_clean = {str(k).strip(): str(v).strip() for k, v in req.notebooklm_cookies.items() if k and v}
+        if nb_clean:
+            incoming_service_cookies["notebooklm"] = nb_clean
+    elif isinstance(req.notebooklm_cookies, str) and req.notebooklm_cookies.strip():
+        nb_parsed = BrowserCookieExtractor.parse_manual(req.notebooklm_cookies)
+        if nb_parsed:
+            incoming_service_cookies["notebooklm"] = nb_parsed
+
     target_account_id = req.account_id
     if not target_account_id:
         if session_manager.active_account_id and session_manager.active_account_id != "default":
@@ -518,14 +536,38 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
         else:
             target_account_id = "default"
 
-    vault.store_credentials(cookies_dict)
-    session_manager.bump_credential_generation("admin_session_sync", account_id=target_account_id)
-    await session_manager.init_session(
-        cookies_dict,
-        account_id=target_account_id,
-        xsrf_token=req.xsrf_token,
-        gemini_bl=req.gemini_bl,
-    )
+    clean_xsrf = req.xsrf_token.strip() if isinstance(req.xsrf_token, str) and req.xsrf_token.strip() else None
+    clean_bl = req.gemini_bl.strip() if isinstance(req.gemini_bl, str) and req.gemini_bl.strip() else None
+    existing_sess = session_manager.get_account_session(target_account_id)
+    unchanged = False
+    if (
+        existing_sess is not None
+        and existing_sess.context.status == SessionHealthStatus.HEALTHY
+        and vault is not None
+        and vault.vault_path.exists()
+        and existing_sess.context.cookies == cookies_dict
+        and (clean_xsrf is None or existing_sess.context.access_token == clean_xsrf)
+        and (clean_bl is None or existing_sess.context.build_label == clean_bl)
+        and all(
+            existing_sess.context.service_cookies.get(svc) == svc_map
+            for svc, svc_map in incoming_service_cookies.items()
+        )
+    ):
+        unchanged = True
+    else:
+        await session_manager.init_session(
+            cookies_dict,
+            account_id=target_account_id,
+            xsrf_token=req.xsrf_token,
+            gemini_bl=req.gemini_bl,
+            service_cookies=incoming_service_cookies or None,
+        )
+        try:
+            from backend.app.api.notebooklm import clear_notebooklm_status_cache
+            clear_notebooklm_status_cache()
+        except Exception:
+            pass
+
     session_manager.active_account_id = target_account_id
     health = session_manager.get_health(target_account_id)
     status_val = health.status.value if isinstance(health.status, SessionHealthStatus) else str(health.status)
@@ -533,6 +575,7 @@ async def sync_admin_session(req: AdminSessionRequest) -> Any:
     return {
         "ok": True,
         "status": "ok",
+        "unchanged": unchanged,
         "models": ["gemini-4-argon", "gemini-4-hydrogen", "gemini-3.5-flash-lite"],
         "skipped": [],
         "account": target_account_id,

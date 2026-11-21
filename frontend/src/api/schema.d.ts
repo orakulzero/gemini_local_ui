@@ -1715,7 +1715,7 @@ export interface paths {
         };
         /**
          * Get Status
-         * @description Returns NotebookLM bridge availability and session health.
+         * @description Returns truthful NotebookLM bridge availability and live upstream session health.
          */
         get: operations["get_status_api_notebooklm_status_get"];
         put?: never;
@@ -3500,8 +3500,16 @@ export interface components {
             cookie?: string | null;
             /** Gemini Bl */
             gemini_bl?: string | null;
+            /** Notebooklm Cookies */
+            notebooklm_cookies?: unknown | null;
             /** Sapisid */
             sapisid?: string | null;
+            /** Service Cookies */
+            service_cookies?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            } | null;
             /** Xsrf Token */
             xsrf_token?: string | null;
         };
@@ -5226,7 +5234,7 @@ export interface components {
             voice_persona: string;
             /**
              * Voice Style
-             * @default conversational
+             * @default warm, articulate educator voice, natural human cadence with expressive intonation and clear vocal emphasis on key technical terms
              */
             voice_style: string;
         };

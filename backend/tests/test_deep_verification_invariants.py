@@ -502,3 +502,179 @@ async def test_remote_embedder_fail_closed_nan_malformed_and_offline_anti_wipe(t
     await emb_off.aclose()
     sub.shutdown()
     await db.close()
+
+
+def test_flow_studio_api_imports_real_flow_client_and_renders_storyboard() -> None:
+    """Lock down Bug 1 fix: backend.app.api.flow binds real FlowClient from bridge.flow."""
+    from fastapi.testclient import TestClient
+    from backend.app.api import flow as flow_api
+    from backend.app.bridge.flow import FlowClient as BridgeFlowClient
+    from backend.app.main import app
+
+    assert flow_api.FlowClient is BridgeFlowClient
+
+    with TestClient(app) as client:
+        st = client.get("/api/flow/status")
+        assert st.status_code == 200
+        st_data = st.json()
+        assert st_data["available"] is True
+        assert st_data["status"] == "available"
+
+        projs = client.get("/api/flow/projects")
+        assert projs.status_code == 200
+        assert projs.json()["ok"] is True
+
+        sb = client.post(
+            "/api/flow/projects/storyboard",
+            json={"topic": "Hilbert Transform DSP", "scene_count": 2, "language": "en"},
+        )
+        assert sb.status_code == 200
+        pid = sb.json()["project"]["project_id"]
+
+        vtt = client.get(f"/api/flow/projects/{pid}/subtitles.vtt")
+        assert vtt.status_code == 200 and vtt.text.startswith("WEBVTT")
+
+        rendered = client.post(
+            "/api/flow/render-lesson",
+            json={"topic": "Polyphase Filters", "scene_count": 2},
+        )
+        assert rendered.status_code == 200
+        assert rendered.json()["video_size_bytes"] > 0
+
+
+@pytest.mark.asyncio
+async def test_session_manager_osid_redirect_retains_healthy_only_when_rpc_probe_succeeds() -> None:
+    """Lock down Bug 2 fix: osid=1 302 keeps HEALTHY iff live otAQ7b RPC succeeds; fails closed otherwise."""
+    from backend.app.bridge.session import SessionHealthStatus, SessionManager
+
+    osid_loc = "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1&continue=https://gemini.google.com/app"
+    rpc_mode = {"state": "live"}
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/app":
+            return httpx.Response(302, headers={"Location": osid_loc}, request=req)
+        if req.url.path == "/_/BardChatUi/data/batchexecute":
+            if rpc_mode["state"] == "live":
+                body = ')]}\'\n\n42\n[["wrb.fr","otAQ7b","[[1,2]]",null,null,null,"generic"]]\n'
+                return httpx.Response(200, text=body, request=req)
+            if rpc_mode["state"] == "code7":
+                body = ')]}\'\n\n42\n[["wrb.fr","otAQ7b","[7]",null,null,[7],"generic"]]\n'
+                return httpx.Response(200, text=body, request=req)
+            return httpx.Response(401, text="Unauthorized", request=req)
+        return httpx.Response(404, request=req)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    sm = SessionManager(base_url="http://127.0.0.1:19876", http_client=http_client)
+    try:
+        sm.context.cookies = {"__Secure-1PSID": "valid_psid_token_999", "SAPISID": "sap_123"}
+        sm.context.access_token = "Persisted_SNlM0e_Live:123"
+        sm.context.status = SessionHealthStatus.HEALTHY
+
+        # 1. Live otAQ7b succeeds -> stays HEALTHY with passive_rotation=True
+        ok = await sm.scrape_tokens(allow_rollback=False)
+        assert ok is True
+        assert sm.context.status == SessionHealthStatus.HEALTHY
+        assert sm.context.passive_rotation is True
+        assert sm.context.last_error is None
+
+        # 2. Code 7 revocation -> fails closed to EXPIRED
+        rpc_mode["state"] = "code7"
+        ok_code7 = await sm.scrape_tokens(allow_rollback=False)
+        assert ok_code7 is False
+        assert sm.context.status == SessionHealthStatus.EXPIRED
+
+        # 3. HTTP 401 -> fails closed to EXPIRED
+        rpc_mode["state"] = "unauth"
+        sm.context.status = SessionHealthStatus.HEALTHY
+        ok_401 = await sm.scrape_tokens(allow_rollback=False)
+        assert ok_401 is False
+        assert sm.context.status == SessionHealthStatus.EXPIRED
+    finally:
+        await sm.close()
+        await http_client.aclose()
+
+
+def test_admin_session_idempotent_sync_and_scoped_notebooklm_cookies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock down Bug 2+3: idempotent /admin/session avoids vault churn and isolates NotebookLM OSID."""
+    from fastapi.testclient import TestClient
+    import backend.app.main as main_mod
+    from backend.app.bridge.session import SessionManager
+    from backend.app.storage.vault import CredentialVault
+
+    test_vault = CredentialVault(vault_path=tmp_path / "vault.enc")
+    test_sm = SessionManager(base_url="http://127.0.0.1:19998", vault=test_vault, rotation_interval_seconds=3600.0)
+    monkeypatch.setattr(main_mod, "vault", test_vault)
+    monkeypatch.setattr(main_mod, "session_manager", test_sm)
+    monkeypatch.setattr(main_mod.app.state, "vault", test_vault, raising=False)
+    monkeypatch.setattr(main_mod.app.state, "session_manager", test_sm, raising=False)
+
+    payload = {
+        "cookie": "__Secure-1PSID=psid_abc123456789; __Secure-1PSIDTS=ts_abc123; SAPISID=sap_xyz; OSID=foreign_gmail_osid",
+        "xsrf_token": "SNlM0e_Live_Idempotent:1",
+        "gemini_bl": "boq_assistant-bard-web-server_20261121.00_p0",
+        "notebooklm_cookies": {"OSID": "notebooklm_scoped_osid_999", "__Secure-OSID": "notebooklm_sec_osid_999"},
+    }
+    with TestClient(main_mod.app) as client:
+        main_mod.vault = test_vault
+        main_mod.session_manager = test_sm
+        r1 = client.post("/admin/session", json=payload)
+        assert r1.status_code == 200 and r1.json()["ok"] is True and r1.json()["unchanged"] is False
+        gen_after_first = test_vault.get_vault_generation()
+
+        # Gemini cookies must stay free of OSID; NotebookLM scoped cookies preserved in service_cookies
+        assert "OSID" not in test_sm.context.cookies
+        assert test_sm.context.service_cookies.get("notebooklm", {}).get("OSID") == "notebooklm_scoped_osid_999"
+
+        # Identical sync must not churn vault_generation
+        r2 = client.post("/admin/session", json=payload)
+        assert r2.status_code == 200 and r2.json()["unchanged"] is True
+        assert test_vault.get_vault_generation() == gen_after_first
+
+
+@pytest.mark.asyncio
+async def test_notebooklm_rejects_accounts_redirect_snlm0e_and_extension_captures_notebooklm() -> None:
+    """Lock down Bug 3: NotebookLMClient refuses accounts.google.com SNlM0e and extension declares notebooklm."""
+    import json as _json
+    from backend.app.bridge.exceptions import AuthenticationError
+    from backend.app.bridge.notebooklm import NotebookLMClient
+
+    def _redirect_handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "notebooklm.google.com":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1&continue=https://notebooklm.google.com/"},
+                request=req,
+            )
+        # Identity page decoy SNlM0e must NEVER be accepted as a NotebookLM token
+        return httpx.Response(
+            200,
+            text='<html><script>WIZ_global_data={"SNlM0e":"IDENTITY_DECOY_TOKEN","cfb2h":"boq_identityfrontendauthuiserver"};</script></html>',
+            request=req,
+        )
+
+    nb = NotebookLMClient(
+        cookies={"__Secure-1PSID": "valid_psid_token_999"},
+        fallback_snlm0e="gemini_fallback_token",
+    )
+    nb._client = httpx.AsyncClient(transport=httpx.MockTransport(_redirect_handler), follow_redirects=True)
+    try:
+        ok = await nb.scrape_tokens()
+        assert ok is False
+        assert nb.access_token is None
+        assert nb.is_offline_fallback is True
+        assert nb.last_probe_reason == "notebooklm_osid_login_required"
+
+        # Reset flag to verify _ensure_tokens blocks batchexecute with AuthenticationError
+        nb._tokens_scraped = False
+        with pytest.raises(AuthenticationError):
+            await nb.create_notebook("Should Fail Closed")
+    finally:
+        await nb.close()
+
+    ext_dir = Path(__file__).resolve().parents[2] / "extensions" / "gemini-cookie-sync-extension"
+    manifest = _json.loads((ext_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "https://notebooklm.google.com/*" in manifest["host_permissions"]
+    common_js = (ext_dir / "common.js").read_text(encoding="utf-8")
+    assert "https://notebooklm.google.com/" in common_js
+    assert "selectNotebookLMCookies" in common_js
+    assert "notebooklm_cookies" in common_js

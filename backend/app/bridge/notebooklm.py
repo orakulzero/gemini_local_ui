@@ -22,6 +22,7 @@ import random
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 import httpx
 
 from backend.app.bridge.exceptions import AuthenticationError, GeminiBridgeError
@@ -90,8 +91,12 @@ class NotebookLMClient:
         base_url: str = DEFAULT_BASE_URL,
         fallback_snlm0e: str | None = None,
         timeout: float = 60.0,
+        service_cookies: dict[str, str] | None = None,
     ) -> None:
         self.cookies: dict[str, str] = dict(cookies or {})
+        self.service_cookies: dict[str, str] = dict(service_cookies or {})
+        if self.service_cookies:
+            self.cookies.update(self.service_cookies)
         self.base_url: str = base_url.rstrip("/")
         self.timeout: float = timeout
         self.access_token: str | None = fallback_snlm0e
@@ -99,8 +104,28 @@ class NotebookLMClient:
         self.build_label: str = "boq_labs-tailwind-frontend_20261017.00_p0"
         self.session_id: str | None = None
         self.is_offline_fallback: bool = False
+        self.last_probe_reason: str | None = None
+        self._tokens_scraped: bool = False
         self._reqid_counter: int = random.randint(100000, 999999)
         self._client: httpx.AsyncClient | None = None
+
+    def _build_cookie_jar(self) -> httpx.Cookies:
+        jar = httpx.Cookies()
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        is_google_https = parsed.scheme == "https" and (host == "google.com" or host.endswith(".google.com"))
+        host_only_names = {"OSID", "__Secure-OSID", "LSID", "__Host-1PLSID", "__Host-3PLSID"}
+        for name, value in self.cookies.items():
+            if not name or not value:
+                continue
+            if is_google_https:
+                if name in host_only_names or name in self.service_cookies:
+                    jar.set(name, value, domain=host, path="/")
+                else:
+                    jar.set(name, value, domain=".google.com", path="/")
+            else:
+                jar.set(name, value)
+        return jar
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -110,14 +135,19 @@ class NotebookLMClient:
                 "Referer": f"{self.base_url}/",
                 "x-same-domain": "1",
             }
-            cookie_header = HeaderBuilder.format_cookies(self.cookies)
-            if cookie_header:
-                headers["Cookie"] = cookie_header
+            parsed = urlparse(self.base_url)
+            host = (parsed.hostname or "").lower()
+            is_google_https = parsed.scheme == "https" and (host == "google.com" or host.endswith(".google.com"))
+            if not is_google_https:
+                cookie_header = HeaderBuilder.format_cookies(self.cookies)
+                if cookie_header:
+                    headers["Cookie"] = cookie_header
 
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout, connect=15.0),
-                cookies=self.cookies,
+                cookies=self._build_cookie_jar(),
                 headers=headers,
+                follow_redirects=True,
             )
         return self._client
 
@@ -134,19 +164,55 @@ class NotebookLMClient:
     async def scrape_tokens(self) -> bool:
         """
         Scrapes SNlM0e, cfb2h, and FdrFJe from the NotebookLM web application.
-        Falls back to fallback_snlm0e if scraping fails or in offline environments.
+        Rejects redirects to accounts.google.com so identity-page SNlM0e is never misread
+        as a valid NotebookLM token. Falls back to fallback_snlm0e only on unreachable/network errors.
         """
         client = await self._get_client()
+        expected_host = (urlparse(self.base_url).hostname or "").lower()
         try:
-            resp = await client.get(f"{self.base_url}/")
+            try:
+                resp = await client.get(f"{self.base_url}/")
+            except (httpx.ConnectError, httpx.RemoteProtocolError):
+                if self.base_url != self.DEFAULT_BASE_URL:
+                    raise
+                await self.close()
+                client = await self._get_client()
+                resp = await client.get(f"{self.base_url}/")
+            final_url = str(resp.url)
+            final_host = (urlparse(final_url).hostname or "").lower()
+            self._tokens_scraped = True
+
+            if final_host and expected_host and final_host != expected_host:
+                self.is_offline_fallback = True
+                self.access_token = None
+                if "osid=1" in final_url.lower():
+                    self.last_probe_reason = "notebooklm_osid_login_required"
+                else:
+                    self.last_probe_reason = f"redirected_to_{final_host}"
+                logger.info(
+                    "NotebookLM scrape redirected from %s to %s (%s); refusing foreign SNlM0e",
+                    expected_host,
+                    final_host,
+                    self.last_probe_reason,
+                )
+                return False
+
+            if resp.status_code in (401, 403):
+                self.is_offline_fallback = True
+                self.access_token = None
+                self.last_probe_reason = f"http_{resp.status_code}"
+                return False
+
             if resp.status_code == 200:
                 html = resp.text
                 m_at = _RE_SNLM0E.search(html)
                 if m_at:
                     self.access_token = m_at.group(1)
                     self.is_offline_fallback = False
+                    self.last_probe_reason = None
                 else:
                     self.is_offline_fallback = True
+                    self.last_probe_reason = "snlm0e_missing"
 
                 m_bl = _RE_CFB2H.search(html)
                 if m_bl:
@@ -155,13 +221,30 @@ class NotebookLMClient:
                 if m_sid:
                     self.session_id = m_sid.group(1)
 
-                return bool(self.access_token)
+                return bool(m_at) if not self.fallback_snlm0e else bool(self.access_token)
             self.is_offline_fallback = True
+            self.last_probe_reason = f"http_{resp.status_code}"
         except Exception as e:
             logger.warning("Could not scrape NotebookLM tokens from %s: %s; using fallback credentials", self.base_url, e)
             self.is_offline_fallback = True
+            self.last_probe_reason = f"unreachable:{type(e).__name__}"
 
         return bool(self.access_token)
+
+    async def _ensure_tokens(self) -> None:
+        """Auto-scrapes NotebookLM WIZ tokens before RPC calls against live NotebookLM."""
+        if self.base_url != self.DEFAULT_BASE_URL or self._tokens_scraped:
+            return
+        ok = await self.scrape_tokens()
+        if not ok and self.last_probe_reason and (
+            "redirected_to_" in self.last_probe_reason
+            or "osid" in self.last_probe_reason
+            or self.last_probe_reason in ("http_401", "http_403")
+        ):
+            raise AuthenticationError(
+                f"NotebookLM authentication required ({self.last_probe_reason}); "
+                "open notebooklm.google.com in Chrome and sync cookies via extension"
+            )
 
     async def call_batchexecute(self, rpc_id: str, payload: Any) -> Any:
         """
@@ -169,6 +252,7 @@ class NotebookLMClient:
         /_/LabsTailwindUi/data/batchexecute
         Decodes length-prefixed streaming frames and returns parsed inner JSON.
         """
+        await self._ensure_tokens()
         client = await self._get_client()
         url = f"{self.base_url}/_/LabsTailwindUi/data/batchexecute"
 
@@ -191,9 +275,19 @@ class NotebookLMClient:
             "at": self.access_token or "",
             "f.req": f_req,
         }
+        extra_headers: dict[str, str] = {}
+        sapisid = HeaderBuilder.extract_sapisid(self.cookies)
+        if sapisid:
+            extra_headers["Authorization"] = HeaderBuilder.make_sapisidhash(sapisid, origin=self.base_url)
 
+        expected_host = (urlparse(self.base_url).hostname or "").lower()
         try:
-            resp = await client.post(url, params=params, data=data)
+            resp = await client.post(url, params=params, data=data, headers=extra_headers or None)
+            final_host = (urlparse(str(resp.url)).hostname or "").lower()
+            if final_host and expected_host and final_host != expected_host:
+                self.is_offline_fallback = True
+                self.last_probe_reason = f"redirected_to_{final_host}"
+                raise AuthenticationError(f"NotebookLM RPC redirected to {final_host}; re-authentication required")
             if resp.status_code in (401, 403):
                 raise AuthenticationError(f"NotebookLM authentication failed with HTTP {resp.status_code}")
             if resp.status_code != 200:

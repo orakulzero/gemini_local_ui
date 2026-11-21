@@ -198,6 +198,7 @@ class AccountProfile:
     tier: str = "free"  # "free" | "pro" | "ultra"
     priority: int = 1
     cookies: dict[str, str] = field(default_factory=dict)
+    service_cookies: dict[str, dict[str, str]] = field(default_factory=dict)
     snlm0e: Optional[str] = None
     cfb2h: str = "boq_assistant-bard-web-server_20261017.00_p0"
     fdrfje: Optional[str] = None
@@ -357,6 +358,11 @@ class CredentialVault:
                             tier=acc_raw.get("tier", "free"),
                             priority=int(acc_raw.get("priority", 1)),
                             cookies=dict(acc_raw.get("cookies", {})),
+                            service_cookies={
+                                str(svc): dict(ck)
+                                for svc, ck in (acc_raw.get("service_cookies") or {}).items()
+                                if isinstance(ck, dict)
+                            },
                             snlm0e=acc_raw.get("snlm0e"),
                             cfb2h=acc_raw.get("cfb2h", "boq_assistant-bard-web-server_20261017.00_p0"),
                             fdrfje=acc_raw.get("fdrfje"),

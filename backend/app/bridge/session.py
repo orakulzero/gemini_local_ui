@@ -74,6 +74,7 @@ HARVESTED_COOKIE_NAMES = {
 @dataclass
 class SessionContext:
     cookies: dict[str, str] = field(default_factory=dict)
+    service_cookies: dict[str, dict[str, str]] = field(default_factory=dict)
     access_token: str | None = None                                # SNlM0e ('at')
     build_label: str = "boq_assistant-bard-web-server_20261017.00_p0" # cfb2h ('bl')
     session_id: str | None = None                                  # FdrFJe ('f.sid')
@@ -294,6 +295,7 @@ class SessionManager:
         account_id: str | None = None,
         xsrf_token: str | None = None,
         gemini_bl: str | None = None,
+        service_cookies: dict[str, dict[str, str]] | None = None,
     ) -> SessionContext:
         """Initializes or updates session for given account_id, scrapes tokens (or applies pre-extracted tokens), and starts rotation."""
         from backend.app.storage.vault import AccountProfile
@@ -313,15 +315,31 @@ class SessionManager:
             if stored and isinstance(stored, dict):
                 target_cookies = stored
 
+        incoming_svc: dict[str, dict[str, str]] = {}
+        if isinstance(service_cookies, dict):
+            for svc_name, svc_map in service_cookies.items():
+                if isinstance(svc_map, dict) and svc_map:
+                    incoming_svc[str(svc_name)] = {
+                        str(k): str(v) for k, v in svc_map.items() if k and v
+                    }
+
         if account_id in self.sessions:
             sess = self.sessions[account_id]
             async with sess.lock:
                 sess.context.cookies = target_cookies
+                if incoming_svc:
+                    for svc_name, svc_map in incoming_svc.items():
+                        sess.context.service_cookies[svc_name] = dict(svc_map)
                 sess.context.account_id = account_id
                 sess.context.vault = self.vault
                 sess.context.on_credentials_updated = self.on_credentials_updated
                 if sess.profile:
                     sess.profile.cookies = target_cookies
+                    if incoming_svc:
+                        if not isinstance(getattr(sess.profile, "service_cookies", None), dict):
+                            sess.profile.service_cookies = {}
+                        for svc_name, svc_map in incoming_svc.items():
+                            sess.profile.service_cookies[svc_name] = dict(svc_map)
         else:
             profile = None
             if self.vault:
@@ -333,14 +351,29 @@ class SessionManager:
                     tier="free",
                     priority=1,
                     cookies=target_cookies,
+                    service_cookies=dict(incoming_svc),
                 )
             else:
                 profile.cookies = target_cookies
+                if incoming_svc:
+                    if not isinstance(getattr(profile, "service_cookies", None), dict):
+                        profile.service_cookies = {}
+                    for svc_name, svc_map in incoming_svc.items():
+                        profile.service_cookies[svc_name] = dict(svc_map)
+            merged_svc = {
+                str(svc): dict(ck)
+                for svc, ck in (getattr(profile, "service_cookies", None) or {}).items()
+                if isinstance(ck, dict)
+            }
             sess = AccountSession(
                 account_id=account_id,
                 profile=profile,
                 context=SessionContext(
                     cookies=target_cookies,
+                    service_cookies=merged_svc,
+                    access_token=getattr(profile, "snlm0e", None),
+                    build_label=getattr(profile, "cfb2h", "boq_assistant-bard-web-server_20261017.00_p0"),
+                    session_id=getattr(profile, "fdrfje", None),
                     account_tier=profile.tier,
                     account_id=account_id,
                     vault=self.vault,
@@ -409,12 +442,18 @@ class SessionManager:
             self.active_account_id = vdata.active_account_id or "default"
 
         for acc_id, profile in vdata.accounts.items():
+            prof_svc = {
+                str(svc): dict(ck)
+                for svc, ck in (getattr(profile, "service_cookies", None) or {}).items()
+                if isinstance(ck, dict)
+            }
             if acc_id not in self.sessions:
                 sess = AccountSession(
                     account_id=acc_id,
                     profile=profile,
                     context=SessionContext(
                         cookies=dict(profile.cookies),
+                        service_cookies=prof_svc,
                         access_token=profile.snlm0e,
                         build_label=profile.cfb2h,
                         session_id=profile.fdrfje,
@@ -431,6 +470,8 @@ class SessionManager:
                 sess = self.sessions[acc_id]
                 sess.profile = profile
                 sess.context.cookies = dict(profile.cookies)
+                if prof_svc:
+                    sess.context.service_cookies = prof_svc
                 if profile.snlm0e:
                     sess.context.access_token = profile.snlm0e
                 if profile.cfb2h:
@@ -543,6 +584,89 @@ class SessionManager:
             logger.error("Exception during session rollback attempt for %s: %s", target_acc_id, e)
             return False
 
+    async def _probe_rpc_liveness(
+        self,
+        client: Any,
+        ctx: SessionContext,
+        access_token: str,
+        account_id: str | None = None,
+    ) -> bool:
+        """
+        Verifies whether existing session cookies + persisted SNlM0e are genuinely alive
+        against BardChatUi batchexecute (otAQ7b) when GET /app bounces with osid=1.
+        Fails closed (returns False) on any auth error, Code 7, redirect, or transport failure.
+        """
+        if not access_token or not ctx.cookies.get("__Secure-1PSID"):
+            return False
+        try:
+            from backend.app.bridge.models import HeaderBuilder
+            from backend.app.bridge.streaming_parser import StreamingFrameParser
+
+            url = f"{self.base_url}/_/BardChatUi/data/batchexecute"
+            params = {
+                "rpcids": "otAQ7b",
+                "source-path": "/app",
+                "bl": ctx.build_label or "boq_assistant-bard-web-server_20261017.00_p0",
+                "f.sid": ctx.session_id or "",
+                "hl": ctx.language or "en",
+                "_reqid": str(self.next_req_id(account_id)),
+                "rt": "c",
+            }
+            f_req = json.dumps([[["otAQ7b", "[]", None, "generic"]]], separators=(",", ":"))
+            data = {"at": access_token, "f.req": f_req}
+            cookie_header = HeaderBuilder.format_cookies(ctx.cookies)
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Origin": self.base_url,
+                "Referer": f"{self.base_url}/",
+                "x-same-domain": "1",
+            }
+            if getattr(client, "get_transport_name", lambda: "")() != "wreq":
+                headers["User-Agent"] = HeaderBuilder.DEFAULT_USER_AGENT
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            sapisid = HeaderBuilder.extract_sapisid(ctx.cookies)
+            if sapisid:
+                headers["Authorization"] = HeaderBuilder.make_sapisidhash(sapisid, origin=self.base_url)
+
+            resp = await client.post(
+                url,
+                params=params,
+                data=data,
+                headers=headers,
+                extensions={"account_id": account_id or self.active_account_id},
+            )
+            if resp.status_code != 200 or getattr(resp, "is_redirect", False):
+                return False
+
+            parser = StreamingFrameParser()
+            frames = parser.feed(resp.text)
+            for frame in frames:
+                entries = frame
+                while (
+                    len(entries) == 1
+                    and isinstance(entries[0], list)
+                    and len(entries[0]) > 0
+                    and isinstance(entries[0][0], list)
+                ):
+                    entries = entries[0]
+                for entry in entries:
+                    if not isinstance(entry, list) or len(entry) < 3:
+                        continue
+                    if entry[0] == "er":
+                        return False
+                    if entry[1] == "otAQ7b" and entry[2]:
+                        if len(entry) > 5 and isinstance(entry[5], list) and entry[5] and entry[5][0] == 7:
+                            return False
+                        inner_data = json.loads(entry[2])
+                        if isinstance(inner_data, list) and inner_data and inner_data[0] == 7:
+                            return False
+                        return True
+            return False
+        except Exception as exc:
+            logger.debug("Live batchexecute (otAQ7b) probe failed for '%s': %s", account_id, exc)
+            return False
+
     async def scrape_tokens(self, account_id: str | None = None, allow_rollback: bool = True) -> bool:
         """Fetches /app and extracts SNlM0e, cfb2h, FdrFJe, qKIAYe for given account."""
         sess = self.get_account_session(account_id)
@@ -582,6 +706,24 @@ class SessionManager:
 
             # 2. Redirect to Google Accounts login: HTTP 302 / 301 / 307
             if resp.status_code in (301, 302, 303, 307, 308) or getattr(resp, "is_redirect", False):
+                location = str(resp.headers.get("location", "") or "")
+                prior_at = ctx.access_token or (sess.profile.snlm0e if sess and sess.profile else None)
+                if "osid=1" in location.lower() and ctx.cookies.get("__Secure-1PSID") and prior_at:
+                    if await self._probe_rpc_liveness(client, ctx, prior_at, account_id=account_id):
+                        ctx.access_token = prior_at
+                        ctx.status = SessionHealthStatus.HEALTHY
+                        ctx.passive_rotation = True
+                        ctx.last_error = None
+                        ctx.last_refresh = time.time()
+                        if sess and sess.profile:
+                            sess.profile.snlm0e = prior_at
+                            sess.profile.health_status = "healthy"
+                            sess.profile.last_rotated_at = time.time()
+                        logger.info(
+                            "GET /app redirected with osid=1 for '%s', but live batchexecute (otAQ7b) probe confirmed session HEALTHY",
+                            account_id or self.active_account_id,
+                        )
+                        return True
                 if allow_rollback and self.vault and hasattr(self.vault, "rollback_from_backup"):
                     recovered = await self.recover_from_vault_backup(account_id)
                     if recovered:

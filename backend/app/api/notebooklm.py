@@ -10,10 +10,12 @@ FastAPI router for NotebookLM integration (Feature F50):
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import logging
 import os
+import time
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from backend.app.bridge.exceptions import AuthenticationError, GeminiBridgeError
@@ -44,6 +46,7 @@ def get_notebooklm_client(request: Request) -> NotebookLMClient:
         sm = getattr(main_mod, "session_manager", None)
 
     cookies: dict[str, str] = {}
+    nb_service_cookies: dict[str, str] = {}
     at_token: str | None = None
 
     target_account = request.headers.get("X-Gemini-Account")
@@ -58,6 +61,9 @@ def get_notebooklm_client(request: Request) -> NotebookLMClient:
 
         if ctx:
             cookies = dict(getattr(ctx, "cookies", {}))
+            svc_map = getattr(ctx, "service_cookies", None) or {}
+            if isinstance(svc_map, dict) and isinstance(svc_map.get("notebooklm"), dict):
+                nb_service_cookies = dict(svc_map["notebooklm"])
             at_token = getattr(ctx, "at_token", None) or getattr(ctx, "snlm0e", None)
 
     base_url = os.environ.get("NOTEBOOKLM_BASE_URL")
@@ -68,7 +74,12 @@ def get_notebooklm_client(request: Request) -> NotebookLMClient:
         else:
             base_url = NotebookLMClient.DEFAULT_BASE_URL
 
-    return NotebookLMClient(cookies=cookies, base_url=base_url, fallback_snlm0e=at_token)
+    return NotebookLMClient(
+        cookies=cookies,
+        base_url=base_url,
+        fallback_snlm0e=at_token or None,
+        service_cookies=nb_service_cookies or None,
+    )
 
 
 # Request schemas
@@ -208,34 +219,78 @@ _LOCAL_FALLBACK_NOTEBOOKS: dict[str, dict[str, Any]] = {
 }
 
 
+_STATUS_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_STATUS_PROBE_TTL_SEC = 30.0
+
+
+def clear_notebooklm_status_cache() -> None:
+    """Clears cached upstream NotebookLM status probes (called after cookie sync)."""
+    _STATUS_PROBE_CACHE.clear()
+
+
 @router.get("/status")
 async def get_status(request: Request) -> dict[str, Any]:
-    """Returns NotebookLM bridge availability and session health."""
+    """Returns truthful NotebookLM bridge availability and live upstream session health."""
     client = get_notebooklm_client(request)
     try:
         has_cookies = bool(client.cookies.get("__Secure-1PSID"))
-        return {
-            "authenticated": has_cookies,
+        has_nb_osid = bool(client.cookies.get("OSID") or client.cookies.get("__Secure-OSID"))
+        if not has_cookies:
+            return {
+                "authenticated": False,
+                "available": True,
+                "live": False,
+                "offline_fallback": True,
+                "has_google_cookies": False,
+                "has_notebooklm_osid": has_nb_osid,
+                "reason": "missing_google_cookies",
+                "base_url": client.base_url,
+            }
+
+        is_default_host = client.base_url == NotebookLMClient.DEFAULT_BASE_URL
+        cache_key = ""
+        if is_default_host:
+            fp_src = "|".join(f"{k}={v}" for k, v in sorted(client.cookies.items()))
+            cache_key = f"{client.base_url}:{hashlib.sha256(fp_src.encode('utf-8')).hexdigest()[:16]}"
+            cached = _STATUS_PROBE_CACHE.get(cache_key)
+            if cached and (time.monotonic() - cached[0]) < _STATUS_PROBE_TTL_SEC:
+                return dict(cached[1])
+
+        scraped = await client.scrape_tokens()
+        is_live = bool(scraped and not client.is_offline_fallback)
+        result = {
+            "authenticated": is_live,
             "available": True,
-            "offline_fallback": client.is_offline_fallback,
+            "live": is_live,
+            "offline_fallback": not is_live,
+            "has_google_cookies": has_cookies,
+            "has_notebooklm_osid": has_nb_osid,
+            "reason": None if is_live else (client.last_probe_reason or "notebooklm_auth_required"),
             "base_url": client.base_url,
         }
+        reason_val = str(result.get("reason") or "")
+        if is_default_host and cache_key and not reason_val.startswith("unreachable:"):
+            _STATUS_PROBE_CACHE[cache_key] = (time.monotonic(), dict(result))
+        return result
     finally:
         await client.close()
 
 
 @router.get("/notebooks")
-async def list_notebooks(request: Request) -> list[dict[str, Any]]:
+async def list_notebooks(request: Request, response: Response) -> list[dict[str, Any]]:
     """Lists all user notebooks."""
     client = get_notebooklm_client(request)
     try:
         if client.base_url == NotebookLMClient.DEFAULT_BASE_URL:
             await client.scrape_tokens()
         notebooks = await client.list_notebooks()
+        response.headers["X-NotebookLM-Fallback"] = "false"
         return [asdict(n) for n in notebooks]
     except (AuthenticationError, GeminiBridgeError) as err:
         if client.base_url == NotebookLMClient.DEFAULT_BASE_URL:
             logger.info("Using local workspace NotebookLM fallback (%s)", err)
+            response.headers["X-NotebookLM-Fallback"] = "true"
+            response.headers["X-NotebookLM-Reason"] = client.last_probe_reason or "upstream_auth_failed"
             return [
                 {k: v for k, v in nb.items() if k not in ("sources", "notes")}
                 for nb in _LOCAL_FALLBACK_NOTEBOOKS.values()

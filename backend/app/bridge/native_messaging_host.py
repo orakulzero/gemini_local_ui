@@ -87,8 +87,12 @@ def handle_native_message(
                 token = os.environ.get("GEMINI_LOCAL_API_TOKEN", "").strip()
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
-                with httpx.Client(timeout=2.0) as http_client:
-                    r = http_client.post("http://127.0.0.1:8000/admin/session", json={"cookie": raw_cookie}, headers=headers)
+                forward_payload: Dict[str, Any] = {"cookie": raw_cookie}
+                for opt_key in ("sapisid", "auth_user", "xsrf_token", "gemini_bl", "account_id", "notebooklm_cookies", "service_cookies"):
+                    if msg.get(opt_key) is not None:
+                        forward_payload[opt_key] = msg[opt_key]
+                with httpx.Client(timeout=5.0) as http_client:
+                    r = http_client.post("http://127.0.0.1:8000/admin/session", json=forward_payload, headers=headers)
                     if r.status_code == 200:
                         notified = True
                         saved = True
@@ -102,16 +106,31 @@ def handle_native_message(
                 target_acc_id = vdata.active_account_id if vdata.active_account_id in vdata.accounts else (
                     next(iter(vdata.accounts.keys())) if vdata.accounts else "acc_21aac20f"
                 )
+                nb_cookies = msg.get("notebooklm_cookies")
+                nb_map = (
+                    {str(k): str(v) for k, v in nb_cookies.items() if k and v}
+                    if isinstance(nb_cookies, dict)
+                    else {}
+                )
                 if target_acc_id in vdata.accounts:
-                    vdata.accounts[target_acc_id].cookies.update(cookies)
-                    vdata.accounts[target_acc_id].last_rotated_at = time.time()
-                    vdata.accounts[target_acc_id].health_status = "healthy"
+                    acc = vdata.accounts[target_acc_id]
+                    acc.cookies.update(cookies)
+                    if nb_map:
+                        acc.service_cookies["notebooklm"] = nb_map
+                    if isinstance(msg.get("xsrf_token"), str) and msg["xsrf_token"].strip():
+                        acc.snlm0e = msg["xsrf_token"].strip()
+                    if isinstance(msg.get("gemini_bl"), str) and msg["gemini_bl"].strip():
+                        acc.cfb2h = msg["gemini_bl"].strip()
+                    acc.last_rotated_at = time.time()
+                    acc.health_status = "healthy"
                 else:
                     vdata.accounts[target_acc_id] = AccountProfile(
                         id=target_acc_id,
                         name="Primary Account",
                         tier="ultra",
                         cookies=cookies,
+                        service_cookies={"notebooklm": nb_map} if nb_map else {},
+                        snlm0e=msg.get("xsrf_token") if isinstance(msg.get("xsrf_token"), str) else None,
                         health_status="healthy",
                     )
                     vdata.active_account_id = target_acc_id

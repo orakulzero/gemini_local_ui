@@ -37,11 +37,19 @@ const EXPORT_ORDER = [
 
 const LOOKUP_URLS = [
   "https://gemini.google.com/app",
+  "https://notebooklm.google.com/",
   "https://flow.google.com/",
   "https://labs.google/fx/tools/flow",
   "https://accounts.google.com/",
   "https://www.google.com/",
   "https://google.com/"
+];
+
+const NOTEBOOKLM_SCOPED_COOKIES = [
+  "OSID",
+  "__Secure-OSID",
+  "__Host-1PLSID",
+  "__Host-3PLSID"
 ];
 
 const SYNC_ALARM = "gateway-sync";
@@ -149,6 +157,26 @@ function selectBestCookies(cookies) {
     if (candidates.length > 0) selected.set(name, candidates[0]);
   }
 
+  return selected;
+}
+
+// Host-scoped cookies specifically bound to notebooklm.google.com (kept separate
+// from Gemini's flat cookie string so NotebookLM's OSID never collides with Gemini/FIFE).
+function appliesToNotebookLM(cookie) {
+  const domain = normalizeDomain(cookie.domain);
+  return domain === "notebooklm.google.com";
+}
+
+function selectNotebookLMCookies(cookies) {
+  const selected = {};
+  for (const name of NOTEBOOKLM_SCOPED_COOKIES) {
+    const candidates = cookies
+      .filter((cookie) => cookie.name === name && cookie.value && appliesToNotebookLM(cookie))
+      .sort((a, b) => scoreCookie(b) - scoreCookie(a));
+    if (candidates.length > 0) {
+      selected[name] = candidates[0].value;
+    }
+  }
   return selected;
 }
 
@@ -291,6 +319,7 @@ async function buildInspection() {
   ]);
 
   const selected = selectBestCookies(cookies);
+  const notebooklmCookies = selectNotebookLMCookies(cookies);
   const validation = validateSelection(selected);
   const legacyPresent = listPresent(selected, LEGACY_COOKIES);
   const legacyMissing = LEGACY_COOKIES.filter((name) => !selected.has(name));
@@ -301,6 +330,7 @@ async function buildInspection() {
   return {
     cookies,
     selected,
+    notebooklmCookies,
     validation,
     legacyPresent,
     legacyMissing,
@@ -318,13 +348,17 @@ function buildCookieString(info) {
 }
 
 function buildSessionPayload(info) {
-  return {
+  const payload = {
     cookie: buildCookieString(info),
     sapisid: info.selected.get("SAPISID")?.value || null,
     auth_user: info.authUser,
     xsrf_token: info.pageMetadata.xsrfToken,
     gemini_bl: info.pageMetadata.geminiBl
   };
+  if (info.notebooklmCookies && Object.keys(info.notebooklmCookies).length > 0) {
+    payload.notebooklm_cookies = info.notebooklmCookies;
+  }
+  return payload;
 }
 
 async function loadSettings() {
