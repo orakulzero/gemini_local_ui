@@ -247,7 +247,7 @@ async def get_status(request: Request) -> dict[str, Any]:
                 "base_url": client.base_url,
             }
 
-        is_default_host = client.base_url == NotebookLMClient.DEFAULT_BASE_URL
+        is_default_host = NotebookLMClient.is_live_base_url(client.base_url)
         cache_key = ""
         if is_default_host:
             fp_src = "|".join(f"{k}={v}" for k, v in sorted(client.cookies.items()))
@@ -281,13 +281,13 @@ async def list_notebooks(request: Request, response: Response) -> list[dict[str,
     """Lists all user notebooks."""
     client = get_notebooklm_client(request)
     try:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL:
+        if NotebookLMClient.is_live_base_url(client.base_url):
             await client.scrape_tokens()
         notebooks = await client.list_notebooks()
         response.headers["X-NotebookLM-Fallback"] = "false"
         return [asdict(n) for n in notebooks]
     except (AuthenticationError, GeminiBridgeError) as err:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL:
+        if NotebookLMClient.is_live_base_url(client.base_url):
             logger.info("Using local workspace NotebookLM fallback (%s)", err)
             response.headers["X-NotebookLM-Fallback"] = "true"
             response.headers["X-NotebookLM-Reason"] = client.last_probe_reason or "upstream_auth_failed"
@@ -310,16 +310,16 @@ async def get_notebook(notebook_id: str, request: Request) -> dict[str, Any]:
     """Fetches details for a specific notebook including its sources and notes."""
     client = get_notebooklm_client(request)
     try:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
+        if NotebookLMClient.is_live_base_url(client.base_url) and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
             return _LOCAL_FALLBACK_NOTEBOOKS[notebook_id]
         detail = await client.get_notebook(notebook_id)
         return asdict(detail)
     except AuthenticationError as auth_err:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
+        if NotebookLMClient.is_live_base_url(client.base_url) and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
             return _LOCAL_FALLBACK_NOTEBOOKS[notebook_id]
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(auth_err))
     except GeminiBridgeError as bridge_err:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
+        if NotebookLMClient.is_live_base_url(client.base_url) and notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
             return _LOCAL_FALLBACK_NOTEBOOKS[notebook_id]
         if "not found" in str(bridge_err).lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(bridge_err))
@@ -391,7 +391,7 @@ async def attach_context(req: AttachContextRequest, request: Request) -> dict[st
     """
     client = get_notebooklm_client(request)
     try:
-        if client.base_url == NotebookLMClient.DEFAULT_BASE_URL and req.notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
+        if NotebookLMClient.is_live_base_url(client.base_url) and req.notebook_id in _LOCAL_FALLBACK_NOTEBOOKS:
             from backend.app.bridge.notebooklm import NotebookDetail, NotebookSource, NotebookNote
             raw_nb = _LOCAL_FALLBACK_NOTEBOOKS[req.notebook_id]
             detail = NotebookDetail(

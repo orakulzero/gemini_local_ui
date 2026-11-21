@@ -37,6 +37,7 @@ const EXPORT_ORDER = [
 
 const LOOKUP_URLS = [
   "https://gemini.google.com/app",
+  "https://notebook.google.com/",
   "https://notebooklm.google.com/",
   "https://flow.google.com/",
   "https://labs.google/fx/tools/flow",
@@ -160,11 +161,17 @@ function selectBestCookies(cookies) {
   return selected;
 }
 
-// Host-scoped cookies specifically bound to notebooklm.google.com (kept separate
-// from Gemini's flat cookie string so NotebookLM's OSID never collides with Gemini/FIFE).
+// Host-scoped cookies specifically bound to Gemini Notebook (notebook.google.com)
+// and legacy notebooklm.google.com (kept separate from Gemini's flat cookie string
+// so Notebook's OSID never collides with Gemini/FIFE).
 function appliesToNotebookLM(cookie) {
   const domain = normalizeDomain(cookie.domain);
-  return domain === "notebooklm.google.com";
+  return domain === "notebook.google.com" || domain === "notebooklm.google.com";
+}
+
+function scoreNotebookLMCookie(cookie) {
+  const domain = normalizeDomain(cookie.domain);
+  return scoreCookie(cookie) + (domain === "notebook.google.com" ? 50 : 0);
 }
 
 function selectNotebookLMCookies(cookies) {
@@ -172,7 +179,7 @@ function selectNotebookLMCookies(cookies) {
   for (const name of NOTEBOOKLM_SCOPED_COOKIES) {
     const candidates = cookies
       .filter((cookie) => cookie.name === name && cookie.value && appliesToNotebookLM(cookie))
-      .sort((a, b) => scoreCookie(b) - scoreCookie(a));
+      .sort((a, b) => scoreNotebookLMCookie(b) - scoreNotebookLMCookie(a));
     if (candidates.length > 0) {
       selected[name] = candidates[0].value;
     }

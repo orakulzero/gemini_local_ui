@@ -639,10 +639,10 @@ async def test_notebooklm_rejects_accounts_redirect_snlm0e_and_extension_capture
     from backend.app.bridge.notebooklm import NotebookLMClient
 
     def _redirect_handler(req: httpx.Request) -> httpx.Response:
-        if req.url.host == "notebooklm.google.com":
+        if req.url.host in ("notebook.google.com", "notebooklm.google.com"):
             return httpx.Response(
                 302,
-                headers={"Location": "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1&continue=https://notebooklm.google.com/"},
+                headers={"Location": "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1&continue=https://notebook.google.com/"},
                 request=req,
             )
         # Identity page decoy SNlM0e must NEVER be accepted as a NotebookLM token
@@ -656,6 +656,7 @@ async def test_notebooklm_rejects_accounts_redirect_snlm0e_and_extension_capture
         cookies={"__Secure-1PSID": "valid_psid_token_999"},
         fallback_snlm0e="gemini_fallback_token",
     )
+    assert nb.base_url == "https://notebook.google.com"
     nb._client = httpx.AsyncClient(transport=httpx.MockTransport(_redirect_handler), follow_redirects=True)
     try:
         ok = await nb.scrape_tokens()
@@ -673,8 +674,10 @@ async def test_notebooklm_rejects_accounts_redirect_snlm0e_and_extension_capture
 
     ext_dir = Path(__file__).resolve().parents[2] / "extensions" / "gemini-cookie-sync-extension"
     manifest = _json.loads((ext_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "https://notebook.google.com/*" in manifest["host_permissions"]
     assert "https://notebooklm.google.com/*" in manifest["host_permissions"]
     common_js = (ext_dir / "common.js").read_text(encoding="utf-8")
+    assert "https://notebook.google.com/" in common_js
     assert "https://notebooklm.google.com/" in common_js
     assert "selectNotebookLMCookies" in common_js
     assert "notebooklm_cookies" in common_js

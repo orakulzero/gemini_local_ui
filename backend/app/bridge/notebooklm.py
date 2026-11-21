@@ -83,7 +83,14 @@ class NotebookLMClient:
     scrapes NotebookLM-specific WIZ_global_data tokens, and executes batchexecute RPCs.
     """
 
-    DEFAULT_BASE_URL = "https://notebooklm.google.com"
+    DEFAULT_BASE_URL = "https://notebook.google.com"
+    LEGACY_BASE_URL = "https://notebooklm.google.com"
+    VALID_NOTEBOOK_HOSTS = frozenset({"notebook.google.com", "notebooklm.google.com"})
+
+    @classmethod
+    def is_live_base_url(cls, base_url: str) -> bool:
+        host = (urlparse(base_url).hostname or "").lower()
+        return host in cls.VALID_NOTEBOOK_HOSTS
 
     def __init__(
         self,
@@ -101,7 +108,7 @@ class NotebookLMClient:
         self.timeout: float = timeout
         self.access_token: str | None = fallback_snlm0e
         self.fallback_snlm0e: str | None = fallback_snlm0e
-        self.build_label: str = "boq_labs-tailwind-frontend_20261017.00_p0"
+        self.build_label: str = "boq_labs-tailwind-frontend_20261119.18_p0"
         self.session_id: str | None = None
         self.is_offline_fallback: bool = False
         self.last_probe_reason: str | None = None
@@ -115,12 +122,14 @@ class NotebookLMClient:
         host = (parsed.hostname or "").lower()
         is_google_https = parsed.scheme == "https" and (host == "google.com" or host.endswith(".google.com"))
         host_only_names = {"OSID", "__Secure-OSID", "LSID", "__Host-1PLSID", "__Host-3PLSID"}
+        scoped_hosts = tuple(self.VALID_NOTEBOOK_HOSTS) if host in self.VALID_NOTEBOOK_HOSTS else (host,)
         for name, value in self.cookies.items():
             if not name or not value:
                 continue
             if is_google_https:
                 if name in host_only_names or name in self.service_cookies:
-                    jar.set(name, value, domain=host, path="/")
+                    for h in scoped_hosts:
+                        jar.set(name, value, domain=h, path="/")
                 else:
                     jar.set(name, value, domain=".google.com", path="/")
             else:
@@ -173,7 +182,7 @@ class NotebookLMClient:
             try:
                 resp = await client.get(f"{self.base_url}/")
             except (httpx.ConnectError, httpx.RemoteProtocolError):
-                if self.base_url != self.DEFAULT_BASE_URL:
+                if not self.is_live_base_url(self.base_url):
                     raise
                 await self.close()
                 client = await self._get_client()
@@ -182,7 +191,10 @@ class NotebookLMClient:
             final_host = (urlparse(final_url).hostname or "").lower()
             self._tokens_scraped = True
 
-            if final_host and expected_host and final_host != expected_host:
+            host_matches = (final_host == expected_host) or (
+                expected_host in self.VALID_NOTEBOOK_HOSTS and final_host in self.VALID_NOTEBOOK_HOSTS
+            )
+            if final_host and expected_host and not host_matches:
                 self.is_offline_fallback = True
                 self.access_token = None
                 if "osid=1" in final_url.lower():
@@ -196,6 +208,9 @@ class NotebookLMClient:
                     self.last_probe_reason,
                 )
                 return False
+
+            if final_host in self.VALID_NOTEBOOK_HOSTS and final_host != expected_host:
+                self.base_url = f"https://{final_host}"
 
             if resp.status_code in (401, 403):
                 self.is_offline_fallback = True
@@ -232,8 +247,8 @@ class NotebookLMClient:
         return bool(self.access_token)
 
     async def _ensure_tokens(self) -> None:
-        """Auto-scrapes NotebookLM WIZ tokens before RPC calls against live NotebookLM."""
-        if self.base_url != self.DEFAULT_BASE_URL or self._tokens_scraped:
+        """Auto-scrapes Gemini Notebook / NotebookLM WIZ tokens before live RPC calls."""
+        if not self.is_live_base_url(self.base_url) or self._tokens_scraped:
             return
         ok = await self.scrape_tokens()
         if not ok and self.last_probe_reason and (
@@ -242,8 +257,8 @@ class NotebookLMClient:
             or self.last_probe_reason in ("http_401", "http_403")
         ):
             raise AuthenticationError(
-                f"NotebookLM authentication required ({self.last_probe_reason}); "
-                "open notebooklm.google.com in Chrome and sync cookies via extension"
+                f"Gemini Notebook authentication required ({self.last_probe_reason}); "
+                "open notebook.google.com in Chrome and sync cookies via extension"
             )
 
     async def call_batchexecute(self, rpc_id: str, payload: Any) -> Any:
@@ -284,7 +299,10 @@ class NotebookLMClient:
         try:
             resp = await client.post(url, params=params, data=data, headers=extra_headers or None)
             final_host = (urlparse(str(resp.url)).hostname or "").lower()
-            if final_host and expected_host and final_host != expected_host:
+            rpc_host_ok = (final_host == expected_host) or (
+                expected_host in self.VALID_NOTEBOOK_HOSTS and final_host in self.VALID_NOTEBOOK_HOSTS
+            )
+            if final_host and expected_host and not rpc_host_ok:
                 self.is_offline_fallback = True
                 self.last_probe_reason = f"redirected_to_{final_host}"
                 raise AuthenticationError(f"NotebookLM RPC redirected to {final_host}; re-authentication required")
