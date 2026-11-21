@@ -419,3 +419,86 @@ async def test_remote_smart_server_embedder_mrl_thermal_guard_and_fts5_fallback(
         await db.close()
     finally:
         await emb.aclose()
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://127.0.0.1:8091/\r\nX-Injected: 1",
+        "http://127.0.0.1:8091/\x00foo",
+        "http://127.0.0.1:8091/path with space",
+        "http://user@127.0.0.1:8091/v1/embeddings",
+        "http://127.0.0.1:999999/v1/embeddings",
+        "http://127.0.0.1\\evil.com/v1/embeddings",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ],
+)
+def test_remote_embed_and_telemetry_url_reject_hostile_inputs(bad_url: str) -> None:
+    from backend.app.rag.embedder import LocalEmbedder, _normalize_remote_embed_url
+
+    with pytest.raises(ValueError):
+        _normalize_remote_embed_url(bad_url)
+    with pytest.raises(ValueError):
+        LocalEmbedder(mode="remote", remote_url="http://127.0.0.1:8091", thermal_telemetry_url=bad_url)
+
+
+@pytest.mark.asyncio
+async def test_remote_embedder_fail_closed_nan_malformed_and_offline_anti_wipe(tmp_path: Path) -> None:
+    """Lock down NaN/Inf/overflow L2 math, duplicate/empty remote rows, and offline anti-wipe."""
+    import json as _json
+    import numpy as np
+    from backend.app.rag.embedder import (
+        LocalEmbedder,
+        RemoteEmbedderUnavailableError,
+        _normalize_l2_rows,
+    )
+
+    with pytest.raises(ValueError):
+        _normalize_l2_rows(np.array([[1.0, float("nan"), 0.0]], dtype=np.float64), 512)
+    with pytest.raises(ValueError):
+        _normalize_l2_rows(np.array([[float("inf"), 1.0, 0.0]], dtype=np.float64), 512)
+    huge = _normalize_l2_rows(np.array([[1e30, 1e30] + [0.0] * 510], dtype=np.float64), 512)
+    assert np.all(np.isfinite(huge)) and abs(float(np.linalg.norm(huge[0])) - 1.0) < 1e-5
+
+    for payload_bytes in (
+        _json.dumps({"data": [{"index": 0, "embedding": [1.0] * 8}, {"index": 0, "embedding": [2.0] * 8}]}).encode(),
+        _json.dumps({"data": [{"index": 0, "embedding": []}]}).encode(),
+        b'{"data":[{"index":0,"embedding":[NaN, 1.0, 2.0]}]}',
+    ):
+        def _bad_handler(req: httpx.Request, body: bytes = payload_bytes) -> httpx.Response:
+            return httpx.Response(200, content=body, headers={"content-type": "application/json"})
+
+        emb = LocalEmbedder(mode="remote", remote_url="http://127.0.0.1:8091")
+        emb._http_client = httpx.AsyncClient(transport=httpx.MockTransport(_bad_handler))
+        try:
+            texts = ["a", "b"] if b'"index": 0, "embedding": [2.0' in payload_bytes else ["a"]
+            with pytest.raises(RemoteEmbedderUnavailableError):
+                await emb.embed_documents(texts)
+        finally:
+            await emb.aclose()
+
+    # Offline smart-server must NOT wipe pre-existing vectors before wave 0 succeeds
+    db = Database(db_path=tmp_path / "anti_wipe.db")
+    await db.init_schema()
+    sub = LocalEmbedder(mode="subword")
+    svc_sub = HybridRAGService(db, embedder=sub)
+    docs = [
+        {"source_type": "workspace_file", "source_id": f"f{i}.md", "source_title": f"F{i}", "content": f"Persisted content item {i}."}
+        for i in range(4)
+    ]
+    await svc_sub.index_sources(source_types=[], documents=docs)
+    assert await svc_sub.vector_store.count() == 4
+
+    def _offline(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("phone offline", request=req)
+
+    emb_off = LocalEmbedder(mode="remote", remote_url="http://127.0.0.1:8091")
+    emb_off._http_client = httpx.AsyncClient(transport=httpx.MockTransport(_offline))
+    svc_rem = HybridRAGService(db, embedder=emb_off)
+    res = await svc_rem.index_sources(source_types=[], documents=docs)
+    assert res["ok"] is False and res["degraded"] is True
+    assert await svc_rem.vector_store.count() == 4
+    await emb_off.aclose()
+    sub.shutdown()
+    await db.close()

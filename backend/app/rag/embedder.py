@@ -43,12 +43,31 @@ class RemoteEmbedderUnavailableError(RuntimeError):
     """Raised when the configured remote embedding endpoint cannot be reached."""
 
 
+def _validate_http_url(raw_url: str, *, env_name: str) -> Any:
+    """Strictly validate an HTTP(S) URL rejecting control chars, whitespace, userinfo, and bad ports."""
+    cleaned = raw_url.strip()
+    if not cleaned or any(ord(c) < 32 or ord(c) == 127 or c.isspace() for c in cleaned):
+        raise ValueError(f"Invalid {env_name}: contains whitespace or control characters")
+    if "\\" in cleaned:
+        raise ValueError(f"Invalid {env_name}: backslash is not allowed")
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.hostname:
+        raise ValueError(f"Invalid {env_name}: {raw_url!r}")
+    if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Invalid {env_name}: userinfo '@' is not allowed")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Invalid {env_name}: malformed port") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(f"Invalid {env_name}: port out of range")
+    return parsed
+
+
 def _normalize_remote_embed_url(raw_url: str) -> str:
     """Validate and normalize an OpenAI-compatible `/v1/embeddings` HTTP endpoint URL."""
     cleaned = raw_url.strip()
-    parsed = urlparse(cleaned)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(f"Invalid GEMINI_RAG_REMOTE_EMBED_URL: {raw_url!r}")
+    parsed = _validate_http_url(cleaned, env_name="GEMINI_RAG_REMOTE_EMBED_URL")
     path = parsed.path.rstrip("/")
     if not path:
         return f"{parsed.scheme}://{parsed.netloc}/v1/embeddings"
@@ -58,17 +77,26 @@ def _normalize_remote_embed_url(raw_url: str) -> str:
 
 
 def _normalize_l2_rows(raw_matrix: np.ndarray, dim: int) -> np.ndarray:
-    """Apply Matryoshka truncation/padding to `dim` and L2-normalize each float32 row."""
-    arr = np.asarray(raw_matrix, dtype=np.float32)
+    """Apply Matryoshka truncation/padding to `dim` and L2-normalize each row in float64."""
+    arr = np.asarray(raw_matrix, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] == 0:
+        raise ValueError("Embedding matrix must be non-empty 2D")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("Embedding matrix contains NaN or Inf values")
     if arr.shape[1] > dim:
         arr = arr[:, :dim]
     elif arr.shape[1] < dim:
         arr = np.pad(arr, ((0, 0), (0, dim - arr.shape[1])))
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    if not np.all(np.isfinite(norms)):
+        raise ValueError("Embedding L2 norm overflowed to non-finite value")
     norms = np.where(norms > 1e-12, norms, 1.0)
-    return (arr / norms).astype(np.float32, copy=False)
+    out = (arr / norms).astype(np.float32, copy=False)
+    if not np.all(np.isfinite(out)):
+        raise ValueError("Normalized embedding contains non-finite values")
+    return out
 
 
 def get_default_onnx_model_dir() -> Path:
@@ -372,8 +400,12 @@ class LocalEmbedder:
             thermal_telemetry_url
             if thermal_telemetry_url is not None
             else os.environ.get("GEMINI_RAG_THERMAL_TELEMETRY_URL", "")
-        )
-        self.thermal_telemetry_url: str | None = raw_therm.strip() or None
+        ).strip()
+        if raw_therm:
+            _validate_http_url(raw_therm, env_name="GEMINI_RAG_THERMAL_TELEMETRY_URL")
+            self.thermal_telemetry_url: str | None = raw_therm
+        else:
+            self.thermal_telemetry_url = None
         self.thermal_warn_pause_sec: float = max(0.0, float(os.environ.get("GEMINI_RAG_THERMAL_WARN_PAUSE_SEC", "1.5")))
         self.thermal_throttle_pause_sec: float = max(0.0, float(os.environ.get("GEMINI_RAG_THERMAL_THROTTLE_PAUSE_SEC", "5.0")))
         self.remote_reachable: bool | None = None
@@ -495,8 +527,25 @@ class LocalEmbedder:
                     raise RemoteEmbedderUnavailableError(
                         f"Remote embedder malformed response (expected {len(sub)} vectors)"
                     )
-                ordered = sorted(rows, key=lambda item: int(item.get("index", 0)))
-                mat = np.array([item["embedding"] for item in ordered], dtype=np.float32)
+                by_index: dict[int, list[Any]] = {}
+                for item in rows:
+                    if not isinstance(item, dict):
+                        raise RemoteEmbedderUnavailableError("Remote embedder row is not an object")
+                    raw_idx = item.get("index")
+                    if not isinstance(raw_idx, int) or isinstance(raw_idx, bool) or not (0 <= raw_idx < len(sub)):
+                        raise RemoteEmbedderUnavailableError(f"Remote embedder invalid row index: {raw_idx!r}")
+                    if raw_idx in by_index:
+                        raise RemoteEmbedderUnavailableError(f"Remote embedder duplicate row index: {raw_idx}")
+                    vec = item.get("embedding")
+                    if not isinstance(vec, list) or len(vec) == 0:
+                        raise RemoteEmbedderUnavailableError(f"Remote embedder empty embedding at index {raw_idx}")
+                    by_index[raw_idx] = vec
+                if len(by_index) != len(sub):
+                    raise RemoteEmbedderUnavailableError("Remote embedder missing expected row indices")
+                first_len = len(by_index[0])
+                if any(len(by_index[i]) != first_len for i in range(len(sub))):
+                    raise RemoteEmbedderUnavailableError("Remote embedder inconsistent vector dimensions in batch")
+                mat = np.array([by_index[i] for i in range(len(sub))], dtype=np.float64)
                 normed = _normalize_l2_rows(mat, self.dim)
                 result[start : start + len(sub)] = normed
                 self.remote_reachable = True

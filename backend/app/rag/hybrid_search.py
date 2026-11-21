@@ -182,12 +182,15 @@ class HybridRAGService:
         """Incrementally chunk, SHA-256 deduplicate, embed, and persist RAG sources."""
         t0 = time.perf_counter()
         await self.vector_store.ensure_schema()
-        if self.embedder.is_available:
+        defer_vector_space_switch = bool(getattr(self.embedder, "remote_url", None))
+        vector_space_ensured = False
+        if self.embedder.is_available and not defer_vector_space_switch:
             await self.vector_store.ensure_vector_space(
                 embedder_id=self.embedder.backend_name,
                 dim=self.embedder.dim,
                 normalized=True,
             )
+            vector_space_ensured = True
         types = list(source_types) if source_types is not None else ["conversation", "brain_digest"]
         raw_docs: list[dict[str, Any]] = list(documents or [])
         if "conversation" in types:
@@ -266,6 +269,16 @@ class HybridRAGService:
                         "embedding_model": target_model,
                         "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
                     }
+
+            if self.embedder.is_available and not vector_space_ensured:
+                # Commit vector-space transition only AFTER first remote embedding wave succeeds,
+                # so an offline smart-server never wipes previously indexed local vectors.
+                await self.vector_store.ensure_vector_space(
+                    embedder_id=self.embedder.backend_name,
+                    dim=self.embedder.dim,
+                    normalized=True,
+                )
+                vector_space_ensured = True
 
             vec_pairs: list[tuple[int, Any]] = []
             async with self.db.write_transaction() as conn:

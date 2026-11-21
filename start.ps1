@@ -23,12 +23,19 @@ function Test-LocalPortOpen {
 }
 
 if ($UseSmartServer -and -not (Test-LocalPortOpen -Port $EmbedPort)) {
-    Write-Host "[Gemini Local UI] Opening SSH tunnel to $SmartServerSshHost (ports $EmbedPort, $TelemetryPort) ..." -ForegroundColor Cyan
-    $TunnelArgs = "-N -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -L 127.0.0.1:${EmbedPort}:127.0.0.1:${EmbedPort} -L 127.0.0.1:${TelemetryPort}:127.0.0.1:${TelemetryPort} $SmartServerSshHost"
+    $ForwardSpec = "-L 127.0.0.1:${EmbedPort}:127.0.0.1:${EmbedPort}"
+    if (-not (Test-LocalPortOpen -Port $TelemetryPort)) {
+        $ForwardSpec += " -L 127.0.0.1:${TelemetryPort}:127.0.0.1:${TelemetryPort}"
+    }
+    Write-Host "[Gemini Local UI] Opening SSH tunnel to $SmartServerSshHost ($ForwardSpec) ..." -ForegroundColor Cyan
+    $TunnelArgs = "-N -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes $ForwardSpec $SmartServerSshHost"
     $TunnelProc = Start-Process -FilePath "ssh" -ArgumentList $TunnelArgs -WindowStyle Hidden -PassThru
     for ($i = 0; $i -lt 15; $i++) {
         if (Test-LocalPortOpen -Port $EmbedPort) { break }
         Start-Sleep -Milliseconds 300
+    }
+    if (-not (Test-LocalPortOpen -Port $EmbedPort)) {
+        Write-Host "[Gemini Local UI] WARN: Smart-server port $EmbedPort unreachable; RAG will degrade cleanly to FTS5 until phone connects." -ForegroundColor Yellow
     }
 }
 
