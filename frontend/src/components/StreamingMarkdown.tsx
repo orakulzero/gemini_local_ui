@@ -3,6 +3,7 @@ import { CodeBlock } from './CodeBlock';
 import { MathBlock } from './MathBlock';
 import { MermaidBlock } from './MermaidBlock';
 import { LightboxModal, LightboxImage } from './LightboxModal';
+import { resolveRenderableImageUrl } from '../utils/imageUrl';
 
 export interface StreamingMarkdownProps {
   content: string;
@@ -216,7 +217,9 @@ function renderFormattedSpan(
       if (imgMatch) {
         const alt = imgMatch[1].trim();
         const url = imgMatch[2].trim();
-        const safeUrl = /^(https?:\/\/|\/(?!\/)|data:image\/)/i.test(url) ? url : '';
+        const safeUrl = /^(https?:\/\/|\/(?!\/)|data:image\/)/i.test(url)
+          ? resolveRenderableImageUrl(url)
+          : '';
         if (safeUrl) {
           parts.push(
             <img

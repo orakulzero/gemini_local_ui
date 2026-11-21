@@ -34,6 +34,7 @@ from backend.app.observability.telemetry import (
 from backend.app.services.media_postprocessor import (
     MediaAccumulator,
     localize_generated_images,
+    rewrite_fife_urls_in_text,
 )
 from backend.app.services.prompt_assembler import (
     AssembledPrompt,
@@ -159,7 +160,7 @@ async def prepare_chat_turn(
             parent_id = (
                 int(req.parent_message_id)
                 if req.parent_message_id is not None and str(req.parent_message_id).isdigit()
-                else None
+                else (existing_conv.active_leaf_message_id if existing_conv else None)
             )
             user_msg = await repo.add_message(
                 conversation_id=conv_id,
@@ -583,7 +584,10 @@ async def stream_chat_turn(
                             if prepared.assembled.rag_sources:
                                 done_meta["rag_sources"] = prepared.assembled.rag_sources
                             if "full_text" in done_meta:
-                                done_meta["full_text"] = strip_tool_call_fences(done_meta["full_text"])
+                                done_meta["full_text"] = rewrite_fife_urls_in_text(
+                                    strip_tool_call_fences(done_meta["full_text"]),
+                                    media_acc.images,
+                                )
                             yield DoneEvent(metadata=done_meta)
 
                     if not has_tool_call:
@@ -718,7 +722,10 @@ async def stream_chat_turn(
                     )
                     return
 
-            full_text = strip_tool_call_fences("".join(full_text_list))
+            full_text = rewrite_fife_urls_in_text(
+                strip_tool_call_fences("".join(full_text_list)),
+                media_acc.images,
+            )
             full_thoughts = "".join(full_thought_list) if full_thought_list else None
 
             asst_msg_id = None

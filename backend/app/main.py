@@ -776,6 +776,100 @@ async def download_generated_image_endpoint(req: ImageDownloadRequest) -> Any:
         await client.close()
 
 
+def _is_allowed_fife_image_url(url: str) -> bool:
+    """Strict SSRF allowlist: permits only HTTPS Google FIFE / googleusercontent image hosts."""
+    if not isinstance(url, str):
+        return False
+    cleaned = url.strip()
+    if not cleaned or any(ch in cleaned for ch in ("\r", "\n", "\x00", "\\", " ", "\t")):
+        return False
+    from urllib.parse import urlparse
+    import ipaddress
+
+    parsed = urlparse(cleaned)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port is not None:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    allowed_suffixes = (
+        "googleusercontent.com",
+        "fife.usercontent.google.com",
+    )
+    return any(host == suf or host.endswith(f".{suf}") for suf in allowed_suffixes)
+
+
+@app.get("/api/images/proxy", response_model=None)
+async def proxy_fife_image_endpoint(url: str, request: Request) -> Any:
+    """
+    Same-origin authenticated image proxy for Google FIFE / gg-dl URLs.
+    Prevents browser `ERR_BLOCKED_BY_RESPONSE.NotSameSite` (CORP: same-site) failures
+    on `work.fife.usercontent.google.com` while enforcing a strict Google host allowlist.
+    """
+    if not _is_allowed_fife_image_url(url):
+        raise HTTPException(status_code=403, detail="Image proxy URL host is not permitted")
+    if not session_manager:
+        raise HTTPException(status_code=500, detail="Session manager not initialized")
+
+    import hashlib
+    from fastapi.responses import Response
+    from backend.app.bridge.client import GeminiWebClient
+    from backend.app.bridge.image_downloader import GeminiImageDownloader
+    from backend.app.openai.image_store import EXT_BY_MIME, MIME_BY_EXT, _resolve_images_dir
+
+    custom_dir = getattr(request.app.state, "image_data_dir", None)
+    images_dir = _resolve_images_dir(custom_dir)
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    for ext, mime in MIME_BY_EXT.items():
+        cached_path = images_dir / f"proxy_{url_hash}{ext}"
+        if cached_path.is_file():
+            return Response(
+                content=cached_path.read_bytes(),
+                media_type=mime,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Cross-Origin-Resource-Policy": "same-origin",
+                },
+            )
+
+    client = GeminiWebClient(
+        session_context=session_manager.context,
+        base_url=session_manager.base_url,
+        timeout=30.0,
+    )
+    try:
+        downloader = GeminiImageDownloader(
+            session_context=session_manager.context,
+            client=client,
+            timeout=30.0,
+        )
+        img_bytes, mime = await downloader.download_image({"url": url})
+        if not img_bytes:
+            raise HTTPException(status_code=502, detail="Failed to fetch generated image from Google FIFE")
+        clean_mime = (mime or "image/png").split(";")[0].strip().lower()
+        ext_no_dot = EXT_BY_MIME.get(clean_mime, "png")
+        try:
+            images_dir.mkdir(parents=True, exist_ok=True)
+            (images_dir / f"proxy_{url_hash}.{ext_no_dot}").write_bytes(img_bytes)
+        except Exception as cache_err:
+            logger.debug("Image proxy cache write skipped: %s", cache_err)
+        return Response(
+            content=img_bytes,
+            media_type=clean_mime,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "Cross-Origin-Resource-Policy": "same-origin",
+            },
+        )
+    finally:
+        await client.close()
+
+
 @app.get("/files/{name}", response_model=None)
 async def serve_local_generated_image(name: str, request: Request) -> Any:
     """

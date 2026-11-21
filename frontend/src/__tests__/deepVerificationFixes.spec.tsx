@@ -7,6 +7,7 @@ import { segmentStreamingMarkdown } from '../components/StreamingMarkdown';
 import { SearchModal } from '../components/SearchModal';
 import { ModelSelector } from '../components/ModelSelector';
 import { useSessionStore } from '../store/sessionStore';
+import { resolveRenderableImageUrl } from '../utils/imageUrl';
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -164,5 +165,15 @@ describe('Deep Verification Invariants (Frontend)', () => {
     expect(screen.getByTestId('model-selector-dropdown')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByTestId('model-selector-dropdown')).toBeNull();
+  });
+
+  it('resolveRenderableImageUrl proxies cross-site Google FIFE URLs same-origin and leaves safe URLs intact', () => {
+    const fife = 'https://work.fife.usercontent.google.com/rd-gg-dl/abc123?foo=bar';
+    const lh3 = 'https://lh3.googleusercontent.com/gg-dl/xyz789';
+    expect(resolveRenderableImageUrl(fife)).toBe(`/api/images/proxy?url=${encodeURIComponent(fife)}`);
+    expect(resolveRenderableImageUrl(lh3)).toBe(`/api/images/proxy?url=${encodeURIComponent(lh3)}`);
+    expect(resolveRenderableImageUrl('/files/abc123.png')).toBe('/files/abc123.png');
+    expect(resolveRenderableImageUrl('/api/images/proxy?url=already')).toBe('/api/images/proxy?url=already');
+    expect(resolveRenderableImageUrl('https://example.com/chart.png')).toBe('https://example.com/chart.png');
   });
 });

@@ -1131,6 +1131,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/images/proxy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Proxy Fife Image Endpoint
+         * @description Same-origin authenticated image proxy for Google FIFE / gg-dl URLs.
+         *     Prevents browser `ERR_BLOCKED_BY_RESPONSE.NotSameSite` (CORP: same-site) failures
+         *     on `work.fife.usercontent.google.com` while enforcing a strict Google host allowlist.
+         */
+        get: operations["proxy_fife_image_endpoint_api_images_proxy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/limits": {
         parameters: {
             query?: never;
@@ -7733,6 +7755,37 @@ export interface operations {
                 "application/json": components["schemas"]["ImageDownloadRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    proxy_fife_image_endpoint_api_images_proxy_get: {
+        parameters: {
+            query: {
+                url: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

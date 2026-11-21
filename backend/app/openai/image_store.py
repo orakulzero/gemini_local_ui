@@ -34,7 +34,9 @@ MIME_BY_EXT: Dict[str, str] = {
     ".gif": "image/gif",
 }
 
-GG_DL_URL_RE = re.compile(r"https://lh3\.googleusercontent\.com/gg(?:-dl)?/[^\s)\"'>]+")
+GG_DL_URL_RE = re.compile(
+    r"https://(?:lh3\.googleusercontent\.com/(?:rd-)?gg(?:-dl)?|work\.fife\.usercontent\.google\.com/rd-gg(?:-dl)?)/[^\s)\"'>]+"
+)
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 

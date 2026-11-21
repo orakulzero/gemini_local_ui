@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { LightboxModal, LightboxImage } from './LightboxModal';
+import { resolveRenderableImageUrl } from '../utils/imageUrl';
 
 export interface ImageGalleryProps {
   images: Array<{
@@ -21,15 +22,17 @@ export const ImageGallery: React.FC<ImageGalleryProps> = ({ images }) => {
   return (
     <>
       <div data-testid="image-gallery-grid" className="mt-3 flex flex-wrap gap-2.5">
-        {images.map((img, idx) => (
+        {images.map((img, idx) => {
+          const safeSrc = resolveRenderableImageUrl(img.url);
+          return (
           <div
             key={idx}
             data-testid={`image-thumbnail-${idx}`}
-            onClick={() => setSelectedImage(img)}
+            onClick={() => setSelectedImage({ ...img, url: safeSrc })}
             className="group relative cursor-pointer overflow-hidden rounded-lg border border-zinc-700/60 bg-zinc-900 shadow-sm transition-all hover:border-blue-500/60 hover:shadow-md max-w-[240px]"
           >
             <img
-              src={img.url}
+              src={safeSrc}
               alt={img.alt || 'Generated asset'}
               className="h-36 w-full object-cover transition-transform duration-200 group-hover:scale-105"
               loading="lazy"
@@ -40,7 +43,8 @@ export const ImageGallery: React.FC<ImageGalleryProps> = ({ images }) => {
               </span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <LightboxModal

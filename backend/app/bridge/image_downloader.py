@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 import httpx
 
 from backend.app.bridge.models import HeaderBuilder
@@ -182,6 +183,15 @@ class GeminiImageDownloader:
             logger.debug("Failed resolving full-size image url via c8o8Fe: %s", e)
             return ""
 
+    def _build_cookie_jar(self, cookies: dict[str, str]) -> httpx.Cookies:
+        jar = httpx.Cookies()
+        for k, v in cookies.items():
+            if not k or not v:
+                continue
+            jar.set(k, v, domain=".google.com", path="/")
+            jar.set(k, v, domain=".googleusercontent.com", path="/")
+        return jar
+
     async def follow_alr_chain(
         self,
         start_url: str,
@@ -191,48 +201,74 @@ class GeminiImageDownloader:
         """
         Follows the `=d-I?alr=yes` text-redirect chain where intermediate HTTP 200
         responses have `Content-Type: text/plain` containing the next signed URL,
-        until raw `image/*` bytes are returned.
+        until raw `image/*` bytes are returned. Retries once on transient connect/timeout errors.
         """
         cookies = self.get_clean_cookies()
-        headers = {
+        base_headers = {
             "Origin": "https://gemini.google.com",
             "Referer": "https://gemini.google.com/",
             "User-Agent": HeaderBuilder.DEFAULT_USER_AGENT,
         }
         cookie_str = HeaderBuilder.format_cookies(cookies)
-        if cookie_str:
-            headers["Cookie"] = cookie_str
-
         owns_client = http_client is None
-        client = http_client or httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=httpx.Timeout(self.timeout, connect=15.0),
-            cookies=cookies,
-        )
-        try:
-            cur_url = start_url
-            for _ in range(max_hops):
-                resp = await client.get(cur_url, headers=headers)
-                ct = (resp.headers.get("content-type") or "").lower()
-                if resp.status_code == 200 and ct.startswith("image/"):
-                    mime = ct.split(";")[0].strip()
-                    return resp.content, mime
-                if resp.status_code == 200 and ct.startswith("text/"):
-                    next_url = resp.text.strip()
-                    if next_url.startswith(("http://", "https://")):
-                        cur_url = next_url
-                        continue
-                logger.warning(
-                    "Image download chain stopped at %s: HTTP %d content-type=%r",
-                    cur_url[:80],
-                    resp.status_code,
-                    ct[:40],
-                )
+        max_attempts = 2 if owns_client else 1
+
+        for attempt in range(max_attempts):
+            client = http_client or httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(self.timeout, connect=15.0),
+                cookies=self._build_cookie_jar(cookies),
+            )
+            try:
+                cur_url = start_url
+                for _ in range(max_hops):
+                    req_headers = dict(base_headers)
+                    host = (urlparse(cur_url).hostname or "").lower()
+                    if cookie_str and (
+                        not owns_client
+                        or host.endswith(".google.com")
+                        or host.endswith(".googleusercontent.com")
+                        or host in ("127.0.0.1", "localhost")
+                    ):
+                        req_headers["Cookie"] = cookie_str
+                    resp = await client.get(cur_url, headers=req_headers)
+                    ct = (resp.headers.get("content-type") or "").lower()
+                    if resp.status_code == 200 and ct.startswith("image/"):
+                        mime = ct.split(";")[0].strip()
+                        return resp.content, mime
+                    if resp.status_code == 200 and ct.startswith("text/"):
+                        next_url = resp.text.strip()
+                        if next_url.startswith(("http://", "https://")):
+                            cur_url = next_url
+                            continue
+                    logger.warning(
+                        "Image download chain stopped at %s: HTTP %d content-type=%r",
+                        cur_url[:80],
+                        resp.status_code,
+                        ct[:40],
+                    )
+                    return None, None
                 return None, None
-            return None, None
-        finally:
-            if owns_client:
-                await client.aclose()
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as net_err:
+                if attempt + 1 < max_attempts:
+                    logger.debug("Retrying image download after transient %s", type(net_err).__name__)
+                    continue
+                raise
+            finally:
+                if owns_client:
+                    await client.aclose()
+        return None, None
+
+    @staticmethod
+    def _append_fife_param(url: str, suffix: str) -> str:
+        if "?" in url:
+            base, query = url.split("?", 1)
+            if base.endswith(("-rj", "=d-I")):
+                return url
+            return f"{base}{suffix}?{query}"
+        if url.endswith(("-rj", "?alr=yes", "=d-I")):
+            return url
+        return f"{url}{suffix}"
 
     async def download_image(
         self,
@@ -257,8 +293,8 @@ class GeminiImageDownloader:
             return None, None
         fallback_url = (
             preview_url
-            if preview_url.endswith(("-rj", "?alr=yes"))
-            else f"{preview_url}=s2048-rj"
+            if ("?alr=yes" in preview_url or preview_url.endswith("-rj"))
+            else self._append_fife_param(preview_url, "=s2048-rj")
         )
         data, mime = await self.follow_alr_chain(fallback_url, http_client=http_client)
         if data:

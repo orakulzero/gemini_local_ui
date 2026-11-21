@@ -681,3 +681,117 @@ async def test_notebooklm_rejects_accounts_redirect_snlm0e_and_extension_capture
     assert "https://notebooklm.google.com/" in common_js
     assert "selectNotebookLMCookies" in common_js
     assert "notebooklm_cookies" in common_js
+
+
+def test_image_proxy_ssrf_allowlist_and_same_origin_corp_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock down Bug A: /api/images/proxy blocks non-Google hosts and serves FIFE images same-origin with cache."""
+    from unittest.mock import AsyncMock
+    from fastapi.testclient import TestClient
+    import backend.app.main as main_mod
+    from backend.app.bridge.image_downloader import GeminiImageDownloader
+
+    for bad_url in (
+        "http://work.fife.usercontent.google.com/rd-gg-dl/abc",
+        "https://127.0.0.1/secret",
+        "https://169.254.169.254/latest/meta-data",
+        "https://evil.com/work.fife.usercontent.google.com/x",
+        "https://user:pass@work.fife.usercontent.google.com/rd-gg-dl/abc",
+        "https://work.fife.usercontent.google.com:8443/rd-gg-dl/abc",
+        "https://googleusercontent.com.evil.com/gg-dl/abc",
+    ):
+        assert main_mod._is_allowed_fife_image_url(bad_url) is False
+
+    valid_url = "https://work.fife.usercontent.google.com/rd-gg-dl/sample_oscilloscope_123"
+    assert main_mod._is_allowed_fife_image_url(valid_url) is True
+
+    fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    mock_dl = AsyncMock(return_value=(fake_png, "image/png"))
+    monkeypatch.setattr(GeminiImageDownloader, "download_image", mock_dl)
+    prev_dir = getattr(main_mod.app.state, "image_data_dir", None)
+    main_mod.app.state.image_data_dir = tmp_path
+    try:
+        with TestClient(main_mod.app) as client:
+            bad_resp = client.get("/api/images/proxy", params={"url": "https://evil.example/img.png"})
+            assert bad_resp.status_code == 403
+
+            r1 = client.get("/api/images/proxy", params={"url": valid_url})
+            assert r1.status_code == 200
+            assert r1.content == fake_png
+            assert r1.headers.get("cross-origin-resource-policy") == "same-origin"
+            assert mock_dl.await_count == 1
+
+            # Second request must hit disk cache without hitting upstream again
+            r2 = client.get("/api/images/proxy", params={"url": valid_url})
+            assert r2.status_code == 200
+            assert r2.content == fake_png
+            assert mock_dl.await_count == 1
+    finally:
+        main_mod.app.state.image_data_dir = prev_dir
+
+
+@pytest.mark.asyncio
+async def test_media_postprocessor_proxy_fallback_and_inline_fife_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock down Bug A: failed image localization falls back to /api/images/proxy and rewrites Markdown."""
+    from backend.app.bridge.image_downloader import GeminiImageDownloader
+    from backend.app.services.media_postprocessor import localize_generated_images, rewrite_fife_urls_in_text
+
+    async def _boom(self, meta, http_client=None):
+        raise httpx.ReadTimeout("simulated transient timeout")
+
+    monkeypatch.setattr(GeminiImageDownloader, "download_image", _boom)
+    raw_url = "https://work.fife.usercontent.google.com/rd-gg-dl/test_img_99"
+    imgs = [{"url": raw_url, "alt": "Oscilloscope"}]
+
+    changed = await localize_generated_images(imgs, None, "c_1", "r_1", "rc_1")
+    assert changed is True
+    assert imgs[0]["url"].startswith("/api/images/proxy?url=")
+    assert imgs[0]["original_url"] == raw_url
+
+    md = f"Here is the plot:\n![Osc]({raw_url})\nAnd another: https://lh3.googleusercontent.com/gg-dl/xyz123"
+    rewritten = rewrite_fife_urls_in_text(md, imgs)
+    assert "https://work.fife.usercontent.google.com" not in rewritten
+    assert "https://lh3.googleusercontent.com/gg-dl/" not in rewritten
+    assert rewritten.count("/api/images/proxy?url=") == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_cleans_all_branch_cids_and_chains_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock down Bug B: DELETE remote=true deletes every Google cid linked across branches, and omitted parent chains onto active leaf."""
+    from fastapi.testclient import TestClient
+    import backend.app.main as main_mod
+    from backend.app.api import conversations as conv_api
+    from backend.app.bridge.client import GeminiWebClient
+    from backend.app.storage.repository import ConversationRepository
+
+    db = Database(db_path=tmp_path / "delete_everywhere.db")
+    await db.init_schema()
+    repo = ConversationRepository(db)
+    conv = await repo.create_conversation(title="Multi-Branch Cloud Chat", model="gemini-4-argon")
+    u1 = await repo.add_message(conv.id, "user", "Turn 1")
+    await repo.add_message(conv.id, "assistant", "Reply 1", parent_id=u1.id, metadata={"cid": "c_branch_one_111"})
+    await repo.add_message(conv.id, "assistant", "Reply 2", parent_id=u1.id, metadata={"cid": "c_branch_two_222"})
+    await repo.update_conversation(conv.id, remote_conversation_id="c_branch_two_222")
+
+    deleted_cids: list[str] = []
+
+    async def _fake_del(self, cid: str) -> bool:
+        deleted_cids.append(cid)
+        return True
+
+    monkeypatch.setattr(GeminiWebClient, "delete_conversation", _fake_del)
+    prev_repo = getattr(main_mod.app.state, "repository", None)
+    main_mod.app.state.repository = repo
+    main_mod.app.dependency_overrides[conv_api.get_optional_client] = lambda: GeminiWebClient(base_url="http://127.0.0.1:19999")
+    try:
+        with TestClient(main_mod.app) as client:
+            resp = client.delete(f"/api/conversations/{conv.id}?remote=true")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["success"] is True
+            assert body["remote_deleted"] is True
+            assert set(deleted_cids) == {"c_branch_one_111", "c_branch_two_222"}
+            assert set(body["remote_deleted_cids"]) == {"c_branch_one_111", "c_branch_two_222"}
+    finally:
+        main_mod.app.dependency_overrides.pop(conv_api.get_optional_client, None)
+        main_mod.app.state.repository = prev_repo
+        await db.close()

@@ -8528,6 +8528,44 @@
         "summary": "Download Generated Image Endpoint"
       }
     },
+    "/api/images/proxy": {
+      "get": {
+        "description": "Same-origin authenticated image proxy for Google FIFE / gg-dl URLs.\nPrevents browser `ERR_BLOCKED_BY_RESPONSE.NotSameSite` (CORP: same-site) failures\non `work.fife.usercontent.google.com` while enforcing a strict Google host allowlist.",
+        "operationId": "proxy_fife_image_endpoint_api_images_proxy_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "url",
+            "required": true,
+            "schema": {
+              "title": "Url",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Fife Image Endpoint"
+      }
+    },
     "/api/limits": {
       "get": {
         "description": "Returns live account quota health, per-model rolling usage counters,\nconfigured thresholds, cooldown status, and failover state.",

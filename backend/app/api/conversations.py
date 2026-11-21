@@ -237,14 +237,49 @@ async def delete_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     remote_deleted = False
-    if remote and conv.remote_conversation_id and client:
+    deleted_cids: list[str] = []
+    if remote and client:
+        candidate_cids: list[str] = []
+        if conv.remote_conversation_id:
+            candidate_cids.append(str(conv.remote_conversation_id))
         try:
-            remote_deleted = await client.delete_conversation(conv.remote_conversation_id)
-        except Exception as e:
-            logger.warning("Remote deletion failed for cid %s: %s", conv.remote_conversation_id, e)
+            all_msgs = await repo.get_all_messages(id)
+            for msg in all_msgs:
+                meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+                msg_cid = meta.get("cid")
+                if (
+                    isinstance(msg_cid, str)
+                    and msg_cid.strip()
+                    and not msg_cid.startswith(("c_canvas_", "c_sbx_", "c_mod_", "c_dt_"))
+                    and msg_cid not in candidate_cids
+                ):
+                    candidate_cids.append(msg_cid)
+        except Exception as msg_err:
+            logger.debug("Could not inspect message metadata cids for %s: %s", id, msg_err)
+
+        try:
+            for target_cid in candidate_cids:
+                try:
+                    ok = await client.delete_conversation(target_cid)
+                    if ok:
+                        remote_deleted = True
+                        deleted_cids.append(target_cid)
+                except Exception as e:
+                    logger.warning("Remote deletion failed for cid %s: %s", target_cid, e)
+        finally:
+            if hasattr(client, "close"):
+                try:
+                    await client.close()
+                except Exception:
+                    pass
 
     deleted = await repo.delete_conversation(id)
-    return {"success": deleted, "id": id, "remote_deleted": remote_deleted}
+    return {
+        "success": deleted,
+        "id": id,
+        "remote_deleted": remote_deleted,
+        "remote_deleted_cids": deleted_cids,
+    }
 
 
 @router.post("/sync")

@@ -534,7 +534,23 @@ class GeminiWebClient:
         if sapisid:
             headers["Authorization"] = HeaderBuilder.make_sapisidhash(sapisid, origin=self.base_url)
 
-        resp = await client.post(url, params=params, data=data, headers=headers)
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = await client.post(url, params=params, data=data, headers=headers)
+                break
+            except Exception as post_err:
+                is_transient = isinstance(
+                    post_err,
+                    (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.NetworkError, ConnectionError, TimeoutError),
+                ) or "is_connect error" in str(post_err) or "SYSCALL" in str(post_err)
+                if attempt == 0 and is_transient:
+                    logger.warning("Transient batchexecute error on %s (%s); resetting pool and retrying once", rpc_id, post_err)
+                    if hasattr(client, "reset_pool"):
+                        client.reset_pool(f"batchexecute_retry_{rpc_id}")
+                    continue
+                raise
+        assert resp is not None
         if resp.status_code in (401, 403):
             raise AuthenticationError(f"batchexecute authentication rejected with HTTP {resp.status_code}")
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { resolveRenderableImageUrl } from '../utils/imageUrl';
 
 export interface LightboxImage {
   url: string;
@@ -29,11 +30,13 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ image, onClose }) 
     };
   }, [image, onClose]);
 
+  const resolvedUrl = image ? resolveRenderableImageUrl(image.url) : '';
+
   const handleDownload = useCallback(() => {
     if (!image) return;
     try {
       const a = document.createElement('a');
-      a.href = image.url;
+      a.href = resolvedUrl;
       a.target = '_blank';
       a.download = `gemini_image_${Date.now()}.png`;
       document.body.appendChild(a);
@@ -42,7 +45,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ image, onClose }) 
     } catch (e) {
       console.error('Failed to download image', e);
     }
-  }, [image]);
+  }, [image, resolvedUrl]);
 
   if (!image) {
     return null;
@@ -88,7 +91,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({ image, onClose }) 
         {/* Image viewport */}
         <div className="flex-1 overflow-auto flex items-center justify-center p-2 bg-black/40">
           <img
-            src={image.url}
+            src={resolvedUrl}
             alt={image.alt || 'Full Resolution'}
             className="max-h-[75vh] w-auto max-w-full object-contain rounded"
           />

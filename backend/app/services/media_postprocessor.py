@@ -7,14 +7,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import re
 from typing import Any
+from urllib.parse import quote
 
 logger = logging.getLogger("gemini_backend.media_postprocessor")
+
+_FIFE_INLINE_URL_RE = re.compile(
+    r"https://(?:[a-zA-Z0-9-]+\.)*(?:googleusercontent\.com/(?:rd-)?gg[^\s)\"'>]*|fife\.usercontent\.google\.com/[^\s)\"'>]+)"
+)
+
+
+def build_image_proxy_url(raw_url: str) -> str:
+    """Wrap a cross-site Google FIFE image URL behind our same-origin authenticated proxy."""
+    return f"/api/images/proxy?url={quote(raw_url, safe='')}"
 
 
 def needs_image_localization(url: Any) -> bool:
     """Check if image URL requires local downloading (googleusercontent / fife)."""
-    if not isinstance(url, str) or url.startswith("/files/"):
+    if not isinstance(url, str) or url.startswith(("/files/", "/api/images/proxy")):
         return False
     return (
         "googleusercontent.com/gg" in url
@@ -93,10 +104,39 @@ async def localize_generated_images(
                 img["original_url"] = raw_url
                 img["url"] = f"/files/{saved_name}"
                 modified = True
+                continue
         except Exception as dl_err:
-            logger.warning("Failed localizing image from %s: %s", raw_url[:60], dl_err)
+            logger.warning(
+                "Failed localizing image from %s (%s: %s); falling back to same-origin proxy",
+                raw_url[:60],
+                type(dl_err).__name__,
+                dl_err,
+            )
+
+        # Fail-safe CORP protection: never expose raw cross-site FIFE URL directly to <img src>
+        img["original_url"] = raw_url
+        img["url"] = build_image_proxy_url(raw_url)
+        modified = True
 
     return modified
+
+
+def rewrite_fife_urls_in_text(text: str, images_list: list[dict[str, Any]] | None = None) -> str:
+    """
+    Rewrites any raw Google FIFE / gg-dl URLs embedded in Markdown text to their
+    localized `/files/<id>.<ext>` path (if available) or same-origin `/api/images/proxy?url=...`.
+    """
+    if not text:
+        return text
+    out = text
+    for img in images_list or []:
+        if not isinstance(img, dict):
+            continue
+        orig = img.get("original_url")
+        local = img.get("url")
+        if isinstance(orig, str) and orig and isinstance(local, str) and local and orig in out:
+            out = out.replace(orig, local)
+    return _FIFE_INLINE_URL_RE.sub(lambda m: build_image_proxy_url(m.group(0)), out)
 
 
 _localize_generated_images = localize_generated_images
