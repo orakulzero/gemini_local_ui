@@ -27,9 +27,10 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import contextlib
 
 BRIDGE_MAGIC = b"AGY_BRIDGE_V1:"
 DRIVE_STATE_FOLDER_ID = "1-yiUoG9KqKMPzI0pl7YwI3-iuviMyplR"
@@ -41,7 +42,7 @@ DEFAULT_CLOUD_BUNDLE_PATH = CLOUD_RUNTIME_DIR / "cloud_session_bundle.enc"
 DRIVE_MIRROR_STATE_DIR = CLOUD_HOME / "AGY_CLOUD_BRIDGE" / "drive_state"
 
 
-def _add_gemini_local_ui_to_syspath() -> Optional[Path]:
+def _add_gemini_local_ui_to_syspath() -> Path | None:
     candidates = [
         CLOUD_HOME / "orakulzero" / "gemini_local_ui",
         Path(__file__).resolve().parent / "orakulzero" / "gemini_local_ui",
@@ -75,14 +76,12 @@ def load_or_create_bridge_key(key_path: Path = DEFAULT_KEY_PATH) -> bytes:
     key_path.parent.mkdir(parents=True, exist_ok=True)
     raw = secrets.token_bytes(32)
     key_path.write_text(raw.hex() + "\n", encoding="utf-8")
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(key_path, 0o600)
-    except OSError:
-        pass
     return raw
 
 
-def encrypt_portable_bundle(payload_dict: Dict[str, Any], key: bytes) -> bytes:
+def encrypt_portable_bundle(payload_dict: dict[str, Any], key: bytes) -> bytes:
     """Encrypts a V2 vault dictionary with AES-256-GCM using the portable 32-byte bridge key."""
     plaintext = json.dumps(payload_dict, indent=2, ensure_ascii=False).encode("utf-8")
     nonce = secrets.token_bytes(12)
@@ -91,7 +90,7 @@ def encrypt_portable_bundle(payload_dict: Dict[str, Any], key: bytes) -> bytes:
     return BRIDGE_MAGIC + nonce + ciphertext
 
 
-def decrypt_portable_bundle(bundle_bytes: bytes, key: bytes) -> Dict[str, Any]:
+def decrypt_portable_bundle(bundle_bytes: bytes, key: bytes) -> dict[str, Any]:
     """Decrypts an AGY_BRIDGE_V1 bundle back into a V2 vault dictionary."""
     if not bundle_bytes.startswith(BRIDGE_MAGIC):
         raise ValueError("Invalid bundle header: expected AGY_BRIDGE_V1:")
@@ -111,9 +110,9 @@ def decrypt_portable_bundle(bundle_bytes: bytes, key: bytes) -> Dict[str, Any]:
 def export_local_vault_to_bundle(
     key_path: Path,
     out_bundle_path: Path,
-    vault_path: Optional[Path] = None,
+    vault_path: Path | None = None,
     force_fallback: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Reads the local OS CredentialVault (Windows DPAPI or Linux fallback) and writes cloud_session_bundle.enc."""
     _add_gemini_local_ui_to_syspath()
     from backend.app.storage.vault import CredentialVault
@@ -166,7 +165,7 @@ def _find_gdrive_bin() -> str:
     return "gdrive"
 
 
-def fetch_bundle_from_drive_if_present(dest_bundle_path: Path) -> Optional[str]:
+def fetch_bundle_from_drive_if_present(dest_bundle_path: Path) -> str | None:
     """Checks Google Drive drive_state/ for cloud_session_bundle.enc and downloads it if present."""
     gdrive_bin = _find_gdrive_bin()
     try:
@@ -205,10 +204,10 @@ def fetch_bundle_from_drive_if_present(dest_bundle_path: Path) -> Optional[str]:
 
 def import_bundle_to_cloud_vault(
     key_path: Path = DEFAULT_KEY_PATH,
-    bundle_path: Optional[Path] = None,
-    target_vault_path: Optional[Path] = None,
+    bundle_path: Path | None = None,
+    target_vault_path: Path | None = None,
     poll_drive: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Imports cloud_session_bundle.enc into the Cloud Linux CredentialVault (~/.gemini_local_ui/vault.enc)
     bound to the current container's /etc/machine-id, and caches the portable bundle in ~/.gemini/cloud_runtime/.
@@ -216,7 +215,7 @@ def import_bundle_to_cloud_vault(
     _add_gemini_local_ui_to_syspath()
     from backend.app.storage.vault import AccountProfile, CredentialVault, FailoverConfig, VaultData
 
-    drive_file_id: Optional[str] = None
+    drive_file_id: str | None = None
     candidate_paths = []
     if bundle_path:
         candidate_paths.append(Path(bundle_path))
@@ -232,7 +231,7 @@ def import_bundle_to_cloud_vault(
         drive_target = DRIVE_MIRROR_STATE_DIR / "cloud_session_bundle.enc"
         drive_file_id = fetch_bundle_from_drive_if_present(drive_target)
 
-    resolved_bundle: Optional[Path] = None
+    resolved_bundle: Path | None = None
     for p in candidate_paths:
         if p.exists() and p.stat().st_size > 32:
             resolved_bundle = p
@@ -266,7 +265,7 @@ def import_bundle_to_cloud_vault(
         notify_client_on_failover=bool(failover_raw.get("notify_client_on_failover", True)),
     )
 
-    accounts: Dict[str, AccountProfile] = {}
+    accounts: dict[str, AccountProfile] = {}
     for acc_id, acc_raw in parsed.get("accounts", {}).items():
         if isinstance(acc_raw, dict):
             accounts[acc_id] = AccountProfile(
@@ -319,7 +318,7 @@ def import_bundle_to_cloud_vault(
     }
 
 
-def run_self_test() -> Dict[str, Any]:
+def run_self_test() -> dict[str, Any]:
     """Runs an isolated round-trip cryptographic verification of Windows->Bundle->Linux vault hydration."""
     import tempfile
 
